@@ -2089,6 +2089,21 @@ print("  KC =", KC[0].hex(), "nonce key", KC[1].hex())
 print("  E9c starts.gzs =", e_starts.hex())
 show("start counter", e_starts)
 
+# ---------------------------------------------------- the change mark ----------
+# Section 10.4: change.gzm, the host wallet port's change mark, mark 7, no wide read
+# pending. The start counter's header under its own magic and key (neither opens
+# as the other); the sealed plaintext is u64 mark || u8 flags (bit 0: wide read pending).
+KM = keys(SEED64, "change mark", chain)
+_mh = b"GZCHMRK1" + u8(1) + chain
+e_mark = _mh + sealed(KM, "change mark", u64(7) + u8(0), _mh)
+assert len(e_mark) == 90
+assert unseal(KM, e_mark[41:], _mh) == u64(7) + u8(0)
+assert KM[0] != KC[0] and KM[1] != KC[1]
+print("\n== vector E9d, change mark change.gzm: mark 7, flags 0")
+print("  KM =", KM[0].hex(), "nonce key", KM[1].hex())
+print("  E9d change.gzm =", e_mark.hex())
+show("change mark", e_mark)
+
 # ---------------------------------------------------- the mark file -------------
 # Section 10.2, draft 3: append-only, one sealed 56-byte entry per anchored batch:
 # seal(KH, u64 incarnation || u64 mark_offset, ad = the 57-byte header || u64 entry

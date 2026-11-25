@@ -27,7 +27,8 @@ FORBIDDEN = re.compile(r"sim_rng|sim_chacha|gzp_testping|gzp_standin_fail_at|gzp
 # that each half of the check can fail (review of PR 27, M5).
 IN_TEST = ("gzp_testping", "gzp_standin_fail_at", "gzp_standin_put_restore", "gzp_standin_test_hooks")
 TEST_STRINGS = (b"--test-pings", b"--test-timer-ms", b"--test-start-delay-ms", b"--test-node-error-at",
-                b"tests only (gazpacho-test)", b"test-timer fired", b"payload=%s", b"ping-payload")
+                b"tests only (gazpacho-test)", b"test-timer fired", b"payload=%s", b"ping-payload",
+                b"--test-plan-once", b"--test-cut-after-mark", b"test-plan ok=", b"test-cut after=")
 
 
 def symbols(path):

@@ -270,6 +270,12 @@ typedef struct {
     uint32_t dust2_height;
     int tip_calls, outputs_calls, tip_after_outputs;
     uint32_t tip_before, tip_later;
+    uint8_t spent[48][34];   /* addresses used and spent: in the history, not among the unspent */
+    int n_spent;
+    uint8_t hist_script[34]; /* its history answered hist_as, hist_left times */
+    gz_chain_result hist_as;
+    int hist_left;
+    int bad_limited, bad_left; /* bad_script answered bad_as only bad_left times */
 } fake_chain;
 
 static gz_chain_result fk_tip(void *ctx, gz_chain_tip *out)
@@ -298,7 +304,13 @@ static gz_chain_result fk_outputs(void *ctx, const uint8_t *script, size_t scrip
         return f->fail_as != GZ_CHAIN_OK ? f->fail_as : GZ_CHAIN_UNREACHABLE;
     }
     if (cap > f->max_cap) f->max_cap = cap;
-    if (f->bad_as != GZ_CHAIN_OK && script_len == 34 && memcmp(f->bad_script, script, 34) == 0) return f->bad_as;
+    if (f->bad_as != GZ_CHAIN_OK && script_len == 34 && memcmp(f->bad_script, script, 34) == 0) {
+        if (!f->bad_limited) return f->bad_as;
+        if (f->bad_left > 0) {
+            f->bad_left--;
+            return f->bad_as;
+        }
+    }
     if (f->dust2_n && script_len == 34 && memcmp(f->dust2_script, script, 34) == 0) {
         if (f->dust2_n > cap) return GZ_CHAIN_TOO_LARGE;
         for (size_t i = 0; i < f->dust2_n; i++) {
@@ -333,7 +345,29 @@ static gz_chain_result fk_outputs(void *ctx, const uint8_t *script, size_t scrip
     return GZ_CHAIN_OK;
 }
 
-static const gz_chain_ops fk_ops = {.tip = fk_tip, .script_outputs = fk_outputs};
+/* Whether an address was ever used: every transaction that paid or spent it. */
+static gz_chain_result fk_history(void *ctx, const uint8_t *script, size_t script_len, gz_script_history *out)
+{
+    fake_chain *f = ctx;
+    memset(out, 0, sizeof *out);
+    if (script_len != 34) return GZ_CHAIN_INVALID_ARG;
+    if (f->hist_left > 0 && memcmp(f->hist_script, script, 34) == 0) {
+        f->hist_left--;
+        return f->hist_as;
+    }
+    for (int i = 0; i < f->n_spent; i++)
+        if (memcmp(f->spent[i], script, 34) == 0) out->confirmed_txs += 2;   /* paid, then spent */
+    if (f->dust_n && memcmp(f->dust_script, script, 34) == 0) out->confirmed_txs += f->dust_n;
+    if (f->dust2_n && memcmp(f->dust2_script, script, 34) == 0) out->confirmed_txs += f->dust2_n;
+    for (int i = 0; i < f->n; i++)
+        if (memcmp(f->script[i], script, 34) == 0) {
+            if (f->out[i].confirmed) out->confirmed_txs++;
+            else out->mempool_txs++;
+        }
+    return GZ_CHAIN_OK;
+}
+
+static const gz_chain_ops fk_ops = {.tip = fk_tip, .script_outputs = fk_outputs, .script_history = fk_history};
 
 static void fk_add(fake_chain *f, const gzt_coin *c, uint32_t height)
 {
@@ -1042,9 +1076,11 @@ static void test_mark_saved_before_use(void)
     gzp_wport_close(&w);
 }
 
-/* Follow-up of the review of PR 91: a change index never sent (its plan
- * refused, or released unsigned) is handed back, so 20 abandoned plans do not
- * push the next change 20 addresses on; the mark is saved once. */
+/* Follow-up of the review of PR 91: a change index that never left the port
+ * (its plan refused inside it) is handed back, so 20 refused plans do not push
+ * the next change 20 addresses on; the mark is saved once. A plan released
+ * unsigned keeps its index: its address was shown to the lobby's members in
+ * the proposal (L-2, review B of PR 93). */
 static void test_unsent_index_handed_back(void)
 {
     gzp_wport_t w;
@@ -1057,15 +1093,15 @@ static void test_unsent_index_handed_back(void)
     open_marked(&w, &ms);
     k = coin(&w, 0, 0, 500000, 0xe2);
     CHECK(gzp_wport_publish(&w, &k, &h, 1, 110) == 0);
-    CHECK(plan(&w, 5000000, tx, &len) == 0);   /* refused: more than the wallet holds */
+    for (int i = 0; i < 20; i++)
+        CHECK(plan(&w, 5000000, tx, &len) == 0);   /* refused: more than the wallet holds */
     CHECK(w.next_change == 0);
-    for (int i = 0; i < 20; i++) {
-        CHECK(plan(&w, 300000, tx, &len) == 1);
-        w.port.release(w.port.ctx, tx, len);   /* never signed */
-    }
     CHECK(plan(&w, 300000, tx, &len) == 1);
     CHECK(w.plans[0].info.change_index == 0);
     CHECK(ms.v == 1 && ms.saves == 1 && w.next_change == 1);
+    w.port.release(w.port.ctx, tx, len);   /* never signed, but shown to the lobby */
+    CHECK(plan(&w, 300000, tx, &len) == 1);
+    CHECK(w.plans[0].info.change_index == 1);
     gzp_wport_close(&w);
 }
 
@@ -1140,6 +1176,254 @@ static void test_wide_scan_without_mark(void)
     gzp_wport_close(&w);
 }
 
+static int coins_json_has(gzp_wport_t *w, const char *want)
+{
+    gzp_wport_coins_t c;
+    char js[512];
+    gzp_wport_coins(w, &c);
+    return gzp_wport_coins_json(&c, js, sizeof js) > 0 && has(js, want);
+}
+
+/* H-1 (review B of PR 93): a wide read asks each change address's history,
+ * spent outputs too. Change 0 to 39 all spent (chained fundings), none left:
+ * the next change is 40, and the mark is kept there, the read settled. */
+static void test_wide_reads_spent_change(void)
+{
+    gzp_wport_t w;
+    mark_store ms;
+    fake_chain f;
+    gz_chain view;
+    memset(&ms, 0, sizeof ms);
+    ms.wide = 1;
+    open_marked(&w, &ms);
+    memset(&f, 0, sizeof f);
+    f.tip_before = f.tip_later = 110;
+    for (uint32_t j = 0; j < 40; j++) {
+        gzt_coin c = coin(&w, 1, j, 1, 0);
+        memcpy(f.spent[f.n_spent++], c.script, 34);
+    }
+    view.ctx = &f;
+    view.ops = &fk_ops;
+    CHECK(gzp_wport_scan_view(&w, &view) == 1);
+    CHECK(w.next_change == 40);
+    CHECK(ms.v == 40 && ms.wv == 0 && w.wide == 0);
+    CHECK(coins_json_has(&w, "\"change_mark\":\"kept\""));
+    gzp_wport_close(&w);
+}
+
+/* H-1: a server that refuses one change address's history, again and again:
+ * the address counts as used, but the read is not settled: no mark kept with
+ * the wide read cleared, the wide read still pending, and no plan. */
+static void test_wide_history_refused(void)
+{
+    gzp_wport_t w;
+    mark_store ms;
+    fake_chain f;
+    gz_chain view;
+    gzt_coin k, b;
+    uint8_t tx[GZ_FUND_MAX_TX];
+    size_t len;
+    memset(&ms, 0, sizeof ms);
+    ms.wide = 1;
+    open_marked(&w, &ms);
+    memset(&f, 0, sizeof f);
+    f.tip_before = f.tip_later = 110;
+    for (uint32_t j = 0; j < 10; j++) {
+        gzt_coin c = coin(&w, 1, j, 1, 0);
+        memcpy(f.spent[f.n_spent++], c.script, 34);
+    }
+    b = coin(&w, 1, 5, 1, 0);
+    memcpy(f.hist_script, b.script, 34);
+    f.hist_as = GZ_CHAIN_REJECTED;
+    f.hist_left = 1000000;
+    k = coin(&w, 0, 0, 500000, 0xe8);
+    fk_add(&f, &k, 100);
+    view.ctx = &f;
+    view.ops = &fk_ops;
+    CHECK(gzp_wport_scan_view(&w, &view) == 0);   /* refused once, twice: asked again */
+    CHECK(gzp_wport_scan_view(&w, &view) == 0);
+    CHECK(gzp_wport_scan_view(&w, &view) == 1);   /* three in a row: left out, counted as used */
+    CHECK(w.next_change >= 10);
+    CHECK(ms.cleared == 0 && w.wide == 1);
+    CHECK(coins_json_has(&w, "\"change_mark\":\"reading\""));
+    CHECK(plan(&w, 100000, tx, &len) == 0);
+    gzp_wport_close(&w);
+}
+
+/* H-1: the servers disagree about an address's history: nothing is published,
+ * the wide read stays pending, and no plan is made even from coins known. */
+static void test_wide_history_disagree(void)
+{
+    gzp_wport_t w;
+    mark_store ms;
+    fake_chain f;
+    gz_chain view;
+    gzt_coin k, b;
+    uint32_t h = 100;
+    uint8_t tx[GZ_FUND_MAX_TX];
+    size_t len;
+    memset(&ms, 0, sizeof ms);
+    ms.wide = 1;
+    open_marked(&w, &ms);
+    memset(&f, 0, sizeof f);
+    f.tip_before = f.tip_later = 110;
+    b = coin(&w, 1, 0, 1, 0);
+    memcpy(f.hist_script, b.script, 34);
+    f.hist_as = GZ_CHAIN_DISAGREE;
+    f.hist_left = 1000000;
+    view.ctx = &f;
+    view.ops = &fk_ops;
+    CHECK(gzp_wport_scan_view(&w, &view) == 0);
+    CHECK(ms.cleared == 0 && w.wide == 1);
+    k = coin(&w, 0, 0, 500000, 0xe9);
+    CHECK(gzp_wport_publish(&w, &k, &h, 1, 110) == 0);
+    CHECK(plan(&w, 100000, tx, &len) == 0);
+    CHECK(w.next_change == 0);
+    gzp_wport_close(&w);
+}
+
+/* M-3 (review B of PR 93; A's M1): a change address left out (more outputs
+ * than the chain port's cap) counts as used. */
+static void test_left_out_change_counts_used(void)
+{
+    gzp_wport_t w;
+    mark_store ms;
+    fake_chain f;
+    gz_chain view;
+    memset(&ms, 0, sizeof ms);
+    open_marked(&w, &ms);
+    dust_view(&w, &f, &view, 1, 3, 1025);
+    CHECK(gzp_wport_scan_view(&w, &view) == 1);
+    CHECK(w.next_change == 4);
+    gzp_wport_close(&w);
+}
+
+/* A's M1: dust past the cap on the last change address, then a restore: the
+ * wide read knows the address was used, so the mark is kept above it. */
+static void test_dust_past_cap_after_restore(void)
+{
+    gzp_wport_t w;
+    mark_store ms;
+    fake_chain f;
+    gz_chain view;
+    memset(&ms, 0, sizeof ms);
+    ms.wide = 1;
+    open_marked(&w, &ms);
+    dust_view(&w, &f, &view, 1, 40, 1025);
+    CHECK(gzp_wport_scan_view(&w, &view) == 1);
+    CHECK(w.next_change == 41);
+    CHECK(ms.v == 41 && ms.wv == 0 && w.wide == 0);
+    gzp_wport_close(&w);
+}
+
+/* M-3: past index 256 too, one refusal is asked again, not left out at once. */
+static void test_refusal_past_256_asked_again(void)
+{
+    gzp_wport_t w;
+    mark_store ms;
+    fake_chain f;
+    gz_chain view;
+    gzt_coin b;
+    memset(&ms, 0, sizeof ms);
+    ms.v = 290;   /* change handed out to 289 */
+    open_marked(&w, &ms);
+    memset(&f, 0, sizeof f);
+    f.tip_before = f.tip_later = 110;
+    b = coin(&w, 1, 300, 1, 0);
+    memcpy(f.bad_script, b.script, 34);
+    f.bad_as = GZ_CHAIN_NOT_FOUND;
+    f.bad_limited = 1;
+    f.bad_left = 1;
+    view.ctx = &f;
+    view.ops = &fk_ops;
+    CHECK(gzp_wport_scan_view(&w, &view) == 0);
+    CHECK(gzp_wport_scan_view(&w, &view) == 1);
+    CHECK(coins_json_has(&w, "\"state\":\"complete\""));
+    gzp_wport_close(&w);
+}
+
+/* M-4 (review B of PR 93): a plan in the journal, adopted after a restart
+ * whose change mark was lost, raises the mark past its change index. */
+static void test_adopt_raises_mark(void)
+{
+    gzp_wport_t a, b;
+    mark_store ma, mb;
+    gzt_coin k;
+    uint32_t h = 100;
+    static uint8_t tx[GZ_FUND_MAX_TX];
+    size_t len;
+    memset(&ma, 0, sizeof ma);
+    memset(&mb, 0, sizeof mb);
+    open_marked(&a, &ma);
+    k = coin(&a, 0, 0, 500000, 0xea);
+    CHECK(gzp_wport_publish(&a, &k, &h, 1, 110) == 0);
+    a.next_change = 50;
+    CHECK(plan(&a, 300000, tx, &len) == 1);
+    CHECK(a.plans[0].info.change_index == 50);
+    gzp_wport_close(&a);
+    open_marked(&b, &mb);
+    CHECK(b.port.adopt(b.port.ctx, tx, len, factory, 300000) == 0);   /* not this run's plan */
+    CHECK(b.next_change == 51 && mb.v == 51);
+    gzp_wport_close(&b);
+}
+
+/* L2 (review A of PR 93): a scan stopped by a failed key derivation keeps the
+ * wide read pending and saves no mark. */
+static void test_failed_derivation_keeps_wide(void)
+{
+    gzp_wport_t w;
+    mark_store ms;
+    fake_chain f;
+    gz_chain view;
+    memset(&ms, 0, sizeof ms);
+    ms.wide = 1;
+    open_marked(&w, &ms);
+    w.wnet = (gzw_network)77;   /* no such network: every derivation fails */
+    memset(&f, 0, sizeof f);
+    f.tip_before = f.tip_later = 110;
+    view.ctx = &f;
+    view.ops = &fk_ops;
+    (void)gzp_wport_scan_view(&w, &view);
+    CHECK(ms.cleared == 0 && w.wide == 1);
+    w.wnet = GZW_NET_SIGNET;
+    gzp_wport_close(&w);
+}
+
+/* M-1 (review B of PR 93): a pending wide read is kept durably at once, and no
+ * plan is made until it is done (a plan would write the file as if it were). */
+static void test_wide_pending_kept_and_plans_refused(void)
+{
+    gzp_wport_t w;
+    mark_store ms;
+    gzt_coin k;
+    uint32_t h = 100;
+    uint8_t tx[GZ_FUND_MAX_TX];
+    size_t len;
+    memset(&ms, 0, sizeof ms);
+    ms.wide = 1;
+    open_marked(&w, &ms);
+    CHECK(ms.saves == 1 && ms.wv == 1);
+    k = coin(&w, 0, 0, 500000, 0xeb);
+    CHECK(gzp_wport_publish(&w, &k, &h, 1, 110) == 0);
+    CHECK(plan(&w, 100000, tx, &len) == 0);
+    CHECK(w.next_change == 0 && ms.saves == 1 && ms.wv == 1);
+    gzp_wport_close(&w);
+}
+
+/* M-2 (review B of PR 93; A's M2): a change.gzm that did not open is read as
+ * missing (wide), and the person is told in status.coins. */
+static void test_not_opened_told(void)
+{
+    gzp_wport_t w;
+    mark_store ms;
+    memset(&ms, 0, sizeof ms);
+    ms.wide = 2;
+    open_marked(&w, &ms);
+    CHECK(w.wide == 1);
+    CHECK(coins_json_has(&w, "\"change_mark\":\"not_opened\""));
+    gzp_wport_close(&w);
+}
+
 int main(void)
 {
     secp = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
@@ -1182,6 +1466,16 @@ int main(void)
     test_sent_index_kept();
     test_no_marks_refused();
     test_wide_scan_without_mark();
+    test_wide_reads_spent_change();
+    test_wide_history_refused();
+    test_wide_history_disagree();
+    test_left_out_change_counts_used();
+    test_dust_past_cap_after_restore();
+    test_refusal_past_256_asked_again();
+    test_adopt_raises_mark();
+    test_failed_derivation_keeps_wide();
+    test_wide_pending_kept_and_plans_refused();
+    test_not_opened_told();
     secp256k1_context_destroy(secp);
     printf("program_wport: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
