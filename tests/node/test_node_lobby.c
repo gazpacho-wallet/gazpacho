@@ -4279,6 +4279,25 @@ static void test_funds_check(void)
 }
 
 /* The early start with no wallet port: no_wallet, nothing started. */
+/* Review A of #55, confirmation of L2: a set-aside of 0 is refused, 400 bad_terms, with no
+ * slot and no batch kept. On the stand-in node (no signing engine, so no max_tree_nodes)
+ * terms with a target above 256 pass the open's fundability check, which looks only up to
+ * 256, and gz_fund_set_aside_sat gives 0 for them: the guard is reached (mutant
+ * set-aside-zero-taken; the stand-in wallet would say "enough" for 0). */
+static void test_set_aside_zero(void)
+{
+    terms_t t;
+    char e[64];
+    w_world(1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    CHECK(!N[0].n->sign_on);
+    make_terms(&t, 300, 3, 3806);                                  /* the last shape stretched to 300 */
+    size_t hb = N[0].n_batches;
+    CHECK(host_open(&t, 0) == 400 && slot(0, &t) == NULL && N[0].n_batches == hb);
+    CHECK(res_text(0, GZ_RESULT_REC_ERROR, e, sizeof e) && !strcmp(e, "bad_terms"));
+    no_errors(1);
+    w_free(1);
+}
+
 static void test_funds_no_wallet_start(void)
 {
     terms_t t;
@@ -4387,6 +4406,7 @@ int main(int argc, char **argv)
     test_index_unique();
     test_gate_closes_with_seat();
     test_funds_check();
+    test_set_aside_zero();
     test_funds_no_wallet_start();
     test_funds_auto_start();
     test_two_lobbies();

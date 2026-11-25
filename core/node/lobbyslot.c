@@ -1933,7 +1933,7 @@ gz_status_t gz_ls_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action
      * ready opens it, and there was none (review A of PR 44, L3); a gate that was open keeps the
      * secret and the digest it had (review A of PR 52, L5). */
     if (refused && opened && s->state == SLOT_OPEN) gate_close(c, s);
-    else if (refused && rebound && s->state == SLOT_OPEN) {
+    else if (refused && rebound && s->state == SLOT_OPEN && s->gate_open) {   /* never behind a closed gate (review A of #55) */
         memcpy(s->gate_secret, old_secret, 32);
         memcpy(s->gate_digest, old_digest, 32);
         s->gate_have = had;
