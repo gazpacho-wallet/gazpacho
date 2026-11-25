@@ -227,7 +227,11 @@ static int w_can_plan(void *ctx, uint64_t amount, uint64_t feerate, uint64_t *ha
      * "not enough" is not known, so the open answers coins_unknown, with the
      * list's state, rather than a funds_short that does not explain itself
      * (L-2, second review of PR 88) */
-    if (r == 0 && w->coin_list.state == GZP_COINS_INCOMPLETE) r = -1;
+    /* only an address left out can hide coins that would cover it; too_many_coins
+     * drops only coins smaller than every one kept, so 0 is exact there (L-3) */
+    if (r == 0 && w->coin_list.state == GZP_COINS_INCOMPLETE && w->coin_list.reason &&
+        strncmp(w->coin_list.reason, "address_", 8) == 0)
+        r = -1;
     pthread_mutex_unlock(&w->mu);
     return r;
 }
@@ -445,6 +449,12 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
             for (size_t i = 0; i < n; i++) {
                 size_t at = nf;
                 if (!outs[i].confirmed) continue;   /* confirmed coins only (review A of PR 56, M5) */
+                if (change == 1 && j + 100 > next_change) next_change = j + 100;   /* never reuse a change index */
+                /* what gzp_wport_publish would drop anyway (above the tip, change
+                 * not yet buried) is left out before the largest are chosen, so it
+                 * cannot push out coins the list keeps (third review of PR 88) */
+                if (outs[i].height == 0 || outs[i].height > tip.height) continue;
+                if (change == 1 && tip.height - outs[i].height + 1 < w->burial) continue;
                 if (nf == GZP_WPORT_COINS) {
                     /* more coins than the list holds: incomplete, not complete
                      * (M-1), and the list keeps the largest, not the first met,
@@ -470,7 +480,6 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
                 c->index = j;
                 memcpy(c->script, o.script_pubkey, 34);
                 total += c->amount;
-                if (change == 1 && j + 100 > next_change) next_change = j + 100;
             }
         }
     if (w->stop) {
