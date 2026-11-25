@@ -174,7 +174,7 @@ Locally (Linux, clang 18):
 
 ### constant time (Debug build)
 
-Not required. The constant-time tests (`signing_ctime`, `signer_ctime`, and `program_keys_ct` once the program's key layer lands) run under memcheck in a Debug build, with no optimisation. Every other job optimises, and optimisation can turn a branch on a secret into straight-line code, so a Release run can pass where the code is not constant time: unoptimised, `a && b` on two secret-dependent results is a branch. Locally: `cmake -B build-debug -DCMAKE_BUILD_TYPE=Debug`, build, then `ctest --test-dir build-debug -R '^(signing_ctime|signer_ctime|program_keys_ct)$'`.
+Not required. The constant-time tests (`signing_ctime` and `signer_ctime`; `program_keys_ct` is added to the list when the program's key layer, #53, merges) run under memcheck in a Debug build, with no optimisation. Every other job optimises, and optimisation can turn a branch on a secret into straight-line code, so a Release run can pass where the code is not constant time: unoptimised, `a && b` on two secret-dependent results is a branch. The job first checks that each expected test is registered exactly once (`ctest -N -R "^name$"`), so a test that silently stopped being registered fails it. Locally: `cmake -B build-debug -DCMAKE_BUILD_TYPE=Debug`, build, then `ctest --test-dir build-debug -R '^(signing_ctime|signer_ctime|program_keys_ct)$'`.
 
 ### signer boundary and signer mutants
 

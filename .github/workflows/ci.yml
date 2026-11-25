@@ -481,9 +481,17 @@ jobs:
       - name: Build
         run: cmake --build build -j
       - name: The constant-time tests under memcheck, unoptimised
-        # program_keys_ct joins when the program's key layer (#53) lands; the
-        # regex names it already, and --no-tests=error still needs the others.
-        run: ctest --test-dir build -R '^(signing_ctime|signer_ctime|program_keys_ct)$' --output-on-failure --no-tests=error
+        # Each expected test must be registered, exactly once: a test that
+        # stopped being registered (valgrind's headers missing, a renamed
+        # target) fails the job instead of passing it unrun. program_keys_ct
+        # joins this list when the program's key layer (#53) merges.
+        run: |
+          tests="signing_ctime signer_ctime"
+          for t in $tests; do
+            n=$(ctest --test-dir build -N -R "^$t\$" | sed -n 's/^Total Tests: *//p')
+            [ "$n" = 1 ] || { echo "::error::$t is registered $n times, not once"; exit 1; }
+          done
+          ctest --test-dir build -R "^($(echo $tests | tr ' ' '|'))\$" --output-on-failure
 
   valgrind:
     name: valgrind
