@@ -9,7 +9,7 @@
 #                  the placeholder's bytes until P4), and the --test-* hooks
 # The release binary's symbols are checked (program_release_build, T12).
 
-set(GZP_SOURCES options.c datadir.c store_journal.c store_unlock.c net.c pchain.c notify.c executor.c testping.c)
+set(GZP_SOURCES options.c datadir.c store_journal.c store_unlock.c net.c pchain.c notify.c executor.c testping.c view.c api.c)
 
 foreach(variant release test)
   if(variant STREQUAL "release")
@@ -33,7 +33,7 @@ foreach(variant release test)
     add_library(${lib} STATIC ${GZP_SOURCES} journal_standin.c store_powercut.c)
   endif()
   target_include_directories(${lib} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-  target_link_libraries(${lib} PUBLIC ${node} ${net} gazpacho_wallet_keys gazpacho_chain gazpacho_journal ${sc} OpenSSL::Crypto)
+  target_link_libraries(${lib} PUBLIC ${node} ${net} gazpacho_wallet_keys gazpacho_chain gazpacho_journal ${sc} gazpacho_api gazpacho_tree_import OpenSSL::Crypto)
   target_compile_options(${lib} PRIVATE ${GZ_NEW_CODE_WARNINGS})
   if(variant STREQUAL "test")
     target_compile_definitions(${lib} PUBLIC GZP_TEST_BUILD=1)
@@ -80,6 +80,14 @@ if(Python3_Interpreter_FOUND)
   set(GZP_T ${CMAKE_SOURCE_DIR}/tests/program)
   # A host and two members as separate processes over the lobby transport on
   # loopback, through their real runners and the journal stand-in.
+  # P5: the local API server in the program's loop, first run to lock through
+  # the API, the event stream, and the release program without the stand-in.
+  add_test(NAME program_api
+    COMMAND ${GZP_PY} ${GZP_T}/api_program.py ${CMAKE_BINARY_DIR})
+  # The API server under load: the network and the API in one poll set, and
+  # clients that never read (review of PR 51).
+  add_test(NAME program_api_limits
+    COMMAND ${GZP_PY} ${GZP_T}/api_limits.py ${CMAKE_BINARY_DIR})
   add_test(NAME program_two_process
     COMMAND ${GZP_PY} ${GZP_T}/two_process.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/two_process)
   # T6: slow and silent clients hold only their own slots.
@@ -96,7 +104,7 @@ if(Python3_Interpreter_FOUND)
   # kind 32767 never delivered.
   add_test(NAME program_release_build
     COMMAND ${GZP_PY} ${GZP_T}/release_build.py $<TARGET_FILE:gazpacho> $<TARGET_FILE:gazpacho-test>
-            ${CMAKE_CURRENT_BINARY_DIR}/release_build)
+            ${CMAKE_CURRENT_BINARY_DIR}/release_build $<TARGET_FILE:test_signer_vectors>)
   # Storage and node failures, the in-process restart (review of PR 27: H1, M5).
   add_test(NAME program_storage_failure
     COMMAND ${GZP_PY} ${GZP_T}/storage_failure.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/storage_failure)
@@ -187,10 +195,28 @@ if(Python3_Interpreter_FOUND)
   if(NOT CMAKE_VERSION VERSION_LESS 3.19)
     file(CHMOD ${CMAKE_CURRENT_BINARY_DIR}/test-passphrase PERMISSIONS OWNER_READ OWNER_WRITE)
   endif()
+  # The multi-process interface test (tests/web/multiprocess.spec.mjs) cannot
+  # stay off once the core emits lobby views: this reads the lobby run's logs,
+  # where the test build prints every view it receives (review of PR 51, M3).
+  set_tests_properties(program_lobby PROPERTIES FIXTURES_SETUP lobby_run)
+  add_test(NAME program_p6a_views
+    COMMAND ${GZP_PY} ${CMAKE_SOURCE_DIR}/tests/web/check_p6a_fixme.py ${CMAKE_SOURCE_DIR} --views ${CMAKE_CURRENT_BINARY_DIR}/lobby)
+  set_tests_properties(program_p6a_views PROPERTIES FIXTURES_REQUIRED lobby_run)
+  # The signing engine in the composite, P4.3: a host and four members sign
+  # a real tree from the terms (one member's chain view makes it refuse);
+  # every process restarted.
+  add_test(NAME program_signing
+    COMMAND ${GZP_PY} ${GZP_T}/signing.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/signing)
+  set_tests_properties(program_signing PROPERTIES TIMEOUT 900)
+  # Slice 1 blocker C1: a member whose partial signatures are out is refused
+  # a leave (409 too_late), and the factory is still funded.
+  add_test(NAME program_partials_hold
+    COMMAND ${GZP_PY} ${GZP_T}/partials_hold.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/partials_hold)
+  set_tests_properties(program_partials_hold PROPERTIES TIMEOUT 600)
   # T14: no core probes and no old names left.
   add_test(NAME program_no_probes
     COMMAND ${GZP_PY} ${GZP_T}/no_probes.py ${CMAKE_SOURCE_DIR})
-  set_tests_properties(program_two_process program_slow_peers program_restore_counter program_networks
+  set_tests_properties(program_api program_api_limits program_two_process program_slow_peers program_restore_counter program_networks
                        program_release_build program_storage_failure program_loop_liveness PROPERTIES TIMEOUT 300)
   # CI runs ctest in parallel (docs/notes/ci.md). These tests pick a port with
   # free_port() (tests/program/gzp_harness.py and two copies of it): it binds
@@ -203,7 +229,7 @@ if(Python3_Interpreter_FOUND)
   # the kernel gave them, so they need no lock.
   set_tests_properties(program_envelope program_links program_loop_liveness program_lobby program_queue_peers
                        program_refusals program_resend_on_connect program_restart_slots program_start_queue
-                       program_two_process
+                       program_two_process program_api program_api_limits
                        PROPERTIES RESOURCE_LOCK gzp_free_port)
   if(GZ_LIVE_TESTS AND TARGET gazpacho_chain_curl)
     # Read-only: the public signet servers' block 0 and tip, the wallet's

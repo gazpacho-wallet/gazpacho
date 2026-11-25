@@ -32,6 +32,7 @@
 
 #include "gazpacho/command.h"
 #include "gazpacho/envelope.h"
+#include "gazpacho/tree_import.h"
 #include "executor.h"
 #include "store_unlock.h"
 #ifdef GZP_TEST_BUILD
@@ -98,13 +99,13 @@ static void port_forget(void *ctx, const uint8_t scope[32])
     gzp_log("key-forget scope=%02x%02x%02x%02x", scope[0], scope[1], scope[2], scope[3]);
 }
 
+/* The secret at (epoch, index), for the signing engine's key hook (core/node
+ * signslot.c), which wipes it when it has made its keypair. */
 static int port_secret(void *ctx, uint32_t epoch, uint32_t index, uint8_t sec32[32])
 {
-    (void)ctx;
-    (void)epoch;
-    (void)index;
-    (void)sec32;
-    return 0;
+    gzp_exec_t *ex = ctx;
+    uint8_t pub[33];
+    return gzp_net_key(ex->net, epoch, index, sec32, pub);
 }
 
 static int port_host_pub(void *ctx, uint8_t pub33[33])
@@ -113,6 +114,23 @@ static int port_host_pub(void *ctx, uint8_t pub33[33])
     if (ex->opt->role != GZP_ROLE_HOST) return 0;
     memcpy(pub33, ex->net->pub, 33);
     return 1;
+}
+
+/* The host's long-term secret: the transport key (index 0 of epoch 0), as
+ * port_sign signs with it, until P8. */
+static int port_host_secret(void *ctx, uint8_t sec32[32])
+{
+    gzp_exec_t *ex = ctx;
+    uint8_t pub[33];
+    if (ex->opt->role != GZP_ROLE_HOST) return 0;
+    return gzp_net_key(ex->net, 0, 0, sec32, pub);
+}
+
+/* The imported builder, for a member's checks (tree_import.h). */
+static int port_tree_import(void *ctx, const void *in, void *out)
+{
+    return gz_tree_import_build((secp256k1_context *)ctx, (const gz_tree_build_in_t *)in, (gz_tree_import_t *)out) ==
+           GZ_TREE_I_OK;
 }
 
 /* ---- helpers ------------------------------------------------------------ */
@@ -640,6 +658,23 @@ static void on_message(void *ctx, const gz_link_t *link, uint16_t kind, const ui
     drain(ex);
 }
 
+/* A command for a call the API holds (contract-v2.md 11): given to the node
+ * as a USER_COMMAND, at once; its outcome comes back as a command-result
+ * NOTIFY. -1 while the node starts or after a fatal error. */
+static int api_command(void *ctx, const uint8_t *tlv, size_t len)
+{
+    gzp_exec_t *ex = ctx;
+    gz_event_t ev;
+    if (ex->starting || ex->fatal || !ex->node) return -1;
+    memset(&ev, 0, sizeof ev);
+    ev.kind = GZ_EVENT_USER_COMMAND;
+    ev.u.user.bytes.data = tlv;
+    ev.u.user.bytes.len = len;
+    deliver(ex, &ev);
+    drain(ex);
+    return 0;
+}
+
 /* ---- user commands ------------------------------------------------------ */
 
 #ifdef GZP_TEST_BUILD
@@ -844,7 +879,7 @@ static int min_timeout(int a, int b)
 static int turn(gzp_exec_t *ex, struct pollfd *fds, size_t cap, uint64_t until_ms)
 {
     uint64_t now = gzp_mono_ms();
-    size_t nfds, nnet;
+    size_t nfds, n_net, n_api, api_at;
     int timeout = -1, t, i;
     if (*ex->stop) return GZP_RUN_STOP;
     if (ex->fatal) return GZP_RUN_RESTART;
@@ -867,8 +902,8 @@ static int turn(gzp_exec_t *ex, struct pollfd *fds, size_t cap, uint64_t until_m
 #ifdef GZP_TEST_BUILD
     if (ex->opt->test_commands && !ex->in_eof) fds[1].fd = 0;
 #endif
-    nnet = gzp_net_pollfds(ex->net, fds + 2, cap - 3, &t, now);
-    nfds = 2 + nnet;
+    n_net = gzp_net_pollfds(ex->net, fds + 2, cap - 3, &t, now);
+    nfds = 2 + n_net;
     /* The chain worker's wake fd: readable when it has events. Not while
      * waiting for a batch to be stored (until_ms): events wait in its queue. */
     if (!until_ms && gzp_chain_fd(ex->chain) >= 0) {
@@ -878,6 +913,11 @@ static int turn(gzp_exec_t *ex, struct pollfd *fds, size_t cap, uint64_t until_m
         nfds++;
     }
     timeout = min_timeout(timeout, t);
+    /* The local API server's descriptors and deadline (contract-v2.md 4; P5). */
+    api_at = nfds;
+    n_api = ex->api ? gzp_api_pollfds(ex->api, fds + api_at, cap - api_at, &t) : 0;
+    if (n_api || t >= 0) timeout = min_timeout(timeout, t);
+    nfds += n_api;
     if (until_ms) {
         timeout = min_timeout(timeout, until_ms > now ? (int)(until_ms - now) : 0);
     } else {
@@ -893,7 +933,10 @@ static int turn(gzp_exec_t *ex, struct pollfd *fds, size_t cap, uint64_t until_m
     }
     if (fds[0].revents || *ex->stop) return GZP_RUN_STOP;
     now = gzp_mono_ms();
-    gzp_net_dispatch(ex->net, fds + 2, nnet, now);
+    gzp_net_dispatch(ex->net, fds + 2, n_net, now);
+    if (ex->api) gzp_api_dispatch(ex->api, fds + api_at, n_api);
+    /* A lock stops the node (unlock.h; local-api.md 4.7): this incarnation ends. */
+    if (ex->api && gzp_api_lock_pending(ex->api)) return GZP_RUN_LOCKED;
 #ifdef GZP_TEST_BUILD
     if (fds[1].revents && !ex->fatal) read_commands(ex);
 #endif
@@ -981,6 +1024,33 @@ static void after_start(gzp_exec_t *ex)
     if (ex->number == 1 && ex->opt->have_connect)
         gzp_log("connect: no engine in this build makes the connection yet (the lobby, P4.2)");
 #endif
+}
+
+int gzp_exec_wait_unlocked(gzp_exec_t *ex)
+{
+    size_t cap = 1 + (ex->api ? gzp_api_max_fds(ex->api) : 0), n;
+    struct pollfd *fds = calloc(cap, sizeof *fds);
+    int t, rc = GZP_RUN_STOP;
+    if (!fds) abort();
+    if (ex->api) gzp_api_node_starting(ex->api);   /* no node: held calls answered, the view emptied */
+    gzp_log("node-stopped-locked incarnation=%llu", (unsigned long long)ex->incarnation);
+    for (;;) {
+        if (*ex->stop) break;
+        if (!ex->api || gzp_api_unlocked(ex->api)) { rc = ex->api ? GZP_RUN_RESTART : GZP_RUN_STOP; break; }
+        fds[0].fd = ex->stop_fd;
+        fds[0].events = POLLIN;
+        fds[0].revents = 0;
+        n = gzp_api_pollfds(ex->api, fds + 1, cap - 1, &t);
+        if (poll(fds, (nfds_t)(1 + n), t) < 0 && errno != EINTR) {
+            gzp_log("poll-failed errno=%d", errno);
+            break;
+        }
+        if (fds[0].revents) break;
+        gzp_api_dispatch(ex->api, fds + 1, n);
+    }
+    free(fds);
+    if (rc == GZP_RUN_RESTART) gzp_log("node-starting-unlocked");
+    return rc;
 }
 
 void gzp_exec_close_storage(gzp_exec_t *ex)
@@ -1110,7 +1180,21 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     cfg.keys.pub = port_pub;
     cfg.keys.secret = port_secret;
     cfg.keys.host_pub = port_host_pub;
+    cfg.keys.host_secret = port_host_secret;
     cfg.keys.ctx = ex;
+    /* The signing engine: the transport's secp256k1 context (its illegal-argument callback reports, never
+     * aborts: main.c), the tree library's crypto provider over it, and the imported builder. */
+    gz_tree_secp_crypto((secp256k1_context *)ex->net->secp, &ex->tree_crypto);
+    cfg.secp = ex->net->secp;
+    cfg.tree_crypto = &ex->tree_crypto;
+    cfg.tree_import = port_tree_import;
+    cfg.tree_import_ctx = (void *)ex->net->secp;
+    /* The engine's memory, the program's for its whole run (node.h): one block, kept across in-process
+     * restarts like the node itself. */
+    if (!ex->sign_mem && !(ex->sign_mem = malloc(gz_node_sign_size()))) abort();
+    cfg.sign_mem = ex->sign_mem;
+    cfg.sign_mem_size = gz_node_sign_size();
+    cfg.tip = (uint32_t)ex->opt->tip;
     cfg.host_funding = GZ_HOST_FUNDING_AUTO;
     cfg.member_signing = (gz_member_signing_t)ex->opt->member_signing;
     cfg.crypto.verify = port_verify;
@@ -1121,6 +1205,7 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
 #ifdef GZP_TEST_BUILD
     cfg.test_sign_outcome = (uint32_t)ex->opt->test_sign_outcome;
     cfg.test_sign_delay_ms = (uint32_t)ex->opt->test_sign_delay_ms;
+    cfg.sign_tick_ms = (uint32_t)ex->opt->test_sign_tick_ms;
     cfg.test_engines = (uint32_t)ex->opt->test_engines;
 #endif
     if (!ex->node && !(ex->node = malloc(gz_node_size()))) abort();
@@ -1132,12 +1217,20 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     }
     gz_action_list_init(&ex->list, ex->lslots, GZP_LIST_SLOTS, ex->lbytes, GZP_LIST_BYTES);
 
-    cap = 3 + gzp_net_max_fds(ex->net);
+    /* the stop pipe, standard input, the chain worker's wake fd, the network, the API server */
+    cap = 3 + gzp_net_max_fds(ex->net) + (ex->api ? gzp_api_max_fds(ex->api) : 0);
     fds = calloc(cap, sizeof *fds);
     if (!fds) abort();
+    gzp_log("poll-set cap=%zu net=%zu api=%zu", cap, gzp_net_max_fds(ex->net), ex->api ? gzp_api_max_fds(ex->api) : 0);
 
     ex->starting = 1;
     ex->delivered = 0;
+    if (ex->api) {
+        /* The view is rebuilt by this start's notices (node rule 7); held calls are answered 503 rebuilding. */
+        gzp_api_node_starting(ex->api);
+        ex->api->command = api_command;
+        ex->api->command_ctx = ex;
+    }
 #ifdef GZP_TEST_BUILD
     /* Set before the start, so that with a held start it comes due during it. */
     if (ex->opt->test_timer_ms)
@@ -1156,6 +1249,7 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
 #endif
     if (rc < 0) start_node(ex);
     ex->starting = 0;
+    if (ex->api) gzp_api_node_started(ex->api);
     if (ex->fatal && gzp_store_poisoned(&ex->store)) rc = GZP_RUN_RESTART; /* turned into POISONED below */
     if (rc < 0 && !ex->fatal) {
         gzp_log("ready incarnation=%llu resent=%u", (unsigned long long)ex->incarnation, ex->resent);

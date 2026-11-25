@@ -79,6 +79,7 @@ static void check_event(void *ctx, const gz_chainw_event *ev) {
     case GZ_CHAINW_SYNCED:
     case GZ_CHAINW_TIP_SYNCED: break;
     case GZ_CHAINW_WATCH_FAILED: must(ev->sources == GZ_CHAIN_TOO_LARGE); break;
+    case GZ_CHAINW_WATCH_PENDING: must(ev->sources == GZ_CHAIN_OK || ev->sources == GZ_CHAIN_TOO_LARGE); break;
     default: must(0);
   }
 }

@@ -12,11 +12,14 @@ CI runs on every pull request and on every push to `main`. All jobs run in paral
 - **Downloads are pinned by hash.** The OpenSSL source for the MSan job is checked against its SHA-256; the handbook's Markdown renderer is installed with `pip --require-hashes` from `tools/handbook-requirements.txt`.
 - **Tests run in parallel.** The gcc, clang and MSan jobs run `ctest -j "$(nproc)"` (4 on GitHub's runners), so they stay inside their limits on a slow runner without raising them. A test that cannot share the machine says so in CMake: the program tests that pick their port with `free_port()` (bind port 0, close, listen on that number later) hold the lock `gzp_free_port` and run one after another (with `program_two_process`, whose later hosts listen again on the number its first host was given); `program_chain_watch` is `RUN_SERIAL` (its wait for the worker's BUSY answer flaked under load); and the wallet break-checks are `RUN_SERIAL` (they build and test with `-j4` themselves). `valgrind_signing` (the build without sanitizers) is `RUN_SERIAL` too: alone it takes about 450 s of its 600 s limit, and beside three other tests it ran out. PR 51's `program_api` and `program_api_limits` pick ports with their own `free_port()` and must join `gzp_free_port` when PR 51 merges. Every other test makes its own folder (`mkdtemp`, or a folder of its own in the build directory) and listens on port 0 with the socket the kernel gave it. A new test that uses a fixed port, a shared folder or the whole machine must get a `RESOURCE_LOCK` or `RUN_SERIAL` too.
 - **Program logs on failure.** When a test fails in the gcc, clang or MSan job, the logs that the program tests' processes write under `build/program` (`*.log`, one per process) are kept as the artifact `program-logs-<job>` for 7 days: `gh run download <run-id> -p 'program-logs-*'`.
+- **The merge queue.** Every workflow that gives a required check also runs on `merge_group`, so the queue gets its results on the merge commit it builds. A step that reads a pull request's context uses the queue's own there: the wallet break-checks compare with `github.event.merge_group.base_sha` instead of the pull request's base. A queue run is never cancelled by a newer push.
 - **Stale runs are cancelled.** A new push to a pull request cancels that pull request's run in progress. Runs on `main` are never cancelled.
 
 ## The jobs
 
 ### build (OFF) and build (ON): gcc, the original job
+
+Sharded so that each runner stays well inside the 30-minute limit: `build (OFF)` runs as three shards (`build (OFF, shard 1)`, `shard 2`, `shard serial`) and `build (ON)` as two. `tools/ctest-shard.py` makes each shard's `ctest -R` list: the tests by name, round robin, with the tests joined by a fixture kept in one shard (ctest adds a fixture's setup test to any run that needs it, so a split fixture ran `program_lobby` twice), and `valgrind_signing` alone in the shard `serial` (it is `RUN_SERIAL`, about 7.5 minutes). Each shard prints and uploads the list it runs, and the job `build shards cover every test once` fails if the union of a build's lists has a test twice or misses one of `ctest -N -LE slow`. The ThreadSanitizer steps and the scale check run in shard 1. The jobs named `build (OFF)` and `build (ON)`, the required checks, pass only if every shard of theirs passed and that check did.
 
 Guards: the whole tree builds with gcc 13 and every CTest test passes, once without sanitizers and once with AddressSanitizer and UndefinedBehaviorSanitizer (`-DGZ_SANITIZE=ON`), except the wallet break-checks (label `slow`, `-LE slow`). The build without sanitizers runs the core and simulator tests a second time under valgrind. Both builds also run the transport's interop test (`-DGZ_INTEROP_PY=ON`, with Ubuntu's `python3-cryptography`): `gz-net` against the independent Python peer in `tests/net/interop/`, over BOLT 8 and over BOLT 1's `init`, ping and pong with factory messages, in both roles. Then the scale check: one small tree and the two upstream defect reproductions.
 
@@ -169,6 +172,48 @@ Locally (Linux, clang 18):
     cmake --build build-fuzz -j
     sh tools/run-fuzz.sh build-fuzz 60
 
+### constant time (Debug build)
+
+Not required. The constant-time tests (`signing_ctime` and `signer_ctime`; `program_keys_ct` is added to the list when the program's key layer, #53, merges) run under memcheck in a Debug build, with no optimisation. Every other job optimises, and optimisation can turn a branch on a secret into straight-line code, so a Release run can pass where the code is not constant time: unoptimised, `a && b` on two secret-dependent results is a branch. The job first checks that each expected test is registered exactly once (`ctest -N -R "^name$"`), so a test that silently stopped being registered fails it. Locally: `cmake -B build-debug -DCMAKE_BUILD_TYPE=Debug`, build, then `ctest --test-dir build-debug -R '^(signing_ctime|signer_ctime|program_keys_ct)$'`.
+
+### signer boundary and signer mutants
+
+Neither job is yet a required check; making them required is the owner's call in the repository settings. Steps S1 and the S4 skeleton of `docs/notes/signer.md` (sections 7 and 9).
+
+`tools/check-signer-boundary.sh` lists every signing or secret-key symbol of `tools/signer-only-symbols.txt` used outside `signer/`:
+- in every file git tracks with one of the endings `.c`, `.h`, `.inc`, `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.S` and `.s` (build output is never tracked, so no folder is left out by name; a tracked `build-*/` folder is scanned);
+- with backslash-newlines spliced first, as the preprocessor does, then comments and strings blanked (a digit separator such as `1'000` is not a quote);
+- with `signer/` and `core/superscalar/` (imported, allowed by name) left out.
+
+It counts the uses per file and compares them with `tools/signer-boundary-allowed.txt`, which may only shrink. CI runs it with `--no-growth`, so a new use or a stale line fails. On a pull request it also runs `--base-allow` against the merge base's copy of the list, so a change cannot add a use together with its own allow-list line. Step S4 empties the list and switches the check to `--fail`.
+
+Some findings are **hard**: they fail in every mode, and no allow list can hold them. They all name the fixed-aux test build of the signer (decision K20) outside `signer/`:
+- `GZ_SG_VECTORS`, `gz_sgv_*` or the marker `gz_sg_vectors_build_never_ship` in code;
+- token pasting onto a `gz_sg` name;
+- an `#include` of a `signer/*.c` or `*.inc` file;
+- a computed `#include` (a macro, not a literal);
+- in a tracked `CMakeLists.txt`, `*.cmake`, `*.yml`, `*.yaml`, `*.sh`, `*.json` or `Dockerfile` (a release recipe or preset included), `GZ_SG_VECTORS` (as a substring, so `-DGZ_SG_VECTORS` counts), `gazpacho_signer_vectors`, or any `signer/*.c` path.
+
+`signer/vectors_guard.cmake` adds two more guards:
+- at configure time, it refuses any target other than `test_signer_vectors` that links that build;
+- the CTest `signer_never_ship` runs `nm` on every program the build makes (test and fuzz programs excepted) and requires the marker to be absent.
+
+**The label `signer-boundary-growth`** lets a pull request grow the allow list or drop a line of the symbol list (`--base-symbols` compares `tools/signer-only-symbols.txt` with the merge base's: a symbol deleted in the same change as a new use of it is growth). Only a maintainer who reviews the signer boundary may set it, never the pull request's author, and the review must say why the new use cannot go through `signer/`. GitHub does not enforce this rule; review does.
+
+**In the merge queue** (`merge_group`), the allow list is compared with the queue's `base_sha`. The label is read through the API from the pull request named in the queue's head ref (`gh-readonly-queue/<branch>/pr-<number>-<sha>`), because the queue event carries no labels; the job has `pull-requests: read` for that. If the ref does not parse or the lookup fails, the queue fails closed: the list may not grow. A pull request that must grow the list and cannot pass the queue merges outside it, after a maintainer of the signer boundary has reviewed it.
+
+`tools/check-tags.py` fails on a `gazpacho/` string in code that `spec/PROTOCOL.md` 8.2 does not register. It runs with `--report` while main still has unregistered strings.
+
+The job fails on:
+- the tools' own tests (`tests/tools/test_check_signer_boundary.py`, `tests/tools/test_check_tags.py`);
+- `tools/signer-vectors.py --check`, the signer's vectors recomputed in pure Python.
+
+`signer mutants` runs `tools/mutate-signer.py` over `signer/tests/mutants.txt`: one mutant per check of the signer and of the two tools. A test must kill each one, or a line `# equivalent NAME: why` must triage it.
+
+The signer's constant-time test, `signer_ctime`, runs in the first valgrind shard, with `storage_ctime` and `signing_ctime`.
+
+Locally: `sh tools/check-signer-boundary.sh`, `python3 -I tools/check-tags.py`.
+
 ## What the second compiler changed in the symbol checks
 
 The first clang runs failed two existing tests on `main`, not because the code changed but because the checks only knew gcc's output:
@@ -184,3 +229,4 @@ The negative tests of both checks (the sneaky object, the five bad libraries) st
 - **A pull request with merge conflicts gets no run.** GitHub runs `pull_request` workflows on the merge of the branch into its base; while the pull request conflicts there is no merge to test, and no run starts, however many commits are pushed. Rebase on `main` to get a result.
 - **Pushes to other branches do not run CI** on their own (the `push` trigger is `main` only); a branch is tested through its pull request.
 - **No Windows or macOS build**, no 32-bit build, no regtest node, no reproducible-build check, no mutation testing (the storage layer's runner, `tools/mutate-storage.py`, runs on the build server; its results are in `docs/notes/storage-crypto.md`).
+- **No job runs the node's mutants.** `tests/node/mutants.txt` (`tools/mutate-node.py`) runs only by hand, so a node mutant that survives, or stops applying after an edit, is seen only when someone runs it. Only `signer/tests/mutants.txt` has a CI job (`signer mutants`). Follow-up: a sharded node-mutants job, as for the signer (review of PR 87).

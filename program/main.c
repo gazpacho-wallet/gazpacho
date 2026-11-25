@@ -34,6 +34,7 @@
 #include "gzp.h"
 #include "net.h"
 #include "notify.h"
+#include "api.h"
 #include "pchain.h"
 #include "store_unlock.h"
 #include "testping.h"
@@ -75,6 +76,7 @@ static gzp_chain_t chain;
 static gzp_testping_t tp;
 static gzp_datadir_t dir;
 static gzp_wallet_t *wallet;
+static gzp_api_t api;          /* the local API server (P5): one per process */
 
 #ifdef GZP_TEST_BUILD
 /* --test-dump-journal: every batch and record of the journal, read only (the
@@ -145,6 +147,11 @@ static int append_batch(const char *hex)
     return rc;
 }
 #endif
+static void on_illegal(const char *msg, void *data)
+{
+    (void)data;
+    gzp_log("secp-illegal-argument %s", msg ? msg : "");
+}
 
 static int key_ok(const uint8_t key[32], void *ctx)
 {
@@ -459,7 +466,7 @@ int main(int argc, char **argv)
     struct sigaction sa;
     char hex[67];
     const uint8_t *chain_hash;
-    int rc, i, restarts = 0, have_net = 0, have_dir = 0, stopped = 0;
+    int rc, i, restarts = 0, have_net = 0, have_dir = 0, stopped = 0, have_api = 0, chain_open = 1;
 
     no_dumps();
 
@@ -595,6 +602,9 @@ int main(int argc, char **argv)
 
     secp = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
     gzp_os_random(rseed, sizeof rseed);
+    /* The signing engine validates every value before the library sees it:
+     * an illegal argument is reported, never an abort (signing.h). */
+    if (secp) secp256k1_context_set_illegal_callback(secp, on_illegal, NULL);
     if (!secp || !secp256k1_context_randomize(secp, rseed)) {
         fprintf(stderr, "gazpacho: cannot set up secp256k1\n");
         rc = GZP_EXIT_FAILED;
@@ -646,10 +656,10 @@ int main(int argc, char **argv)
         gzp_log("member key=%s host-peer=%016llx", hex, (unsigned long long)gzp_peer_id(opt.connect_key));
     }
 
-    /* The local interface: the API server is not wired yet (P5, P6). */
-    if (opt.no_interface) gzp_log("interface off");
-    else gzp_log("interface not-built port=%u", (unsigned)(opt.interface_port ? opt.interface_port
-                                                         : network == GZ_NET_TESTNET4 ? 39736 : 39735));
+    /* The local interface (P5): the API server in the one loop, fed by the
+     * node's notices. It outlives every incarnation, as the transport does. */
+    if ((rc = gzp_api_open(&api, &opt, &dir, network == GZ_NET_TESTNET4 ? "testnet4" : "signet", &chain)) != 0) goto out;
+    have_api = 1;
 
 #ifdef GZP_TEST_BUILD
     gzp_testping_init(&tp, opt.test_pings, opt.test_ping_ms, opt.name, opt.test_engines);
@@ -659,7 +669,11 @@ int main(int argc, char **argv)
     net.single_key = opt.test_engines > 0;
     if (opt.test_commands) fcntl(0, F_SETFL, fcntl(0, F_GETFL) | O_NONBLOCK);
 #endif
-    gzp_notify_lines(&ex.notify);
+    /* NOTIFY goes to the view and the event stream; no output line blocks the
+     * loop any more (program.md, review A N1). The test build also shows them. */
+    ex.notify.emit = gzp_api_notify;
+    ex.notify.ctx = &api;
+    ex.api = &api;
     ex.opt = &opt;
     ex.dir = &dir;
     ex.wallet = wallet;
@@ -685,6 +699,21 @@ int main(int argc, char **argv)
         if (r == GZP_RUN_LIMIT) {
             rc = GZP_EXIT_LIMIT;
             break;
+        }
+        if (r == GZP_RUN_LOCKED) {
+            /* unlock.h: the node stops on lock and starts again on unlock, in a new
+             * incarnation. A locked program answers no host (4.7): every
+             * connection and the listener close meanwhile. Not a restart. */
+            if (gzp_net_reset(&net) != 0) {
+                rc = GZP_EXIT_FAILED;
+                break;
+            }
+            if (gzp_exec_wait_unlocked(&ex) == GZP_RUN_STOP) {
+                rc = 0;
+                stopped = 1;
+                break;
+            }
+            continue;
         }
         if (r == GZP_RUN_POISONED) {
             /* Never start again in this process: it would read back what the
@@ -736,7 +765,16 @@ out:
      * from them, so a reordering shows (review of PR 27, M5). */
     if (stopped) gzp_log("shutdown node-stopped transport=%d storage=%d lock=%d", net.peers != NULL, ex.store_open,
                          dir.lock_fd >= 0);
+    /* The API server goes first (contract-v2.md 4): its listeners close and its
+     * derivation thread is joined, so nothing reads the chain worker after. */
+    if (have_api) {
+        gzp_api_close(&api);
+        have_api = 0;
+    }
+    if (stopped) gzp_log("shutdown api-closed api=%d chain=%d", have_api, chain_open);
     gzp_chain_close(&chain); /* the worker joined: no event after this */
+    chain_open = 0;
+    if (stopped) gzp_log("shutdown chain-closed api=%d chain=%d", have_api, chain_open);
     if (have_net) gzp_net_free(&net);
     if (stopped) gzp_log("shutdown connections-closed transport=%d storage=%d lock=%d", net.peers != NULL,
                          ex.store_open, dir.lock_fd >= 0);

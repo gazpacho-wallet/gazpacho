@@ -8,7 +8,7 @@ apply-no-release ## funding.c ## f->cfg.wallet.release(f->cfg.wallet.ctx, x->tx,
 confirm-broadcasts ## funding.c ## if (x->mode == GZ_HOST_FUNDING_CONFIRM) { ## if (0) {
 cap-tx ## funding.c ## if (x->tx_len > GZ_FUND_MAX_TX || !gz_tx_parse(x->tx, x->tx_len, &info)) return 0;\n    if (info.n_in == 0 || info.n_in > GZ_FUND_MAX_INPUTS || info.n_in != x->n_in) return 0; ## if (!gz_tx_parse(x->tx, x->tx_len, &info)) return 0;
 plan-output-twice ## funding.c ## if (found) return 0; ## (void)0;
-plan-legacy-prev ## funding.c ## if (p->script_len < 4 || ## if (0 &&
+plan-legacy-prev ## funding.c ## if (p->script_len != 34 || p->script[0] != 0x51 || p->script[1] != 0x20)\n            return 0; ## if (0)\n            return 0;
 plan-must-ignored ## funding.c ## return have_must; ## return 1;
 plan-reuse-after-release ## funding.c ## if (old && !in->released && ## if (old &&
 h11-no-must ## funding.c ## use_must = 1; ## use_must = 0;
@@ -127,3 +127,32 @@ g1-member-waits ## funding.c ## if ((v == GZ_C11_ABANDONED || x->failed) && x->s
 g1-host-waits ## funding.c ## if (x->failed && f->tip_known && facts_back(f, x)) return host_abandon(f, x, out);   /* fails closed (G-1) */\n        if (x->rebroadcast) { ## if (x->rebroadcast) {
 g2-hash-ignored ## funding.c ## c->height == f->tip &&\n        memcmp(c->block_hash, f->tip_hash, 32) == 0) ## c->height == f->tip)
 g2-hash-not-kept ## funding.c ## memcpy(f->tip_hash, ev->u.chain.block_hash, 32);   /* G-2 */ ## (void)0;
+# --- follow-ups (review B's third confirmation): a watch told pending
+p-pending-ignored ## funding.c ## if (x->pending) {\n        /* A watch of this factory ## if (0) {\n        /* A watch of this factory
+p-pending-not-set ## funding.c ## x->pending |= which; ## (void)which;
+p-pending-not-cleared ## funding.c ## else x->pending &= ~which; ## else (void)which;
+p-pending-other-tx ## funding.c ## if (c->is_tx && memcmp(c->txid, x->funding.txid, 32) == 0) which |= 1u; ## if (c->is_tx) which |= 1u;
+p-pending-other-op ## funding.c ## if (memcmp(q.txid, c->outpoint.txid, 32) == 0 && q.vout == c->outpoint.vout) which |= 2u << j; ## if (q.vout == c->outpoint.vout) which |= 2u << j;
+p-grace-none ## funding.c ## f->tip > from + GZ_FUND_PENDING_GRACE ## f->tip > from
+p-grace-early ## funding.c ## f->tip > from + GZ_FUND_PENDING_GRACE ## f->tip >= from + GZ_FUND_PENDING_GRACE
+p-grace-not-failed ## funding.c ## x->failed |= x->pending;\n        x->reported |= x->pending; ## x->reported |= x->pending;
+# --- review of PR 72, P-1: the grace counts from when the watch went pending
+p1-grace-from-deadline ## funding.c ## uint32_t from = x->pending_tip > x->deadline ? x->pending_tip : x->deadline; ## uint32_t from = x->deadline;
+p1-grace-from-pending-only ## funding.c ## uint32_t from = x->pending_tip > x->deadline ? x->pending_tip : x->deadline; ## uint32_t from = x->pending_tip;
+p1-pending-tip-not-kept ## funding.c ## if (!x->pending && which) x->pending_tip = f->tip_known ? f->tip : 0; ## (void)0;
+# --- C-1: told pending before any tip
+c1-first-tip-ignored ## funding.c ## if (f->fac[i].used && f->fac[i].pending && f->fac[i].pending_tip == 0) f->fac[i].pending_tip = f->tip; ## (void)0;
+c1-first-tip-any ## funding.c ## if (f->fac[i].used && f->fac[i].pending && f->fac[i].pending_tip == 0) f->fac[i].pending_tip = f->tip; ## if (f->fac[i].used && f->fac[i].pending) f->fac[i].pending_tip = f->tip;
+# --- funds_short (local-api 15.2; review of PR 77, L2)
+fs-no-input-floor ## txsize.c ## uint64_t n = n_coins == 0 ? 1 : ## uint64_t n = n_coins == 0 ? 0 :
+fs-no-input-cap ## txsize.c ## n_coins > GZ_FUND_MAX_INPUTS ? GZ_FUND_MAX_INPUTS : n_coins; ## n_coins;
+fs-no-witness ## txsize.c ## uint64_t wit = 2 + 67 * n; ## uint64_t wit = 0;
+fs-dust-left-out ## txsize.c ## : set_aside_sat + fee + GZ_FUND_CHANGE_DUST; ## : set_aside_sat + fee;
+fs-fee-left-out ## txsize.c ## : set_aside_sat + fee + GZ_FUND_CHANGE_DUST; ## : set_aside_sat + GZ_FUND_CHANGE_DUST;
+fs-sum-not-dry-run ## txsize.c ## return r == 1 ? GZ_FUND_FUNDS_OK : GZ_FUND_FUNDS_SHORT; ## return sat >= need ? GZ_FUND_FUNDS_OK : GZ_FUND_FUNDS_SHORT;
+fs-unknown-enough ## txsize.c ## if (r != 0 && r != 1) return GZ_FUND_FUNDS_UNKNOWN; ## if (r < 0) return GZ_FUND_FUNDS_OK;
+fs-other-answer ## txsize.c ## if (r != 0 && r != 1) return GZ_FUND_FUNDS_UNKNOWN; ## if (r < 0) return GZ_FUND_FUNDS_UNKNOWN;
+fs-no-port-enough ## txsize.c ## if (cfg == NULL || cfg->wallet.can_plan == NULL) return GZ_FUND_FUNDS_UNKNOWN; ## if (cfg == NULL) return GZ_FUND_FUNDS_UNKNOWN;\n    if (cfg->wallet.can_plan == NULL) return GZ_FUND_FUNDS_OK;
+fs-other-rate ## txsize.c ## set_aside_sat, cfg->feerate, &sat, &n); ## set_aside_sat, 1000, &sat, &n);
+plan-any-prevout ## funding.c ## p->script_len != 34 || p->script[0] != 0x51 || p->script[1] != 0x20) ## p->script[1] != p->script_len - 2u)
+plan-any-change ## funding.c ## slen != 34 || scr[0] != 0x51 ||\n        scr[1] != 0x20) ## slen != 34)

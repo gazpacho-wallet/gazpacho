@@ -11,6 +11,7 @@
 #include "node_test.h"
 #include "../lobby/lobby_test.h"
 #include "internal.h"
+#include <secp256k1.h>
 
 #define NN 7                    /* node 0 is the host; 1 to 5 members; 6 a scratch node */
 #define SCRATCH 6
@@ -379,6 +380,46 @@ static void w_node(int n, int ident, gz_member_signing_t signing, uint32_t outco
     h_new_node(h);
 }
 
+/* A node with the signing engine (a secp256k1 context and the engine's memory) and a key port that gives
+ * secrets; its hand-offs still go to the stand-in (`outcome`), so only the key hook and the gate are the
+ * engine's here. */
+static secp256k1_context *TCTX;
+static void *TMEM[4];
+static int w_secret(void *ctx, uint32_t epoch, uint32_t index, uint8_t sec[32])
+{
+    (void)ctx; (void)epoch;
+    memset(sec, (int)(index % 200u) + 1, 32);
+    return 1;
+}
+
+static void w_node_engine(int n, int ident, gz_member_signing_t signing, uint32_t outcome)
+{
+    h_t *h = &N[n];
+    if (!TCTX) TCTX = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
+    if (!TMEM[n]) TMEM[n] = malloc(gz_node_sign_size());
+    h_init(h, ident == 0, 0);
+    IDENT[n] = ident;
+    h->confirm_auto = 0;
+    h->clock = NOW;
+    h->clock_seen = NOW;
+    h->cfg.keys.pub = w_pub;
+    h->cfg.keys.host_pub = w_host_pub;
+    h->cfg.keys.secret = w_secret;
+    h->cfg.keys.ctx = h;
+    h->cfg.crypto.verify = w_verify;
+    h->cfg.crypto.point_ok = w_point;
+    h->cfg.crypto.sign = w_sign;
+    h->cfg.crypto.forget = w_forget;
+    h->cfg.crypto.ctx = h;
+    h->cfg.member_signing = signing;
+    h->cfg.test_sign_outcome = outcome;
+    h->cfg.test_sign_delay_ms = 50;
+    h->cfg.secp = TCTX;
+    h->cfg.sign_mem = TMEM[n];
+    h->cfg.sign_mem_size = gz_node_sign_size();
+    h_new_node(h);
+}
+
 static void w_reset(void)
 {
     for (size_t k = 0; k < NQ; k++) free(Q[k].rec);
@@ -462,6 +503,9 @@ static void make_terms(terms_t *t, uint16_t target, uint16_t minimum, uint32_t p
     memcpy(o.host_key, hk.pub, 33);
     o.target = target;
     o.minimum = minimum;
+    /* T1's last shape (one width-4 level, then the leaf kind) stops at 16 members: past it the same shape
+     * is offered up to the target (terms.md 4: valid for every n, each member's leaf in a binary split) */
+    if (o.n_shapes && target > o.shapes[o.n_shapes - 1].max_members) o.shapes[o.n_shapes - 1].max_members = target;
     o.deadline += plus;
     t->on = gz_terms_encode_outer(&o, t->outer, sizeof t->outer);
     CHECK(t->on > 0);
@@ -1136,6 +1180,127 @@ static void test_gates(void)
     w_free(3);
 }
 
+/* An AT_JOIN ready with the passphrase, carrying the values digest the person saw (record 16). */
+static int ready_seen(int n, const terms_t *t, const uint8_t digest[32])
+{
+    uint8_t u = 1;
+    h_arg_t a[3] = {{12, t->scope, 32}, {14, &u, 1}, {16, digest, 32}};
+    return w_cmd(n, GZ_CMD_LOBBY_READY, a, 3);
+}
+
+/* Review A of PR 52, M3 and L5: the key hook under AT_JOIN. The factory key exists only once the person
+ * readied with the passphrase, and only for the values digest the ready carried; a ready for other
+ * values than the lobby's is refused and opens nothing; a lock closes the gate and the key is gone. The
+ * contribution key (no factory asked) is the lobby's in any case. Kills sg-at-join-any-digest and the
+ * reviewer's a-atjoin-bypass. */
+static void test_at_join_key_hook(void)
+{
+    terms_t t;
+    uint8_t d[32], other[32];
+    secp256k1_keypair f, kc;
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node_engine(1, 1, GZ_MEMBER_SIGNING_AT_JOIN, GZ_TEST_SIGN_UNFINISHED);
+    w_node(2, 2, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node(3, 3, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    for (int n = 0; n <= 3; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 4, 4, 3000);
+    CHECK(host_open(&t, 0) == 200);
+    for (int n = 1; n <= 3; n++) CHECK(member_join(n, &t) == 200);
+    w_run(4000, 100);
+    gz_terms_current_digest(t.current, t.cn, d);
+    memcpy(other, d, 32);
+    other[0] ^= 1;
+    slot_t *s = slot(1, &t);
+    CHECK(s && N[1].n->sign_on && !s->gate_have && member_ready(1, &t) == 0);
+    if (!s) { w_free(3); return; }
+    /* before any ready: no factory key; the contribution key is there */
+    CHECK(gz_sg_keys(N[1].n, t.scope, d, &f, &kc) == 0 && gz_sg_keys(N[1].n, t.scope, NULL, NULL, &kc) == 1);
+    /* a ready for values the lobby does not have: refused, the gate untouched (L5) */
+    CHECK(ready_seen(1, &t, other) == 409 && !s->gate_have && !s->gate_open);
+    /* a passphrase ready without the digest: a bad request */
+    CHECK(scope_cmd(1, GZ_CMD_LOBBY_READY, &t, 1) == 400 && !s->gate_have);
+    /* the ready for the values shown: the gate opens, bound to them */
+    CHECK(ready_seen(1, &t, d) == 200 && s->gate_have && memcmp(s->gate_digest, d, 32) == 0);
+    w_run(1000, 100);
+    CHECK(member_ready(1, &t) == 1);
+    CHECK(gz_sg_keys(N[1].n, t.scope, d, &f, &kc) == 1);
+    CHECK(gz_sg_keys(N[1].n, t.scope, other, &f, &kc) == 0);     /* a proposal for other values: no key */
+    CHECK(gz_sg_keys(N[1].n, t.scope, NULL, &f, &kc) == 0);      /* none named: none */
+    /* another ready, for other values, while the gate is open: refused, and the gate keeps its binding */
+    CHECK(ready_seen(1, &t, other) == 409 && s->gate_have && memcmp(s->gate_digest, d, 32) == 0);
+    CHECK(gz_sg_keys(N[1].n, t.scope, d, &f, &kc) == 1);
+    /* a lock: the gate closes and the key is gone */
+    CHECK(w_cmd(1, GZ_CMD_SIGNING_LOCK, NULL, 0) == 200);
+    w_run(1000, 100);
+    CHECK(!s->gate_have && gz_sg_keys(N[1].n, t.scope, d, &f, &kc) == 0);
+    no_errors(3);
+    w_free(3);
+}
+
+/* Review A of PR 52, M2: with the engine, terms whose target's tree needs more transactions than the
+ * engine signs (GZ_SIGN_MAX_ITEMS) do not open; a node without the engine (the stand-in) has no cap.
+ * T1's width-4 shape offered up to 24 members: 69 transactions at 24 (1 + 4 x 17), past 64; at 8, 23. */
+static void test_tree_cap(void)
+{
+    terms_t t;
+    w_reset();
+    w_node_engine(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    CHECK(w_start(0) == GZ_OK);
+    make_terms(&t, 24, 3, 3000);
+    CHECK(host_open(&t, 0) == 400);
+    make_terms(&t, 8, 3, 3000);
+    CHECK(host_open(&t, 0) == 200);
+    no_errors(0);
+    w_free(0);
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    CHECK(w_start(0) == GZ_OK);
+    make_terms(&t, 24, 3, 3000);
+    CHECK(host_open(&t, 0) == 200);
+    no_errors(0);
+    w_free(0);
+}
+
+/* The setting at run time (open point 46, command 0x0403, P4.3): a locked
+ * member set to AUTO readies; set back to WHEN_UNLOCKED it says unready and
+ * leaves the count; a value out of range is refused and changes nothing. */
+static void test_signing_set(void)
+{
+    terms_t t;
+    uint8_t v;
+    h_arg_t a[1] = {{12, &v, 1}};
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node(1, 1, GZ_MEMBER_SIGNING_WHEN_UNLOCKED, GZ_TEST_SIGN_UNFINISHED);
+    w_node(2, 2, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node(3, 3, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    for (int n = 0; n <= 3; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 4, 4, 3000);
+    CHECK(host_open(&t, 0) == 200);
+    for (int n = 1; n <= 3; n++) CHECK(member_join(n, &t) == 200);
+    w_run(4000, 100);
+    CHECK(member_ready(1, &t) == 0 && host_ready(&t) == 2);
+    v = 3;
+    CHECK(w_cmd(1, GZ_CMD_SIGNING_SET, a, 1) == 400 && N[1].n->cfg.member_signing == GZ_MEMBER_SIGNING_WHEN_UNLOCKED);
+    CHECK(w_cmd(1, GZ_CMD_SIGNING_SET, NULL, 0) == 400);
+    w_run(1000, 100);
+    CHECK(member_ready(1, &t) == 0 && host_ready(&t) == 2);
+    v = GZ_MEMBER_SIGNING_AUTO;
+    CHECK(w_cmd(1, GZ_CMD_SIGNING_SET, a, 1) == 200 && N[1].n->cfg.member_signing == GZ_MEMBER_SIGNING_AUTO);
+    w_run(1000, 100);
+    CHECK(member_ready(1, &t) == 1 && host_ready(&t) == 3);
+    v = GZ_MEMBER_SIGNING_WHEN_UNLOCKED;
+    CHECK(w_cmd(1, GZ_CMD_SIGNING_SET, a, 1) == 200);
+    w_run(1000, 100);
+    CHECK(member_ready(1, &t) == 0 && host_ready(&t) == 2);
+    CHECK(w_cmd(1, GZ_CMD_SIGNING_UNLOCK, NULL, 0) == 200);
+    w_run(1000, 100);
+    CHECK(member_ready(1, &t) == 1 && host_ready(&t) == 3);
+    no_errors(3);
+    w_free(3);
+}
+
 /* ---- 5. the engine rule: a hostile peer, the chain and the person, at random --------- */
 
 static uint64_t RNG = 0x9e3779b97f4a7c15ull;
@@ -1416,7 +1581,10 @@ static void test_left_out(void)
 /* slot_opened with an even field this program does not know (a newer
  * program requires it), or a key index whose pair would wrap: damage, so the
  * start refuses it. An odd unknown field is skipped (review B of PR 44, L3,
- * L4). */
+ * L4). A key index above 0xfffffff0, which allocation never reaches, is
+ * refused too, as a second defence after the sealed journal: near the top
+ * the contribution index would meet the program's reserved indexes and the
+ * factory index wrap (cases 4 and 5; 0xfffffff0 itself still loads, case 6). */
 static void test_node_record_fields(void)
 {
     lt_key_t hk;
@@ -1424,7 +1592,8 @@ static void test_node_record_fields(void)
     whost(&hk);
     w_reset();
     make_terms(&t, 3, 3, 700);
-    for (int k = 0; k < 4; k++) {
+    static const uint32_t index_of[7] = {1, 0xffffffffu, 1, 1, 0xfffffffeu, 0xfffffff1u, 0xfffffff0u};
+    for (int k = 0; k < 7; k++) {
         h_t *x = &N[SCRATCH];
         uint8_t rec[300], v[4];
         size_t at = 0;
@@ -1439,7 +1608,7 @@ static void test_node_record_fields(void)
         gz_rec_put(rec, sizeof rec, &at, 10, (const uint8_t *)ADDR, sizeof ADDR - 1);
         gz_put_u32(v, 0);
         gz_rec_put(rec, sizeof rec, &at, 12, v, 4);
-        gz_put_u32(v, k == 1 ? 0xffffffffu : 1);
+        gz_put_u32(v, index_of[k]);
         gz_rec_put(rec, sizeof rec, &at, 14, v, 4);
         v[0] = 1;
         gz_rec_put(rec, sizeof rec, &at, 22, v, 1);
@@ -1449,8 +1618,12 @@ static void test_node_record_fields(void)
         x->incarnation = 1;
         h_new_node(x);
         st = w_start(SCRATCH);
-        CHECK(k == 1 || k == 2 ? st == GZ_ERR_CORRUPT : st == GZ_OK);
-        if (k == 0 || k == 3) CHECK(gz_route_slot_by_scope(x->n, t.scope) >= 0);
+        if (k == 1 || k == 2 || k == 4 || k == 5) {
+            CHECK(st == GZ_ERR_CORRUPT);   /* the start refuses: no slot is loaded */
+        } else {
+            CHECK(st == GZ_OK);
+            CHECK(gz_route_slot_by_scope(x->n, t.scope) >= 0);
+        }
         ALIVE[SCRATCH] = 0;
         NT[SCRATCH] = 0;
         for (int i = 0; i < 64; i++)
@@ -1483,6 +1656,298 @@ static void test_timer_of_ended_lobby(void)
     w_free(1);
 }
 
+/* Review B of PR 52, M1 and L4: the member's ack-time check judges the round's own leaf depth, also after
+ * a start, which restores nothing a builder left in the slot; and with no tip it says not yet, never no.
+ * Member 1 restarts on its storage; the hook is then asked about a round in its lobby, at the last tip its
+ * true depth acks at, one block later (which depth 0 would still ack), and with no tip. */
+static void test_may_ack_depth(void)
+{
+    terms_t t;
+    gz_tree_params_t prm;
+    gz_tree_conditions_t cond;
+    static gz_sign_round_t r;
+    uint32_t tip = 0, good = 0, bad = 0;
+    uint8_t me = 0;
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node_engine(1, 1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node(2, 2, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node(3, 3, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    for (int n = 0; n <= 3; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 4, 4, 3000);
+    CHECK(host_open(&t, 0) == 200);
+    for (int n = 1; n <= 3; n++) CHECK(member_join(n, &t) == 200);
+    w_run(4000, 100);
+    CHECK(w_restart(1) == GZ_OK);
+    w_run(2000, 100);
+    slot_t *s = slot(1, &t);
+    CHECK(s && N[1].n->sign_on && s->lobby.m.have_terms);
+    if (!s || gz_tree_params(&s->lobby.m.terms, 3, &prm) != GZ_TREE_P_OK) { CHECK(0); w_free(3); return; }
+    for (uint8_t j = 1; j <= 3; j++) if (!me || prm.depth[j - 1] > prm.depth[me - 1]) me = j;
+    CHECK(prm.depth[me - 1] >= 1);
+    memset(&r, 0, sizeof r);
+    memcpy(r.def.outer_digest, t.scope, 32);
+    r.def.n_participants = 4;
+    r.me = me;
+    r.def.end_height = 100000;
+    memset(&cond, 0, sizeof cond);
+    cond.exit = gz_exit_signet();
+    cond.funding_deadline_blocks = 36;
+    cond.end_window = 6;
+    for (uint32_t x = 1; x < r.def.end_height; x++) {
+        if (!gz_tree_may_ack(r.def.end_height, prm.depth[me - 1], x, &cond)) { bad = x; break; }
+        good = x;
+    }
+    CHECK(good && bad == good + 1 && gz_tree_may_ack(r.def.end_height, 0, bad, &cond));
+    N[1].n->tip = good;
+    CHECK(gz_sg_may_ack(N[1].n, &r, &tip) == 1 && tip == good);
+    N[1].n->tip = bad;
+    CHECK(gz_sg_may_ack(N[1].n, &r, &tip) == 0);
+    N[1].n->tip = 0;
+    CHECK(gz_sg_may_ack(N[1].n, &r, &tip) == -1);
+    r.def.outer_digest[0] ^= 1;                                     /* no lobby for it: no */
+    N[1].n->tip = good;
+    CHECK(gz_sg_may_ack(N[1].n, &r, &tip) == 0);
+    no_errors(3);
+    w_free(3);
+}
+
+/* RULE-NODE:ROUTE_HELD (H12, 2.4): a round message for a scope the signing engine still holds (a round
+ * in a slot, or one kept compactly) goes to the engine, also where the lobby does not take it: no slot
+ * for the scope (a lobby ended), or a member's slot that does not take rounds. One it does not hold is
+ * dropped there. The engine's own memory is set by hand, then cleared. */
+static void test_route_held(void)
+{
+    terms_t t;
+    uint8_t other[32];
+    gz_bytes_t none = {NULL, 0};
+    lt_key_t hk;
+    gz_link_t l;
+    rt_t r;
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node_engine(1, 1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node(2, 2, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node(3, 3, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    for (int n = 0; n <= 3; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 4, 4, 3000);
+    CHECK(host_open(&t, 0) == 200);
+    for (int n = 1; n <= 3; n++) CHECK(member_join(n, &t) == 200);
+    w_run(4000, 100);
+    gz_node_t *c = N[1].n;
+    slot_t *s = slot(1, &t);
+    CHECK(s && c->sign_on && c->sign);
+    if (!s || !c->sign) { w_free(3); return; }
+    whost(&hk);
+    l = h_link(hk.pub, hk.pub);
+    memset(other, 0x5c, 32);
+    /* no slot for the scope */
+    CHECK(gz_route_slot_by_scope(c, other) < 0);
+    r = gz_route_message(c, -1, &l, GZ_MSG_KIND_ROUND_FIRST, other, none);
+    CHECK(r.kind == RT_DROP && r.drop == DROP_NO_SLOT);
+    c->sign->kept[0].used = 1;
+    memcpy(c->sign->kept[0].scope, other, 32);
+    r = gz_route_message(c, -1, &l, GZ_MSG_KIND_ROUND_FIRST, other, none);
+    CHECK(r.kind == RT_SIGNING);
+    memset(&c->sign->kept[0], 0, sizeof c->sign->kept[0]);
+    c->sign->rounds[0].state = GZ_SIGN_ROUND_DEAD;
+    memcpy(c->sign->rounds[0].def.outer_digest, other, 32);
+    r = gz_route_message(c, -1, &l, GZ_MSG_KIND_ROUND_FIRST, other, none);
+    CHECK(r.kind == RT_SIGNING);
+    memset(&c->sign->rounds[0], 0, sizeof c->sign->rounds[0]);
+    /* the member's slot, not taking rounds */
+    int was = s->round_ok;
+    s->round_ok = 0;
+    r = gz_route_message(c, -1, &l, GZ_MSG_KIND_ROUND_FIRST, t.scope, none);
+    CHECK(r.kind == RT_DROP && r.drop == DROP_NO_SLOT);
+    c->sign->kept[0].used = 1;
+    memcpy(c->sign->kept[0].scope, t.scope, 32);
+    r = gz_route_message(c, -1, &l, GZ_MSG_KIND_ROUND_FIRST, t.scope, none);
+    CHECK(r.kind == RT_SIGNING);
+    memset(&c->sign->kept[0], 0, sizeof c->sign->kept[0]);
+    s->round_ok = was;
+    no_errors(3);
+    w_free(3);
+}
+
+/* Slice 1 blocker C1 (local-api.md, leave: too_late): once a partial signature of the member's has left,
+ * the person's leave is refused while that round is not resolved, so that the lobby, and with it the
+ * round's ack, is not given up; the slot stays open. The signing engine's memory is set by hand: a round
+ * of the lobby with partial signatures out, in each unresolved state; then an exposure whose round left
+ * memory unresolved (its lobby is not known: refused for every lobby, fail closed). With none of these
+ * the leave goes through. */
+static void test_leave_partials_out(void)
+{
+    terms_t t;
+    static const uint8_t held[] = {GZ_SIGN_ROUND_ACTIVE, GZ_SIGN_ROUND_UNFINISHED, GZ_SIGN_ROUND_COMPLETE};
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node_engine(1, 1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node(2, 2, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node(3, 3, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    for (int n = 0; n <= 3; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 4, 4, 3000);
+    CHECK(host_open(&t, 0) == 200);
+    for (int n = 1; n <= 3; n++) CHECK(member_join(n, &t) == 200);
+    w_run(4000, 100);
+    gz_node_t *c = N[1].n;
+    slot_t *s = slot(1, &t);
+    CHECK(s && c->sign_on && c->sign);
+    if (!s || !c->sign) { w_free(3); return; }
+    gz_sign_round_t *r = &c->sign->rounds[GZ_SIGN_MAX_ROUNDS - 1];
+    CHECK(r->state == GZ_SIGN_ROUND_FREE);
+    for (size_t k = 0; k < sizeof held; k++) {
+        size_t mark = N[1].n_log;
+        memset(r, 0, sizeof *r);
+        r->state = held[k];
+        r->ever_partial = 1;
+        r->id[0] = 0xc1;
+        memcpy(r->def.outer_digest, t.scope, 32);
+        CHECK(scope_cmd(1, GZ_CMD_LOBBY_LEAVE, &t, 0) == 409 && said(1, mark, "too_late"));
+        CHECK(slot(1, &t) == s && !s->lobby.m.ended && !s->lobby.m.left);
+    }
+    memset(r, 0, sizeof *r);
+    /* An unready is not gated (review B of PR 81, B-4): with a round of the lobby out, it is not too_late. */
+    {
+        size_t mark = N[1].n_log;
+        memset(r, 0, sizeof *r);
+        r->state = GZ_SIGN_ROUND_ACTIVE; r->ever_partial = 1; r->id[0] = 0xc1;
+        memcpy(r->def.outer_digest, t.scope, 32);
+        (void)scope_cmd(1, GZ_CMD_LOBBY_UNREADY, &t, 0);
+        CHECK(said(1, mark, "too_late") == 0);
+        memset(r, 0, sizeof *r);
+    }
+    uint8_t other[32];
+    memset(other, 0x6b, 32);
+    size_t n0 = c->sign->n_exposures;
+    CHECK(n0 + 1 < GZ_SIGN_MAX_EXPOSURES);
+    if (n0 + 1 < GZ_SIGN_MAX_EXPOSURES) {
+        gz_sign_exposed_t *x = &c->sign->exposed[n0], *y = &c->sign->exposed[n0 + 1];
+        size_t mark = N[1].n_log;
+        memset(&c->sign->exposures[n0], 0, 2 * sizeof c->sign->exposures[n0]);
+        memset(x, 0, 2 * sizeof *x);
+        /* an exposure whose round left memory, Unfinished, its lobby not known: refused with its own reason */
+        x->round_id[0] = 0xc2;
+        x->state = GZ_SIGN_ROUND_UNFINISHED;
+        c->sign->n_exposures = n0 + 1;
+        CHECK(scope_cmd(1, GZ_CMD_LOBBY_LEAVE, &t, 0) == 409 && said(1, mark, "too_late_unknown_round"));
+        CHECK(slot(1, &t) == s && !s->lobby.m.ended);
+        /* the same round of this lobby (its exposure saved the scope, now from NOW on the keep clock) */
+        mark = N[1].n_log;
+        x->has_scope = 1;
+        memcpy(x->scope, t.scope, 32);
+        x->since_ms = NOW;
+        CHECK(scope_cmd(1, GZ_CMD_LOBBY_LEAVE, &t, 0) == 409 && said(1, mark, "too_late") && !said(1, mark, "unknown"));
+        /* another lobby's round, left memory Complete, refuses nothing here */
+        y->round_id[0] = 0xc4;
+        y->state = GZ_SIGN_ROUND_COMPLETE;
+        y->has_scope = 1;
+        memcpy(y->scope, other, 32);
+        c->sign->n_exposures = n0 + 2;
+        /* the unfinished deadline: a tick before it, the leave still refused; a tick past it, Abandoned */
+        gz_action_list_t l;
+        gz_event_t ev;
+        memset(&ev, 0, sizeof ev);
+        ev.kind = GZ_EVENT_TIMER_FIRED;
+        ev.u.timer.timer_id = 0x5347u;                                 /* the engine's tick */
+        N[1].clock = NOW + 60000;
+        gz_action_list_init(&l, N[1].slots, GZ_NODE_LIST_ACTIONS, N[1].bytes, GZ_NODE_LIST_BYTES);
+        CHECK(gz_sign_handle(c->sign, &ev, &l) == GZ_OK && x->state == GZ_SIGN_ROUND_UNFINISHED);
+        mark = N[1].n_log;
+        CHECK(scope_cmd(1, GZ_CMD_LOBBY_LEAVE, &t, 0) == 409 && said(1, mark, "too_late"));
+        NOW += SG_UNFINISHED_MS + 60000;
+        N[1].clock = NOW;
+        gz_action_list_init(&l, N[1].slots, GZ_NODE_LIST_ACTIONS, N[1].bytes, GZ_NODE_LIST_BYTES);
+        CHECK(gz_sign_handle(c->sign, &ev, &l) == GZ_OK && x->state == GZ_SIGN_ROUND_ABANDONED);
+        /* cleared: the leave goes through, with another lobby's round still out */
+        CHECK(scope_cmd(1, GZ_CMD_LOBBY_LEAVE, &t, 0) == 200);
+        w_run(1000, 100);
+        CHECK(slot(1, &t) == NULL || s->lobby.m.left);
+        memset(x, 0, 2 * sizeof *x);
+        c->sign->n_exposures = n0;
+    }
+    no_errors(3);
+    w_free(3);
+}
+
+/* Review B of PR 81, B-1: a host that takes the member's ack and never funds does not keep the lobby for good.
+ * The member's round is Complete (acked at tip 1000); the tips reach the member's signing engine, and once a tip
+ * is past the ack tip plus C11's funding deadline (B-6: past, not at) the round is Abandoned and the leave goes
+ * through. */
+static void test_leave_after_funding_deadline(void)
+{
+    terms_t t;
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node_engine(1, 1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node(2, 2, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node(3, 3, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    for (int n = 0; n <= 3; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 4, 4, 3000);
+    CHECK(host_open(&t, 0) == 200);
+    for (int n = 1; n <= 3; n++) CHECK(member_join(n, &t) == 200);
+    w_run(4000, 100);
+    gz_node_t *c = N[1].n;
+    slot_t *s = slot(1, &t);
+    CHECK(s && c->sign_on && c->sign && c->sign->cfg.funding_deadline_blocks > 0);
+    if (!s || !c->sign) { w_free(3); return; }
+    uint32_t dl = c->sign->cfg.funding_deadline_blocks;
+    gz_sign_round_t *r = &c->sign->rounds[GZ_SIGN_MAX_ROUNDS - 1];
+    memset(r, 0, sizeof *r);
+    r->state = GZ_SIGN_ROUND_COMPLETE;
+    r->ever_partial = 1;
+    r->ack_tip = 1000;
+    r->id[0] = 0xc5;
+    memcpy(r->def.outer_digest, t.scope, 32);
+    gz_event_t ev;
+    memset(&ev, 0, sizeof ev);
+    ev.kind = GZ_EVENT_CHAIN;
+    ev.u.chain.kind = GZ_CHAIN_NEW_TIP;
+    ev.u.chain.height = 1000 + dl - 1;
+    CHECK(w_event(1, &ev) == GZ_OK);
+    size_t mark = N[1].n_log;
+    CHECK(r->state == GZ_SIGN_ROUND_COMPLETE && scope_cmd(1, GZ_CMD_LOBBY_LEAVE, &t, 0) == 409 && said(1, mark, "too_late"));
+    ev.u.chain.height = 1000 + dl;                                  /* at the deadline: not yet (C11: past it) */
+    CHECK(w_event(1, &ev) == GZ_OK);
+    mark = N[1].n_log;
+    CHECK(r->state == GZ_SIGN_ROUND_COMPLETE && scope_cmd(1, GZ_CMD_LOBBY_LEAVE, &t, 0) == 409 && said(1, mark, "too_late"));
+    ev.u.chain.height = 1000 + dl + 1;
+    CHECK(w_event(1, &ev) == GZ_OK);
+    CHECK(r->state == GZ_SIGN_ROUND_ABANDONED);
+    CHECK(scope_cmd(1, GZ_CMD_LOBBY_LEAVE, &t, 0) == 200);
+    w_run(1000, 100);
+    CHECK(slot(1, &t) == NULL || s->lobby.m.left);
+    memset(r, 0, sizeof *r);
+    no_errors(3);
+    w_free(3);
+}
+
+
+/* The index ceiling at allocation (review of PR 87, L1): a slot never takes a
+ * key index the next start would refuse as damage. Allocation gives
+ * highest_index + 1, so it must stop once highest_index reaches
+ * GZ_LS_KEY_INDEX_MAX: at 0xfffffff0 the next index would be 0xfffffff1.
+ * Both open paths, the host's and the member's; one below, the last index
+ * is still given and loads again after a restart. */
+static void test_index_ceiling(void)
+{
+    terms_t t[4];
+    w_world(1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    for (int i = 0; i < 4; i++) make_terms(&t[i], 3, 3, 1900 + (uint32_t)i);
+    size_t hb = N[0].n_batches, mb = N[1].n_batches;
+    N[0].n->np.highest_index = GZ_LS_KEY_INDEX_MAX;
+    CHECK(host_open(&t[0], 0) == 503 && slot(0, &t[0]) == NULL && N[0].n_batches == hb);
+    N[1].n->np.highest_index = GZ_LS_KEY_INDEX_MAX;
+    CHECK(member_join(1, &t[1]) == 503 && slot(1, &t[1]) == NULL && N[1].n_batches == mb);
+    N[0].n->np.highest_index = GZ_LS_KEY_INDEX_MAX - 1;
+    CHECK(host_open(&t[2], 0) == 200 && slot(0, &t[2]) && slot(0, &t[2])->key_index == GZ_LS_KEY_INDEX_MAX);
+    N[1].n->np.highest_index = GZ_LS_KEY_INDEX_MAX - 1;
+    CHECK(member_join(1, &t[3]) == 200 && slot(1, &t[3]) && slot(1, &t[3])->key_index == GZ_LS_KEY_INDEX_MAX);
+    /* what was given loads again */
+    CHECK(w_restart(0) == GZ_OK && slot(0, &t[2]) && slot(0, &t[2])->key_index == GZ_LS_KEY_INDEX_MAX);
+    CHECK(w_restart(1) == GZ_OK && slot(1, &t[3]) && slot(1, &t[3])->key_index == GZ_LS_KEY_INDEX_MAX);
+    w_free(1);
+}
 int main(int argc, char **argv)
 {
     unsigned long events = argc > 1 ? strtoul(argv[1], NULL, 10) : 20000;
@@ -1492,10 +1957,18 @@ int main(int argc, char **argv)
     test_cancel_and_tombstone();
     test_refusals();
     test_gates();
+    test_signing_set();
+    test_at_join_key_hook();
+    test_tree_cap();
+    test_may_ack_depth();
+    test_route_held();
+    test_leave_partials_out();
+    test_leave_after_funding_deadline();
     test_index();
     test_seat_capacity();
     test_left_out();
     test_node_record_fields();
+    test_index_ceiling();
     test_timer_of_ended_lobby();
     test_gate_refused_ready();
     test_hostile(events, seed);
