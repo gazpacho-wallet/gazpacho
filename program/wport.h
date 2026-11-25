@@ -44,6 +44,8 @@
 #define GZP_WPORT_GAP_MAX 256          /* the most addresses of one chain a scan reads */
 #define GZP_WPORT_CHANGE_WIDE 1000     /* a wide scan reads the change chain at least this far */
 #define GZP_WPORT_CHANGE_MAX 4096      /* the most change addresses a scan reads */
+#define GZP_WPORT_WIDE_GAP 200         /* past GZP_WPORT_CHANGE_WIDE a wide read goes this far past the highest used */
+#define GZP_WPORT_SB_FLOOR (GZP_WPORT_CHANGE_WIDE + GZP_WPORT_WIDE_GAP / 2)   /* spend-backs while a wide read is pending */
 
 /* The change mark (M-3, review of PR 91): the lowest change index never handed
  * out, kept where a restart finds it. load gives it (0 when none was saved)
