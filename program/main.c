@@ -306,7 +306,6 @@ static void check_forged(void)
     static gzp_unlock_job_t job;
     static const char wrong[] = "not this wallet's passphrase at all";
     static const char forged[] = "the passphrase of a forged key file";
-    gzp_unlock_result_t a;
     int st;
     memset(&job, 0, sizeof job);
     job.op = GZP_UNLOCK_OP_CHECK;
@@ -322,9 +321,10 @@ static void check_forged(void)
     job.passphrase = (const uint8_t *)forged;
     job.passphrase_len = sizeof forged - 1;
     st = run_job(&job);
-    memset(&a, 0, sizeof a);
-    gzp_wallet_attempts(wallet, wall_ms(), &a);
-    gzp_log("test-check forged status=%s wrong_in_row=%u", gzp_unlock_status_name(st), a.wrong_in_row);
+    /* the count as the CHECK left it (unlock.h: WRONG carries wrong_in_row).
+     * gzp_wallet_attempts gives it only while the one-second delay runs, so
+     * read after it, past a second's turn, it said 0 (CI of PR 91) */
+    gzp_log("test-check forged status=%s wrong_in_row=%u", gzp_unlock_status_name(st), job.result.wrong_in_row);
     OPENSSL_cleanse(&job, sizeof job);
 }
 #endif
