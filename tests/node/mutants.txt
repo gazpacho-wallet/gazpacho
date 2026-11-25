@@ -170,7 +170,7 @@ address-no-port	core/gazpacho/action.c	    if (colon < 2 || colon == n || n - co
 address-names-taken	core/gazpacho/action.c	        if ((p[i] < '0' || p[i] > '9') && p[i] != '.') return 0;	        if (p[i] == ' ') return 0;
 address-list-unchecked	core/gazpacho/action.c	    if (!gz_connect_address_ok(src->u.connect.address)) return GZ_ERR_ARGUMENT;	    if (!src->u.connect.address.len) return GZ_ERR_ARGUMENT;
 # --- P4.2: a slot's lobby (lobbyslot.c), its records, gates, commands, the index, Closing; the node part's additions
-ls-factory-signs-with-contribution	core/node/lobbyslot.c	return k->sign(k->ctx, 0, s->key_epoch, s->key_index + 1, msg, sig);	return k->sign(k->ctx, 0, s->key_epoch, s->key_index, msg, sig);
+ls-factory-signs	core/node/lobbyslot.c	    return 0;                                         /* RULE-NODE:LS_NO_FACTORY */	    if (which == GZ_LOBBY_KEY_FACTORY) return k->sign(k->ctx, 0, s->key_epoch, s->key_index + 1, msg, sig);\n    return 0;
 ls-gate-auto-closed	core/node/lobbyslot.c	case GZ_MEMBER_SIGNING_AUTO: return 1;	case GZ_MEMBER_SIGNING_AUTO: return 0;
 ls-gate-unlocked-ignored	core/node/lobbyslot.c	case GZ_MEMBER_SIGNING_WHEN_UNLOCKED: return s->node->unlocked;	case GZ_MEMBER_SIGNING_WHEN_UNLOCKED: return 1;
 ls-gate-at-join-open	core/node/lobbyslot.c	        if (!s->gate_open || !s->gate_have) return 0;	        if (!s->gate_have) return 0;
@@ -244,7 +244,10 @@ closing-newcomer-unseated	core/node/nodepart.c	    int seat = s >= 0 || gz_route
 refused-ready-keeps-gate	core/node/lobbyslot.c	    if (refused && opened && s->state == SLOT_OPEN) gate_close(c, s);\n	
 ls-left-out-is-corrupt	core/node/lobbyslot.c	        c->np.skipped_slots++;\n        return GZ_OK;	        c->np.skipped_slots++;\n        return GZ_ERR_CORRUPT;	2
 ls-left-out-place-free	core/node/lobbyslot.c	        memset(&s->lobby, 0, sizeof s->lobby);\n        s->state = SLOT_LEFT_OUT;	        memset(s, 0, sizeof *s);
-ls-left-out-rejoin	core/node/lobbyslot.c	    if (left_out_by_scope(c, scope.data) >= 0) return np_command_result(out, cmd, 503, "no_key"); /* H1 */\n	
+ls-left-out-rejoin	core/node/lobbyslot.c	        if (!c->slots[i].stale) return np_command_result(out, cmd, 503, "no_key"); /* H1 */\n	
+ls-stale-resumed	core/node/composite.c	        if (gz_ls_stale(c, i)) return gz_ls_stale_out(c, i, out);	
+ls-factory-at-init	core/node/lobbyslot.c	    cr.factory_pub = ls_factory_pub;	    cr.factory_pub = NULL; memcpy(mc.factory_key, ck, 33);
+bd5-no-compare	core/node/signslot.c	sg_same(pub, c->slots[slot].lobby.m.factory_key, 33);	1;
 ls-left-out-not-told	core/node/composite.c	        if (c->slots[i].state == SLOT_LEFT_OUT) return gz_ls_left_out_note(c, i, out);\n	
 ls-unknown-field-taken	core/node/lobbyslot.c	        if (!(t & 1) && (t >= 64 || !(known & (1u << (t / 2))))) return 0;\n	
 ls-index-wraps	core/node/lobbyslot.c	 ||\n        gz_get_u32(index.data) > GZ_LS_KEY_INDEX_MAX)	)
