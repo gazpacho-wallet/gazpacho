@@ -368,6 +368,29 @@ gzt_err gzt_funding_spend_back(const secp256k1_context *ctx, const gzw_xprv *mas
                                size_t dest_len, uint64_t fee, const uint8_t aux32[32],
                                uint8_t *out, size_t cap, size_t *len_out);
 
+/* One input of a funding being adopted: the output it spends, and the path
+   of the key that owns it (m/86'/coin'/account'/change/index). */
+typedef struct {
+    uint64_t amount;
+    const uint8_t *script;
+    size_t script_len;
+    uint32_t change;
+    uint32_t index;
+} gzt_adopt_input;
+
+/* A funding this wallet built before a restart, held again from its unsigned
+   bytes (raw, no witness), the outputs its inputs spend, in input order, and
+   its change index (P97-3, review B of PR 97): output 0 pays a P2TR script,
+   output 1, if any, is this wallet's change at change_index; every input's
+   key derives its script. Signed once, as gzt_funding_build does, to know
+   its size and that it can be signed; then gzt_funding_release and
+   gzt_funding_spend_back work on it as on a built one. GZT_ERR_ARG for a bad
+   transaction or inputs, GZT_ERR_SCRIPT for output 0, GZT_ERR_KEY when a
+   script is not this wallet's. On failure *out is wiped. */
+gzt_err gzt_funding_adopt(const secp256k1_context *ctx, const gzw_xprv *master, gzt_network net,
+                          uint32_t account, const uint8_t *raw, size_t len, const gzt_adopt_input *ins,
+                          size_t n_in, uint32_t change_index, const uint8_t aux32[32], gzt_funding *out);
+
 /* Wipe everything. */
 void gzt_funding_wipe(gzt_funding *f);
 

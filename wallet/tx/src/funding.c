@@ -401,3 +401,20 @@ gzt_err gzt_funding_spend_back(const secp256k1_context *ctx, const gzw_xprv *mas
     *len_out = len;
     return GZT_OK;
 }
+
+gzt_err gzt_funding_adopt(const secp256k1_context *ctx, const gzw_xprv *master, gzt_network net,
+                          uint32_t account, const uint8_t *raw, size_t len, const gzt_adopt_input *ins,
+                          size_t n_in, uint32_t change_index, const uint8_t aux32[32], gzt_funding *out) {
+    (void)ctx;
+    (void)master;
+    (void)net;
+    (void)account;
+    (void)raw;
+    (void)len;
+    (void)ins;
+    (void)n_in;
+    (void)change_index;
+    (void)aux32;
+    if (out) gzt_funding_wipe(out);
+    return GZT_ERR_STATE; /* step 1: nothing is adopted */
+}

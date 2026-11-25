@@ -87,6 +87,8 @@ typedef struct {
     uint64_t can_amount, can_feerate;   /* what it was asked */
     int p2wpkh_prev, p2wsh_change;      /* L-1: a plan the engine must refuse */
     int noted;                 /* note_tx calls, and the tag of the last one's output 0 */
+    int adopted_prev;          /* adopt_plan calls, and the last one's number of spent outputs */
+    size_t last_n_prev;
     uint8_t noted_tag;
     unsigned next_plan;
     ft_plan_t plans[FT_PLANS];   /* memory only: a restart forgets them */

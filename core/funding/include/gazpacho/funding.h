@@ -182,6 +182,12 @@ typedef struct {
      * the wallet made and the engine will send again, a spend-back, without
      * witnesses. The wallet notes the change it pays (its change mark). */
     void (*note_tx)(void *ctx, const uint8_t *tx, size_t tx_len);
+    /* Optional (may be NULL: adopt is used then), at a resume: adopt, with the
+     * outputs the plan's inputs spend as the journal keeps them, so the
+     * wallet can hold the plan again and sign it or spend back from it
+     * after a restart (P97-3, review B of PR 97). The same answer as adopt. */
+    int (*adopt_plan)(void *ctx, const uint8_t *tx, size_t tx_len, const gz_fund_prevout_t *prev, size_t n_prev,
+                      const uint8_t script[34], uint64_t amount);
     void *ctx;
 } gz_wallet_port_t;
 
