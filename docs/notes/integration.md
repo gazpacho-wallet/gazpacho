@@ -1,6 +1,6 @@
 # Integration: Slice 1 end to end (P4.6)
 
-Draft 12, 2026-11-25. Branch `integration-slice1`, a draft pull request (#66) that is **never merged**. It merges the
+Draft 13, 2026-11-25. Branch `integration-slice1`, a draft pull request (#66) that is **never merged**. It merges the
 open pull requests of Slice 1 onto `main`, in this order: #51 (`p5-p6-api`), #52 (`composite-p4-3`), #54
 (`s5-s6-program`), #53 (`keys-p8`), #56 (`funding-p45`), #55 (`composite-p6a`). Then it wires them together so
 that one host and three members, each a separate `gazpacho` process, form a factory on the local test chain
@@ -48,6 +48,8 @@ Base: `main` at `4aab237` (#64). Heads merged: #51 `cd98aed`, #52 `91aa062`, #54
 | `main` at `59ee44e` (#52, #59) | `program/CMakeLists.txt`, two hunks | #52 as merged on `main` adds `gazpacho_tree_import` to the link line and registers `program_signing`, which this branch already had: this branch's lines kept |
 | `main` at `5e0c378` (#80, #71, #61, #60, #63) | none | |
 | #81 `b336d38` (`c1-partials-hold`: C1, a leave refused while partial signatures are out; the engine's three-answer `gz_sign_partials_out`; tips to a member's signing engine) | `core/node/composite.c`, `program/CMakeLists.txt`, `tests/node/mutants.txt`, `tests/node/test_node_lobby.c`, `tests/program/partials_hold.py` | The tip case: this branch's funding bracket and #81's tip to the signing engine, both. `program_partials_hold` registered once. Both mutant lists; #55's and #81's node tests, each function closed. `partials_hold.py`: #81's leave case as it is, this branch's pause case added as case 2. `lobbyslot.c`: #55 and #81 each defined `gz_ls_partials_out`; one now, the engine's three answers where the engine runs, #55's stand-in check where none does (test builds); one prototype |
+| #83 `c8dc0c2` (`wport-can-plan`: the wallet port's can_plan, holds, B from `funding_burial`), merged into this branch by the coordinator (`2376fe2`) | none | |
+| #85 (wallet port holds rebuilt from plans; the tip read first and retried) and #88 (`2e3340b`: a dust-safe coin list, coins_unknown, the status's coins state), merged into this branch by the coordinator | none | |
 
 ## 2. The wiring list: every stand-in still used between components
 
@@ -111,7 +113,7 @@ Base: `main` at `4aab237` (#64). Heads merged: #51 `cd98aed`, #52 `91aa062`, #54
 | B15 | **Neither is broken: the test's pace, against the chain worker's.** Intermittent in `program_slice1` case 3 (two of five runs on `e14468c`, two of four on `7ae4b23`): the member in both lobbies (m1) had not judged its factories Live when the check ran. F10's request log rules the look-alike out: all 3,808 requests of the four runs were answered in at most 0.12 s, after at most 0.06 s waiting for its lock, all with 200 but 19 early 404s (the fundings' bytes before their broadcast). The worker is slow, not stuck: when a watched transaction confirms, one pass proves it (`gz_chain_confirm_tx`: status, tip, bytes, block hash, header, block summary, coinbase, its bytes, both Merkle branches: about ten requests) at the client's pace of one request per 250 ms, watch after watch, and looks at the tip only at the start of the next pass. The host and m1 watch both fundings and both spent inputs (four watches, and each funding proved twice, once as a watched transaction and once as a watched input's spender), so that pass lasts about 13 s; a member with one funding and one input, about half that. Both fundings always confirm in one block; with a block every 2 s the two workers then tell no tip for 7 to 9 blocks (their counts go from 1 to 8 or 10 with nothing between, or, when they first see the fundings at 2, from 2 to the end of the case). The case stopped mining once every lobby showed Active, which m1 shows from the host's status, and then checked each process's own Live judgment at once: whether m1 had told its third block by then depended on when its slow pass began. **Fix, F11 (the test, P4.6):** mine until every process shows Active **and** its own funding engine has judged Live, within the same time limit; the checks are unchanged. **To the chain port (`main`), not a correctness bug:** the tip waits for a whole pass of proofs, and a transaction that is both a watched one and a watched input's spender is proved twice. On signet (a block per 10 minutes) the delay is seconds; with many watches it grows with their number | `program_slice1` on the build server, with F10's request log | P4.6 (the test, F11); the pacing to the chain port on `main`, with #56 told (its funding engine judges Live from these tips) |
 | B16 | **Review B of PR 52's M1, reproduced with separate processes.** A member that restarts between saving its partial signatures and the host's round_complete judges its ack with its slot's `own_depth`, which the replayed round never sets (0 after a restart): `gz_tree_may_ack` then allows a tip up to E - 74 instead of E - 16·d - 74. `program_ack_depth` (section 5): restarted at TIP + 5, m1 acks (case 1 passes); restarted at E - 80, past its limit at any real depth, m1 **acks** and saves round_completed (case 2 fails its three checks), so the host would fund a factory whose exit m1 cannot finish in time (C8). `gz_fd_member_acked` takes the same field | `program_ack_depth` on the build server | #52: **fixed** by `aa90174` (the depth from the round and its terms), merged here with F12; `program_ack_depth` passes on the merged head |
 | B17 | **Slice 1 blocker C1, reproduced with separate processes. Fixed with #81 (`b336d38`), both cases: `program_partials_hold` passes on the merged head.** `program_partials_hold` (section 5): m1's partial signatures are out (it drops round_complete). Case 1, the person's leave: answered **200**, not 409 `too_late` (`local-api.md`, leave); m1's slot closes, and after m1 starts again without the drop it never acks and the host never reaches Funding: the factory is abandoned, the funds held until the round's deadline. Case 2, the pause: on `7ebc057` it held (202, the stand-in's partials-out fact); since #55's review A (`397fadb`, the pause by 11.3's table) it answers **200** and leaves the lobby the same way, because the real signing engine's partials-out fact is not wired to the hold (C1 item 1). Both cases red on the merged head: the leave and the pause both abandon a factory the host could still fund | `program_partials_hold` on the build server | #52's owner after #52 merges, with P4.6 (CONCERNS C1: partials-out from the exposure record in every build, fail closed, refuse leave while partials are out, a real `round_abort`); the case stays red until then |
-| B18 | **Not a constant-time regression: the build server's debug build.** `signing_ctime` and `program_keys_ct` failed on the build server only. Same tree, same valgrind (3.26.0 there; CI has 3.22): in a Release build both **pass** (`signing_ctime` 10 of 10 checks, 0 reports; `program_keys_ct` 74 reports, all triaged as public by design), as in every CI job; in the debug build (-O0) each has a report. `signing_ctime`: one, in `make_nonce` (`ok = secp256k1_keypair_sec(...) && secp256k1_musig_nonce_gen(...)`): at -O0 the `&&` branches on `keypair_sec`'s result before the line after it declassifies `ok`; that result depends only on the key's validity, which the code treats as public, so nothing secret leaks, but the declassify comes one branch late and the test holds only when the compiler merges the two. `program_keys_ct`: two, in `secp256k1_eckey_pubkey_serialize` from `seckey_to_pubkey33` (`bip32.c`), a public key's parity: public by design, but at -O0 their stacks do not match the triage list, which knows them by their optimised frames | Release and debug builds of the merged head, valgrind on the build server | #52 (low: declassify `keypair_sec`'s result before the `&&`, so the check holds at any optimisation); #53 (low: triage the public-key serialisation however it is framed, or declassify the public key) |
+| B18 | **Not a constant-time regression: the build server's debug build. Since #71 (`main`), `program_keys_ct` also fails in CI on this branch and on its base, through #71's bip32 declassify hook; #53 brings the fix: expected red until #53 lands.** `signing_ctime` and `program_keys_ct` failed on the build server only. Same tree, same valgrind (3.26.0 there; CI has 3.22): in a Release build both **pass** (`signing_ctime` 10 of 10 checks, 0 reports; `program_keys_ct` 74 reports, all triaged as public by design), as in every CI job; in the debug build (-O0) each has a report. `signing_ctime`: one, in `make_nonce` (`ok = secp256k1_keypair_sec(...) && secp256k1_musig_nonce_gen(...)`): at -O0 the `&&` branches on `keypair_sec`'s result before the line after it declassifies `ok`; that result depends only on the key's validity, which the code treats as public, so nothing secret leaks, but the declassify comes one branch late and the test holds only when the compiler merges the two. `program_keys_ct`: two, in `secp256k1_eckey_pubkey_serialize` from `seckey_to_pubkey33` (`bip32.c`), a public key's parity: public by design, but at -O0 their stacks do not match the triage list, which knows them by their optimised frames | Release and debug builds of the merged head, valgrind on the build server | #52 (low: declassify `keypair_sec`'s result before the `&&`, so the check holds at any optimisation); #53 (low: triage the public-key serialisation however it is framed, or declassify the public key) |
 | B19 | **C1's end: Live must resolve the member's round.** With #81, a member's round with partial signatures out holds its lobby (a leave refused `too_late`, a pause held) until the round is resolved. The funding report resolves it on Live, Dead, Abandoned and funded late (`gz_sign_resolve` from `fd_report`, `core/node/fundslot.c`, F3), so nothing holds after a Live factory. `program_slice1` now checks it (case 1: m1's leave after Live not refused, m2's pause after Live 200; case 3: m1's pause after every restart 200). With the resolve call taken out, five of those checks fail (409 `too_late`, 202 held); with it, all pass. The slot stays open after Live, so a leave there reaches the partials check | `program_slice1` on the build server, with and without the call | P4.6 (F3 holds it until the composite's funding wiring is on `main`) |
 | B20 | `program_chain_watch` fails cases 4 and 9 on the build server ("the worker answered BUSY", "the broadcast held behind watches"): #69's fix (the stub holds the worker's request until the watches are sent) was reviewed but never merged, so neither `main` nor this branch has it. A test timing assumption, not a worker race. #69 merged with `main` on the build server: 10 of 10 runs pass under the server's load | `program_chain_watch` (`ctest-u37`), and #69 looped | #69, once merged |
 
@@ -138,7 +140,7 @@ on 127.0.0.1 at a free port, `-listen=0`, stopped at the end) and `tools/esplora
 Not yet in it, from `composite-node.md` P4.6: `program_slice1_signet` (opt in, `GZ_LIVE_TESTS`, the test coins), and
 an AT_JOIN member (it waits for W4). Results on the build server (Core 29.1): section 6.
 
-Four more program tests from this branch:
+Five more program tests from this branch:
 - `tests/program/ack_depth.py`, CTest `program_ack_depth` (no chain, a fixed tip): one host and three AUTO members
   on `program_signing`'s terms. m1 stops once the batch holding its partial signatures is durable
   (`--test-crash-after-record` round_signed) and starts again on its folder with another tip. Case 1 at TIP + 5:
@@ -155,6 +157,12 @@ Four more program tests from this branch:
   drop: it must ack, and the host reach Funding. B17 (CONCERNS C1).
 - `tests/program/keys_setting.py`, CTest `program_keys_setting` (no chain, a fixed tip, real signing): m1 saves the
   other signing setting and restarts with the same option; the key routing must follow the setting in force. F13.
+- `tests/program/sweep.py`, CTest `program_sweep` (regtest): a host and three AUTO members fund a factory and it goes
+  Live; every process stops; the host's folder is copied for each run of `gazpacho-test --test-sweep HEIGHT`. Every
+  timeout spend is refused before its height by the tool and, built anyway (`--test-sweep-force`), by the node
+  (non-final); an output with an owed member below is refused (`--test-owed`); at the heights the root kickoff and
+  the spends are mined and every satoshi is accounted for; no other tree transaction appears and each root output
+  is spent by the host's spend only. Section 9.
 
 ## 6. Results on the build server
 
@@ -177,6 +185,7 @@ branch's tree with F1 to F6 and the wiring, its chain worker polling the tip eve
 | `program_slice1_signet` on signet, head `a540267` | **PASS** (section 8): funded, buried in about 30 minutes, Live and Active on the host and every member, each by its own chain view |
 | Head `754cee7` (`main` `59ee44e` with #52 and #59, F15), one test at a time | 115 of 121 pass; `program_signing` green (F15). Red: `program_api`, `program_release_build` (B3), `program_p6a_views` (B8), `program_partials_hold` (B17, before #81), `program_derived_keys` (B1, #53 not on `main`), `program_chain_watch` (B20) |
 | After `main` `5e0c378` and #81 `b336d38` | `program_partials_hold` **passes, both cases** (the leave refused 409 `too_late`, the pause held 202; then the member acks and the host reaches Funding). `node`, `node_lobby`, `node_api_fuzz`, `signing_wb`, `program_lobby` pass; `program_slice1` passes with B19's new checks |
+| Head `2e3340b` (#85, #88 on top of the sweep) | `program_sweep` passes again, every check (section 9). The suite one test at a time: running when this draft was pushed, in the next draft |
 
 ## 7. CI on this branch
 
@@ -243,3 +252,31 @@ server, each a `gazpacho-test` process with `--network signet`.
   timeout path and sweeps its outputs, from the signed tree kept in its folder on the build server, which stays
   until then; a cooperative close is not built yet. The members are owed only their 10,000-sat channels in the tree.
   Recorded in the funds record.
+
+## 9. The host's timeout sweep (Slice 1, INTERIM)
+
+Under the INTERIM spend rules that apply to Slice 1 (`exit.md` 3.2, rule H15), the funding output has no timeout:
+the host publishes the pre-signed root kickoff (every signer's key path), and each output of the root kickoff is
+the host's alone from its timeout height, through the leaf `<cltv> OP_CLTV OP_DROP <host key> OP_CHECKSIG`; the
+host may take an output only if no member below it is owed anything. In Slice 1 the host funds everything and no
+channel is open, so the whole factory comes back to it. This is how run 1's factory on signet is recovered.
+
+- **The tool** (`program/sweep.c`, test build: `gazpacho-test --test-sweep HEIGHT`; `--test-sweep-to HEX`,
+  `--test-owed N`, `--test-sweep-force`). It walks the host folder's sealed journal read-only
+  (`gzp_journal_walk`), rebuilds each funded round's tree from the round proposal (0x00020004) and the lobby's terms
+  (`lobby_opened`), checks every final key-path signature of `round_signed` (0x00020008) against the rebuilt
+  sighash, and prints the signed tree, root kickoff first. Through the import (public keys only) it builds the
+  host's timeout spends of the root kickoff's outputs at the tree's 0.1 sat/vB, to the first receive address,
+  signed with the host's per-lobby factory key (found by its public key among the first epochs and indices). It
+  refuses a spend below its height and an output with an owed member below; it never broadcasts. Run it on a copy of
+  the folder: opening a journal can write.
+- **Regtest** (`program_sweep`, passes): factory 802,811 sat, two root outputs at lock time 277. At tip 109 both
+  refused by the tool; forced, both refused by the node as non-final, also with the root kickoff confirmed. With
+  member 1 owed, its output refused and only the other built. At the heights both accepted and mined to the host's
+  first address: 802,811 = root fee 17 + anchor 240 + the spends' fees 26 + 802,528 to the host, every fee at
+  0.1 sat/vB. No other tree transaction on chain; each root output spent by the host's spend only. The root
+  kickoff's 240-sat anchor stays for anyone (below dust alone).
+- **Signet, run 1** (a fresh copy of the untouched backup, print only): the host's factory key at epoch 0, index 4;
+  round `46f2d8d6…`, 8 final signatures verified; root kickoff `dbf7f36e…` (167 vB); both root outputs refused at
+  tip 332423, lock time 332548. From then on: the root kickoff, then the two spends, about 82,528 sat back to the
+  program host's first address. **The broadcast waits for the owner's OK.**
