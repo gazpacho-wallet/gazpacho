@@ -447,6 +447,9 @@ static void test_the_fence(void)
     h_confirm_all(&h);
     CHECK(start_step(&h, &more) == GZ_OK && h.list.count == 1 && h.list.slots[0].kind == GZ_ACTION_NOTIFY);
     h_execute(&h, &h.list);
+    CHECK(start_step(&h, &more) == GZ_OK && h.list.count == 1 && h.list.slots[0].kind == GZ_ACTION_NOTIFY &&
+          h.list.slots[0].u.notify.code == GZ_NOTIFY_VIEW(GZ_VIEW_STATUS)); /* the status object (rule 7, P6a) */
+    h_execute(&h, &h.list);
     CHECK(start_step(&h, &more) == GZ_OK && more == 0 && h.list.count == 0);
     CHECK_NO_NODE_ERROR(&h);
     h_free(&h);
@@ -483,6 +486,9 @@ static void test_restore_batch_alone(void)
     h_confirm_all(&h);
     /* The next step: the view, not in the restore batch's list. */
     CHECK(start_step(&h, &more) == GZ_OK && h.list.count == 1 && h.list.slots[0].kind == GZ_ACTION_NOTIFY);
+    h_execute(&h, &h.list);
+    CHECK(start_step(&h, &more) == GZ_OK && h.list.count == 1 && h.list.slots[0].kind == GZ_ACTION_NOTIFY &&
+          h.list.slots[0].u.notify.code == GZ_NOTIFY_VIEW(GZ_VIEW_STATUS)); /* the status object (rule 7, P6a) */
     h_execute(&h, &h.list);
     CHECK(start_step(&h, &more) == GZ_OK && more == 0);
     /* An empty journal restored: the newest batch's incarnation is 0. */

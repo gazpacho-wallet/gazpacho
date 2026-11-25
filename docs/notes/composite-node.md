@@ -532,7 +532,7 @@ Each member re-checks the new set in its own builder: the member count against i
 **Phase 2, resume.** In this order, each over one or more calls:
 
 1. **Restore batch.** With the restore marker, the node part appends `key_epoch`, `restored`, `guard` alone (node rule 5).
-2. **Pause** (`local-api.md` 11.3). A saved pause is applied before any CONNECT: a member slot that 11.3 makes leave gets its `leave`; nothing new is joined or readied; a held round runs to its end. A paused host runs no ready check.
+2. **Pause** (`local-api.md` 11.3). A saved pause is applied before any CONNECT: a member slot that 11.3 makes leave gets its `leave`; nothing new is joined or readied; a held round runs to its end. A paused host runs no ready check. The saved conditions (`local-api.md` 13.2) are applied after the same steps: a member lobby they fit worse than its own copy is left, reason 1, once its link is up, unless its round is on (`view-objects.md` section 6).
 3. **Node.** Re-binds nothing (connections come after the start). Re-arms its idle timer.
 4. **Signing.** `gz_sign_resume`: a member answers per item (S2); a host fails every unfinished attempt (H13). Each outcome goes through 9.3's map to the slot's lobby (loaded, not yet resumed), in a bracket.
 5. **Repairs.** For each repair marked in phase 1, the outcome is given again to the lobby through the idempotent `round_result`, in a bracket of its own.
@@ -731,7 +731,7 @@ One host process with two lobbies at once, three members, one of them in both lo
 What the code of P4.2 does where this note left room, and where it differs. Each line is a decision to confirm or overrule.
 
 - **Timer budgets** (T-P42-6). Every engine is held to its own budget of timers set at once, as a slot's engine was: the node part 3 (the idle timer, the continuation timer, and in test builds the signing stand-in's), a test engine 4, a slot's lobby 6, the stand-in 6. An engine that sets one more broke its own cap: `GZ_ERR_BUG`. The node part reads `lobby_ended` (for the index of ended lobbies).
-- **Commands.** `node.h` lists them: 0x0101 to 0x0108 for the lobby (open, join, ready, unready, leave, set values, remove, cancel), each naming its lobby by scope; 0x0401 and 0x0402 unlock and lock signing. "Ready" given with the passphrase carries a flag, which opens that lobby's gate (AT_JOIN).
+- **Commands.** `node.h` lists them: 0x0101 to 0x0109 for the lobby (open, join, ready, unready, leave, set values, remove, cancel, and the host's early start, `view-objects.md` section 6), each naming its lobby by scope; 0x0401 and 0x0402 unlock and lock signing. "Ready" given with the passphrase carries a flag, which opens that lobby's gate (AT_JOIN).
 - **Signatures.** The lobbies sign and verify through `gz_node_crypto_t` in the node's configuration, which the program implements over its key port; the core still calls nothing outside itself. Its `forget(scope)` is the key port's `forget` of 12.2.
 - **The release build hosts and joins nothing until P4.3.** `LOBBY_OPEN` and `LOBBY_JOIN` are answered 503 `signing_unavailable` unless the node is built with the test engines (where the signing stand-in is behind the hand-off). A release node still loads and runs lobbies found in storage; it cannot open one.
 - **The signing stand-in** (test builds, `core/node/lobbyslot.c`): `begin`, `cancel` and `member_left` of `lobby_handoff.h`; it saves a record when a round begins and one when it ends (area 0x7e5a), reports the outcome set by `--test-sign-outcome` after `--test-sign-delay-ms`, ignores a finished check (rule 3), and at a start fails every attempt it finds unfinished before the lobbies resume (H13), on both roles.
@@ -748,6 +748,21 @@ What the code of P4.2 does where this note left room, and where it differs. Each
 - **A member whose ready never became durable** (a crash, a failed save) readies when the host's terms come again after its restart, and a member whose host lost its seat sends its join again.
 - **Stand-in keys.** Until P8 the program derives each (epoch, index) from the transport key by a hash; with test engines (`--test-engines` above 0) every index is the transport key, as before.
 - **`program_lobby`** runs cases 1 to 3, 5 to 7, 9 and 10 of the list above. Case 4 (a rejoin with the same contribution key, B1) cannot be made through the composite, which never uses a key pair twice; the engine's own tests keep it. Case 8 (a raw client; seventeen silent connections) is at the node level (`tests/node/test_node_conns.c`, `tests/lobby`). The twenty restarts of case 7 are at the node level (`tests/node/test_node_lobby.c`).
+
+### P6a as built (the view objects and the API engine)
+
+- **The view** (`core/node/view.c`).
+  - Kinds 1 `status`, 2 `lobby`, 3 `host_lobby` and 7 `attention`. Their fields are in `core/gazpacho/include/gazpacho/view.h`, and `docs/notes/view-objects.md` maps each to `local-api.md`.
+  - **When an object is emitted.** After every step of a slot, its object is emitted if its fields changed, behind the step's saves (rule 8). Every object is emitted at each start (resume step 9, rule 7), over several calls: the host's ended lobbies 64 at a time, then one slot a call, then the status.
+  - **Versions.** The incarnation in the high 32 bits, so that a start's objects are newer than anything released before.
+  - **Ended lobbies.** A lobby's last object is emitted before its slot is freed. A host's ended lobbies come back at a start from the index; a member's do not (no index).
+- **Local ids.** `lob_` and 16 hex digits, random and mixed with the slot serial. Record `local_ids` goes in the slot's first batch.
+- **The API engine** (`core/node/api.c`, area 0x000d).
+  - **Request ids.** A command with a digest is an API request. Before it runs, a replay is answered from the saved status, and an id bound to another request answers `409 request_id_reused`. After it runs, its `request_id` record goes right after its first save (one batch), before its result notice. A request that saved nothing keeps no id. Ids are kept by 7.4's rule (the object ended and 30 days passed) on a clock that never goes back: each lobby has a share of 64, with 4 more for a `leave`, and a call over its lobby's share answers `503 node_busy`; ids with no object are the newest 32 in a ring.
+  - **Pause.** Saved first. By 11.3's table: a member's lobby whose round has partial signatures out is held (`202`, held for signing) until that round ends, then the pause is saved `on`; Awaiting funding and Live are unchanged; every other lobby, joined or joining, is left, after a `round_abort` where its round had begun. At every start each member lobby is dealt with after its resume, once its link is up. `join` and `ready` answer `409 paused`. A host runs no check while paused and cancels at the deadline with reason 2, through a new host port `paused`. Partial signatures are the signing engine's fact (P4.3); until then none in a release build, and the stand-in's `GZ_TEST_SIGN_PARTIALS` in tests.
+  - **`member_signing`.** Saved with a version, and in force from the next start; `gz_node_member_signing` gives the program the value in force, for its key routing. Widening to `auto` needs an API request and the echo; `when_unlocked` is `501`.
+- **In the lobby engine.** A host seat keeps a refusal (an `unready` or `leave` with reason 1) and its stage, until it readies or joins again. It is memory only: activity entries are P6b.
+- **What P6a does not give.** The member's counts, the round states (P4.3), funding (P4.5), activity entries (P6b), and the values of a host-side refusal (24.2 item 33). Their numbers are reserved in `view.h`.
 
 ### P4.3, `program_signing`
 

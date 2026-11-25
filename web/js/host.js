@@ -103,7 +103,7 @@
               ["Chain fee, about", u.sats(p.chain_fee_estimate_sat)],
               ["On chain and free now", u.sats(p.wallet_free_sat)]
             ]), ui.dates((p.dates || []).concat(p.host_deadlines || []))),
-            ui.terms(p.as_members_see_it, "As members will see it"),
+            p.as_members_see_it ? ui.terms(p.as_members_see_it, "As members will see it") : null,
             p.can_open ? ui.notice("ok", "These terms can be opened.") : h("div", { class: "notice warn", id: "cannot-open" }, h("b", {}, "This lobby cannot be opened yet."), cannot)]);
           open.disabled = !p.can_open;
         }, function (e) {
@@ -145,7 +145,7 @@
           gz.app.refreshStatus(false);
           gz.app.go("/host/lobby/" + lobby.id);
         }, function (e) {
-          if (e.code !== "node_busy" && e.code !== "unreachable" && e.code !== "node_stopped" && e.code !== "cancelled") delete openRid[snap.preview.draft_digest];
+          if (e.code !== "node_busy" && e.code !== "view_pending" && e.code !== "request_in_progress" && e.code !== "unreachable" && e.code !== "node_stopped" && e.code !== "cancelled") delete openRid[snap.preview.draft_digest];
           u.add(msg, ui.error(e));
           if (e.code === "draft_changed" || e.code === "confirm_mismatch") preview();
         });

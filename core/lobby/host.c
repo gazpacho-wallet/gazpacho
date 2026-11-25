@@ -281,6 +281,9 @@ static gz_status_t ready_check(gz_lobby_host_t *h, gz_action_list_t *out)
     gz_lr_t w;
     uint16_t i;
     h->rule_dirty = 0;
+    /* A refusal is shown until the lobby's next attempt (local-api.md 15.3,
+     * decision K21): this check is that attempt. */
+    for (i = 0; i < h->n_seats; i++) h->seats[i].refused = 0;
     h->ports.random.fill(h->ports.random.ctx, GZ_RANDOM_ORDINARY, h->check_id, 32);
     gz_lobby_enc_start(&e, h->check_msg, sizeof h->check_msg, GZ_KIND_READY_CHECK, h->scope);
     gz_lobby_enc_record(&e, 2, h->check_id, 32);
@@ -327,9 +330,24 @@ static gz_status_t apply_rule(gz_lobby_host_t *h, int at_deadline, gz_action_lis
     if (!at_deadline && h->check_failed && h->seat_epoch == h->failed_epoch) return GZ_OK;
     counts(h, &j, &r, &rc);
     rule = gz_lobby_start_rule(h->terms.target, h->terms.minimum, h->terms.deadline, now_ms(h) / 1000, rc);
+    /* Paused (local-api.md 11.3): no ready check; at the deadline the lobby
+     * is cancelled, the host's choice. */
+    if (h->cfg.paused && h->cfg.paused(h->cfg.seat_ctx))
+        return now_ms(h) / 1000 >= h->terms.deadline ? end_lobby(h, 2, out) : GZ_OK;
+    /* The host's funds, as at its own early start (review B of #55, M-1): a
+     * start the wallet cannot fund waits Open; rule_dirty stays, so the next
+     * seat event or a recheck asks again. */
+    if (rule == GZ_RULE_CHECK && h->cfg.funds_ok && !h->cfg.funds_ok(h->cfg.seat_ctx)) return GZ_OK;
     if (rule == GZ_RULE_CHECK) return ready_check(h, out);
     if (rule == GZ_RULE_CANCEL) return end_lobby(h, 1, out);
     return GZ_OK;
+}
+
+gz_status_t gz_lobby_host_pause_changed(gz_lobby_host_t *h, gz_action_list_t *out)
+{
+    if (!h || !out) return GZ_ERR_ARGUMENT;
+    h->rule_dirty = 1;
+    return apply_rule(h, 0, out);
 }
 
 /* The chosen seats, in order of joining, to the signing engine. */
@@ -642,6 +660,7 @@ static gz_status_t on_join(gz_lobby_host_t *h, gz_lobby_conn_t *c, const gz_lobb
     s->start_len = 0;
     s->chosen = 0;
     s->locked = 0;
+    s->refused = 0;
     s->join_seq = ++h->next_seq;
     c->joins++;
     h->created++;
@@ -681,6 +700,7 @@ static gz_status_t on_ready(gz_lobby_host_t *h, gz_lobby_conn_t *c, const gz_lob
             else {
                 if (free_pair) s->free_window = h->window_no + 1;
                 s->locked = 0;
+                s->refused = 0;
             }
             TRY(st);
         }
@@ -713,6 +733,10 @@ static gz_status_t on_unready_leave(gz_lobby_host_t *h, gz_lobby_conn_t *c, cons
             TRY(h->signing.member_left(h->signing.ctx, h->scope, s->ckey, out));
     }
     if (s && locked) s->locked = 1;
+    if (s && m->has_reason && m->reason == 1) {   /* its own conditions: a refusal (15.3) */
+        s->refused = m->reason;
+        s->refused_stage = h->state == GZ_LOBBY_OPEN ? 1 : h->state == GZ_LOBBY_READY_CHECK ? 2 : 3; /* 15.3's stage */
+    }
     TRY(status(h, c, out));
     return broadcast(h, out);
 }
@@ -1067,6 +1091,26 @@ gz_status_t gz_lobby_host_cancel(gz_lobby_host_t *h, uint16_t reason, gz_action_
     if (!h || !out || reason < 1 || reason > 3) return GZ_ERR_ARGUMENT;
     if (h->state < GZ_LOBBY_OPEN || h->state > GZ_LOBBY_SIGNING) return gz_la_cmd_refused(out, GZ_CMD_CANCEL, h->state);
     return end_lobby(h, reason, out);
+}
+
+uint32_t gz_lobby_host_ready_count(const gz_lobby_host_t *h)
+{
+    uint16_t j, r;
+    uint32_t rc = 0;
+    if (h) counts(h, &j, &r, &rc);
+    return rc;
+}
+
+gz_status_t gz_lobby_host_start(gz_lobby_host_t *h, gz_action_list_t *out)
+{
+    if (!h || !out) return GZ_ERR_ARGUMENT;
+    /* The start rule's failed-check guard (apply_rule): after a check that
+     * ended without a start, a new one needs a seat event first, also when
+     * the person asks (review of #77, L1). */
+    if (h->state != GZ_LOBBY_OPEN || (h->cfg.paused && h->cfg.paused(h->cfg.seat_ctx)) ||
+        gz_lobby_host_ready_count(h) < h->terms.minimum || (h->check_failed && h->seat_epoch == h->failed_epoch))
+        return gz_la_cmd_refused(out, GZ_CMD_START, h->state);
+    return ready_check(h, out);
 }
 
 static gz_status_t save_state(const gz_lobby_host_t *h, uint8_t state, gz_action_list_t *out)

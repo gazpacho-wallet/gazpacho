@@ -292,7 +292,7 @@ Record types are `u32`. The high 16 bits name an area, the low 16 bits a kind. E
 | `0x0004000c` | `slot_opened` | One lobby this wallet takes part in (`docs/notes/composite-node.md` 2.4): its serial, the lobby's scope, the role, the key epoch and the first index of its key pair; for a member the host's key and address, its conditions and whether it joins by itself; for a host whether the lobby is listed and its standby seats | The slot's first batch, with `key_index` and `guard` (and, on the host, `lobby_opened`). A member's connection to the host waits for it |
 | `0x0004000e` | `slot_closed` | Serial, final state (0 never joined, 4 Funding, 5 Active, 6 Cancelled, 7 Failed), reason | Nothing. In the batch that ends the lobby, with `lobby_ended` |
 
-Fields of the Node records (TLV streams, settled with the code in P4.2; open point 3 for this area): `key_epoch` 2 epoch (`u32`); `key_index` 2 highest index (`u32`); `restored` 2 clock (`u64`), 4 the newest incarnation of the restored journal (`u64`); `slot_opened` 2 serial (`u32`), 4 scope (32), 6 role (`u8`: 1 host, 0 member), 8 host key (33) and 10 host address (member), 12 key epoch (`u32`), 14 key index (`u32`, the pair's first: the contribution key; the factory key is the next), 16 listed (`u8`) and 18 standbys (`u16`) (host), 20 conditions and 22 auto-join (`u8`) (member); `slot_closed` 2 serial, 4 final state (`u8`), 6 reason (`u16`). `guard` is not a TLV stream: it is the guard file's contents (section 8.3). The first `key_index` of a journal is saved with `key_epoch` 0 (section 8.2 step 1) in the same batch. After a restore the node allocates indexes above the highest the guard file lists for the epoch (the union of section 8.3).
+Fields of the Node records (TLV streams, settled with the code in P4.2; open point 3 for this area): `key_epoch` 2 epoch (`u32`); `key_index` 2 highest index (`u32`); `restored` 2 clock (`u64`), 4 the newest incarnation of the restored journal (`u64`); `slot_opened` 2 serial (`u32`), 4 scope (32), 6 role (`u8`: 1 host, 0 member), 8 host key (33) and 10 host address (member), 12 key epoch (`u32`), 14 key index (`u32`, the pair's first: the contribution key; the factory key is the next), 16 listed (`u8`) and 18 standbys (`u16`) (host), 20 conditions, 22 auto-join (`u8`) and 24 the version of the saved conditions when it joined (`u32`, absent if none) (member); `slot_closed` 2 serial, 4 final state (`u8`), 6 reason (`u16`). `guard` is not a TLV stream: it is the guard file's contents (section 8.3). The first `key_index` of a journal is saved with `key_epoch` 0 (section 8.2 step 1) in the same batch. After a restore the node allocates indexes above the highest the guard file lists for the epoch (the union of section 8.3).
 
 **Lobby (0x0001)**
 
@@ -369,19 +369,29 @@ Numbered after cross-spec review 1, under the same rules: `u32`, the high 16 bit
 | `0x000d0004` | `words_checked` | Words checked | S1 |
 | `0x000d0006` | `words_check_attempts` | Words-check attempts | S1 |
 | `0x000d0008` | `conditions` | Conditions | S1 |
-| `0x000d000a` | `conditions_copy` | Conditions copied at joining (same batch as `joined`) | S1 |
+| `0x000d000a` | `conditions_copy` | Conditions copied at joining (same batch as `joined`). Reserved, not written in S1: the copy is `slot_opened` fields 20 and 24, in the slot's first batch | S1 |
 | `0x000d000c` | `pause` | Pause | S1 |
 | `0x000d000e` | `local_ids` | Local ids | S1 |
 | `0x000d0010` | `known_host` | Known hosts | S1 |
 | `0x000d0012` | `activity_entry` | Activity entries | S1 |
 | `0x000d0014` | `request_id` | Request ids | S1 |
-| `0x000d0016` | `set_aside` | Set-aside funds | S1 |
+| `0x000d0016` | `set_aside` | Set-aside funds. Reserved, not written in S1: the amount follows from the terms in `lobby_opened` | 1.0.0 |
 | `0x000d0018` | `sign_out_setting` | Sign-out setting | 1.0.0 |
 | `0x000d001a` | `settings` | Settings | 1.0.0 |
 | `0x000d001c` | `review_id_spent` | Review and preview ids spent | 1.0.0 |
 | `0x000d001e` | `host_node` | Host-node setting | 1.0.0 |
 | `0x000d0020` | `chain_server_added` | User-added chain servers | 1.0.0 |
 | `0x000d0022` | `while_closed_report` | While-closed reports | 1.0.0 |
+| `0x000d0024` | `signing_setting` | Signing setting (draft 5) | S1 |
+
+The fields of the records the API engine writes in P6a (`core/gazpacho/include/gazpacho/view.h`; `docs/notes/view-objects.md`). Each refuses an even field it does not know, as every record does:
+
+| Record | Fields |
+|---|---|
+| `pause` | 2 state (`u8`: 0 off, 1 on, 2 held for signing), 4 since (`u64` ms), 6 the held lobbies' scopes (32 bytes each, at most 8; present exactly when the state is 2), 8 version (`u32`: the person's pauses and resumes) |
+| `local_ids` | 2 scope (32), 4 local id (`lob_` and 1 to 60 of `[A-Za-z0-9_-]`; one scope per id); saved with the slot's `slot_opened`, in one batch, or alone at the start that finds a slot without one |
+| `request_id` | 2 request id (16 to 64 of `[A-Za-z0-9_-]`), 4 method, 6 path (printable ASCII without `"` or `\`), 8 body digest (32), 10 answer status (`u16`), 12 the acted-on lobby's local id, 14 created (`u64` ms), 15 the answer's error code (odd: optional); saved right after the action's first save, in one batch |
+| `signing_setting` | 2 `member_signing` (`u8`: 0 at_join, 1 auto, 2 when_unlocked), 4 `host_funding` (`u8`), 6 version (`u32`); in force from the next start |
 
 **Lobby (0x0001)** (the lobby engine, `core/lobby/`; layouts in `docs/notes/lobby.md` section 1. The other Lobby records are in section 9; the host's new current versions use `terms_version` there)
 
@@ -514,13 +524,13 @@ ddde3c927fd591a41118a5ec813fcd5a
 | Words checked | `checked_at` | Before a successful words check answers | S1 |
 | Words-check attempts | Time of each check started in the last 24 hours | Before `check-start` answers, so a restart does not reset the limit | S1 |
 | Conditions | The member's conditions, preset, version | Before `PUT /conditions` answers; same batch as any `leave` it causes | S1 |
-| Conditions copy | Per joined lobby: the conditions, their version and `compare_with` at joining | **Same batch as `joined`**: the ready check and the signing check compare against this copy after a restart | S1 |
+| Conditions copy | Per joined lobby: the conditions, their version and `compare_with` at joining. Reserved, not written in S1: `slot_opened` fields 20 and 24, in the slot's first batch, before `joined` | **Same batch as `joined`**: the ready check and the signing check compare against this copy after a restart | S1 |
 | Pause | On or off, since when, the lobby a pause is held for | Before the pause call answers and before any `leave` or `round_abort` it sends; applied on start before any connection | S1 |
 | Local ids | Local lobby and factory ids with their fingerprints | With the lobby's first record (`terms_received` or `lobby_opened`), and with the factory's first round record | S1 |
 | Known hosts | Key, address, source, time added | Before a discovery query that adds a host answers | S1 |
 | Activity entry | Id, time, kind, who decided, rule, params, and an immutable saved copy of terms, fit and conditions | Same batch as the record of the event it describes, where there is one | S1 |
 | Request id | Id, method, path, body digest, answer status, the object acted on, time | Same batch as the action's first save | S1 |
-| Set-aside funds | Per hosted lobby: amount set aside and the echoed confirmation | Before opening the lobby answers; superseded by `funding_plan` | S1 |
+| Set-aside funds | Per hosted lobby: amount set aside and the echoed confirmation. Reserved, not written in S1 (the amount follows from the terms in `lobby_opened`) | Before opening the lobby answers; superseded by `funding_plan` | 1.0.0 |
 | Settings, review and preview ids spent, host-node setting, user-added chain servers, while-closed reports | As `spec/local-api.md` 7.5 | Before each call answers | 1.0.0 |
 
 None of these holds a key, the seed or the 24 words (section 10). The rule of open point 2 adds: request ids may be compacted only under the lifetime rule of `spec/local-api.md` 7.4, and pause, conditions copies and activity entries never while their lobby or factory is unresolved.

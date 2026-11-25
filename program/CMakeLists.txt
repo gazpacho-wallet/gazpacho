@@ -9,7 +9,7 @@
 #                  the placeholder's bytes until P4), and the --test-* hooks
 # The release binary's symbols are checked (program_release_build, T12).
 
-set(GZP_SOURCES options.c datadir.c journal_standin.c net.c pchain.c notify.c executor.c testping.c view.c api.c)
+set(GZP_SOURCES options.c datadir.c journal_standin.c net.c pchain.c notify.c executor.c testping.c view.c api.c api_lobby.c api_calls.c)
 
 foreach(variant release test)
   if(variant STREQUAL "release")
@@ -153,6 +153,11 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME program_lobby
     COMMAND ${GZP_PY} ${GZP_T}/lobby.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/lobby)
   set_tests_properties(program_lobby PROPERTIES TIMEOUT 900)
+  # The signing setting saved through the local API is in force from the next
+  # start over --member-signing (review A of PR 55, H3): host and members.
+  add_test(NAME program_signing_setting
+    COMMAND ${GZP_PY} ${GZP_T}/signing_setting.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/signing_setting)
+  set_tests_properties(program_signing_setting PROPERTIES TIMEOUT 300)
   # The multi-process interface test (tests/web/multiprocess.spec.mjs) cannot
   # stay off once the core emits lobby views: this reads the lobby run's logs,
   # where the test build prints every view it receives (review of PR 51, M3).
@@ -160,6 +165,11 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME program_p6a_views
     COMMAND ${GZP_PY} ${CMAKE_SOURCE_DIR}/tests/web/check_p6a_fixme.py ${CMAKE_SOURCE_DIR} --views ${CMAKE_CURRENT_BINARY_DIR}/lobby)
   set_tests_properties(program_p6a_views PROPERTIES FIXTURES_REQUIRED lobby_run)
+  # The person's conditions on a joined lobby and the host's early start
+  # (local-api.md 13.2, 15.2): a host and four members.
+  add_test(NAME program_conditions_start
+    COMMAND ${GZP_PY} ${GZP_T}/conditions_start.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/conditions_start)
+  set_tests_properties(program_conditions_start PROPERTIES TIMEOUT 300)
   # The signing engine in the composite, P4.3: a host and four members sign
   # a real tree from the terms (one member's chain view makes it refuse);
   # every process restarted.
@@ -187,7 +197,7 @@ if(Python3_Interpreter_FOUND)
   # the kernel gave them, so they need no lock.
   set_tests_properties(program_envelope program_links program_loop_liveness program_lobby program_queue_peers
                        program_refusals program_resend_on_connect program_restart_slots program_start_queue
-                       program_two_process program_api program_api_limits
+                       program_two_process program_api program_api_limits program_conditions_start
                        PROPERTIES RESOURCE_LOCK gzp_free_port)
   if(GZ_LIVE_TESTS AND TARGET gazpacho_chain_curl)
     # Read-only: the public signet servers' block 0 and tip, the wallet's

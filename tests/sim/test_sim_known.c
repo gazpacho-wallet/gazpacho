@@ -11,7 +11,10 @@
 #include "sim_nodes.h"
 #include "../check.h"
 
-#define KNOWN_PING_NODE  0xb011ad7b5deb671cull
+/* The ping run's digest changed with PR 75's review (M1): the status view's
+ * pause field carries the pause version, 13 bytes for 9, in every status
+ * object the composite node emits. Nothing else in the trace moved. */
+#define KNOWN_PING_NODE  0x335b3ef2d48928b3ull
 #define KNOWN_MULTI_NODE 0x8518b8849d18a4b7ull
 
 static uint64_t run(int multi)

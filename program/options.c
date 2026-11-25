@@ -148,10 +148,12 @@ void gzp_usage(void)
         "  --test-big-reply BYTES        pad every test reply with BYTES\n"
         "  --test-crash-after-save K     exit once the K-th batch is durable\n"
         "  --test-crash-after-record T   exit once a batch with a record of type T (hex) is durable\n"
+        "  --test-funds ok|short|unknown  the stand-in wallet's answer to a host's funds check\n"
         "  --test-sign-outcome funding|retry|failed|unfinished   what the signing stand-in reports\n"
         "  --test-sign-delay-ms MS       ... this long after the hand-off\n"
         "  --test-crash-before-confirm K exit just before the K-th confirmation\n"
-        "  --test-exit-after-send        exit once the first test ping has left\n");
+        "  --test-exit-after-send        exit once the first test ping has left\n"
+        "  --test-drop-view KIND         view objects of this kind never reach the API\n");
 #endif
 }
 
@@ -287,6 +289,7 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
 #ifdef GZP_TEST_BUILD
         else if (!strcmp(a, "--test-sign-tick-ms")) { ok = num(val, 1, 60000, &v); o->test_sign_tick_ms = (int)v; }
         else if (!strcmp(a, "--test-pings")) { ok = num(val, 0, 20000, &v); o->test_pings = (int)v; }
+        else if (!strcmp(a, "--test-drop-view")) { ok = num(val, 1, 255, &v); o->test_drop_view = (int)v; }
         else if (!strcmp(a, "--test-ping-ms")) { ok = num(val, 1, 600000, &v); o->test_ping_ms = (int)v; }
         else if (!strcmp(a, "--test-crash-at-ping")) { ok = num(val, 1, 1000000, &v); o->test_crash_at_ping = (int)v; }
         else if (!strcmp(a, "--test-storage-fail-at")) { ok = num(val, 1, 1000000, &v); o->test_storage_fail_at = (int)v; }
@@ -312,6 +315,12 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--test-engines")) { ok = num(val, 0, 2, &v); o->test_engines = (int)v; }
         else if (!strcmp(a, "--test-max-conns")) { ok = num(val, 1, 64, &v); o->test_max_conns = (int)v; }
         else if (!strcmp(a, "--test-drop-kind")) { ok = num(val, 1, 65535, &v); o->test_drop_kind = (int)v; }
+        else if (!strcmp(a, "--test-funds")) {
+            if (!strcmp(val, "ok")) o->test_funds = 0;
+            else if (!strcmp(val, "short")) o->test_funds = 1;
+            else if (!strcmp(val, "unknown")) o->test_funds = 2;
+            else ok = 0;
+        }
         else if (!strcmp(a, "--test-sign-outcome")) {
             if (!strcmp(val, "funding")) o->test_sign_outcome = 1;
             else if (!strcmp(val, "retry")) o->test_sign_outcome = 2;
