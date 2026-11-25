@@ -103,7 +103,7 @@
               ["Chain fee, about", u.sats(p.chain_fee_estimate_sat)],
               ["On chain and free now", u.sats(p.wallet_free_sat)]
             ]), ui.dates((p.dates || []).concat(p.host_deadlines || []))),
-            ui.terms(p.as_members_see_it, "As members will see it"),
+            p.as_members_see_it ? ui.terms(p.as_members_see_it, "As members will see it") : null,
             p.can_open ? ui.notice("ok", "These terms can be opened.") : h("div", { class: "notice warn", id: "cannot-open" }, h("b", {}, "This lobby cannot be opened yet."), cannot)]);
           open.disabled = !p.can_open;
         }, function (e) {

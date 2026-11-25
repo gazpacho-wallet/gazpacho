@@ -423,6 +423,8 @@ static int host_preview(gzp_api_t *a, const gz_json *d, gz_jw *w, gz_api_error *
     char dg[65];
     if (!draft_terms(a, d, &o, &c, &why)) {
         gz_jw_obj(w);
+        gz_jw_knull(w, "draft_digest");
+        gz_jw_knull(w, "as_members_see_it");        /* terms that cannot be made have no view */
         gz_jw_kraw(w, "problems", "[]");
         gz_jw_kbool(w, "can_open", 0);
         gz_jw_key(w, "cannot_open_because");
@@ -436,6 +438,8 @@ static int host_preview(gzp_api_t *a, const gz_json *d, gz_jw *w, gz_api_error *
     draft_digest(&o, &c, dg);
     gz_jw_obj(w);
     gz_jw_kstr(w, "draft_digest", dg);
+    gz_jw_key(w, "as_members_see_it");               /* 15.1 */
+    gzp_api_draft_json(w, &o, &c);
     gz_jw_kint(w, "funding_at_minimum_sat", 0);
     gz_jw_kint(w, "funding_at_target_sat", 0);
     gz_jw_kint(w, "chain_fee_estimate_sat", 0);

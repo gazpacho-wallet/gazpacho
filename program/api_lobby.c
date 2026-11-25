@@ -110,8 +110,9 @@ static uint64_t current_value(const terms_t *t, uint8_t type)
     return 0;
 }
 
-/* terms (14.1): fingerprint, host, outer, ranges, current, derived. */
-static void terms_json(gz_jw *w, const terms_t *t)
+/* terms (14.1): fingerprint, host, outer, ranges, current, derived. A
+ * draft (15.1) is not signed yet: no fingerprint, signatures not checked. */
+static void terms_any(gz_jw *w, const terms_t *t, int draft)
 {
     char fp[65], dg[65], hk[67], shortfp[20];
     hex(t->od, 32, fp);
@@ -119,8 +120,13 @@ static void terms_json(gz_jw *w, const terms_t *t)
     hex(t->o.host_key, 33, hk);
     snprintf(shortfp, sizeof shortfp, "%.4s\xe2\x80\xa6%.4s", fp, fp + 60);
     gz_jw_obj(w);
-    gz_jw_kstr(w, "fingerprint", fp);
-    gz_jw_kstr(w, "fingerprint_short", shortfp);
+    if (draft) {
+        gz_jw_knull(w, "fingerprint");
+        gz_jw_knull(w, "fingerprint_short");
+    } else {
+        gz_jw_kstr(w, "fingerprint", fp);
+        gz_jw_kstr(w, "fingerprint_short", shortfp);
+    }
     gz_jw_key(w, "host");
     gz_jw_obj(w);
     gz_jw_kstr(w, "key", hk);
@@ -133,7 +139,7 @@ static void terms_json(gz_jw *w, const terms_t *t)
         gz_jw_knull(w, "alias");
     }
     gz_jw_end_obj(w);
-    gz_jw_kbool(w, "signatures_checked", 1);
+    gz_jw_kbool(w, "signatures_checked", !draft);
     gz_jw_key(w, "outer");
     gz_jw_obj(w);
     gz_jw_kstr(w, "chain", "signet");
@@ -187,6 +193,25 @@ static void terms_json(gz_jw *w, const terms_t *t)
     gz_jw_kraw(w, "reserved", "{\"receiving_room_fee_ppm\":null,\"joining_fee_chain_share\":null,"
                               "\"newcomer_seats_pct\":null,\"invitation_only\":null}");
     gz_jw_end_obj(w);
+}
+
+static void terms_json(gz_jw *w, const terms_t *t)
+{
+    terms_any(w, t, 0);
+}
+
+void gzp_api_draft_json(gz_jw *w, const gz_terms_outer_t *o, const gz_terms_current_t *c)
+{
+    terms_t t;
+    uint8_t b[GZ_TERMS_CURRENT_MAX];
+    size_t n;
+    memset(&t, 0, sizeof t);
+    t.o = *o;
+    t.c = *c;
+    t.ok = 1;
+    n = gz_terms_encode_current(c, b, sizeof b);
+    if (n) gz_terms_current_digest(b, n, t.cd);
+    terms_any(w, &t, 1);
 }
 
 static const char *stage_name(int s)

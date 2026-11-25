@@ -327,11 +327,19 @@ def main():
         # a draft the terms refuse (terms.md type 12: the minimum is 3 to target) cannot be
         # opened, and says why; the same draft with a minimum of 3 can
         st, pv = p.call("POST", "/host/preview", {"name": "x", "target": 3, "minimum": 2})
-        check(st == 200 and pv and pv.get("can_open") is False and pv.get("cannot_open_because") == ["bad_terms"],
-              "a draft with minimum 2: can_open false, bad_terms", (st, pv))
+        check(st == 200 and pv and pv.get("can_open") is False and pv.get("cannot_open_because") == ["bad_terms"] and
+              "as_members_see_it" in pv and pv["as_members_see_it"] is None,
+              "a draft with minimum 2: can_open false, bad_terms, no terms to show", (st, pv))
         st, pv = p.call("POST", "/host/preview", {"name": "x", "target": 3, "minimum": 3})
+        seen = (pv or {}).get("as_members_see_it") or {}
         check(st == 200 and pv and pv.get("can_open") is True and pv.get("draft_digest"),
               "the same draft with minimum 3: can_open", (st, pv))
+        # 15.1: the preview shows the terms as members will see them, not signed yet (the
+        # interface renders this object; without it the page stopped before the reasons)
+        check(seen.get("outer", {}).get("minimum") == 3 and seen.get("outer", {}).get("target") == 3 and
+              seen.get("signatures_checked") is False and seen.get("fingerprint") is None and
+              "joining_fee_sat" in seen.get("ranges", {}),
+              "the preview's as_members_see_it: the draft's terms, unsigned", seen)
         host = NOBODY_KEY + "@127.0.0.1:%d" % free_port()
         st, e = p.call("POST", "/discovery/query", {"host": host})
         check(st == 409 and e and e.get("code") == "not_a_member",
