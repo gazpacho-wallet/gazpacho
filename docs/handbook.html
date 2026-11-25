@@ -96,6 +96,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="ch" href="#c4">Safe-to-sign rule</a>
 <a class="sec" href="#c4-changes-2026-11-17-bd-the-member-s-own-p" title="Changes, 2026-11-17: BD, the member&#x27;s own pair">Changes, 2026-11-17: BD, the member&#x27;s own pair</a>
 <a class="sec" href="#c4-changes-2026-11-17-review-of-pr-48" title="Changes, 2026-11-17: review of PR #48">Changes, 2026-11-17: review of PR #48</a>
+<a class="sec" href="#c4-changes-2026-11-17-penalty-fixes" title="Changes, 2026-11-17: penalty fixes">Changes, 2026-11-17: penalty fixes</a>
 <a class="sec" href="#c4-changes-2026-11-16-the-host-paid-tree-fe" title="Changes, 2026-11-16: the host-paid tree fee rate">Changes, 2026-11-16: the host-paid tree fee rate</a>
 <a class="sec" href="#c4-changes-after-cross-spec-review-1" title="Changes after cross-spec review 1">Changes after cross-spec review 1</a>
 <a class="sec" href="#c4-alignment-with-exit-md-draft-2-2026-11-1" title="Alignment with `exit.md` draft 2 (2026-11-12)">Alignment with `exit.md` draft 2 (2026-11-12)</a>
@@ -357,7 +358,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="sec" href="#c27-rough-totals" title="Rough totals">Rough totals</a>
 <a class="sec" href="#c27-biggest-unknowns" title="Biggest unknowns">Biggest unknowns</a></nav>
 <main>
-<p class="lead">Every project document in one file. Closed, it is a list of contents; open a line to read that part, or use "Open all" for the complete text. Built on 2026-11-24 from the repository's documents. The illustrated summary with diagrams is <a href="design.html">design.html</a>.</p>
+<p class="lead">Every project document in one file. Closed, it is a list of contents; open a line to read that part, or use "Open all" for the complete text. Built on 2026-11-25 from the repository's documents. The illustrated summary with diagrams is <a href="design.html">design.html</a>.</p>
 <section class="chapter" id="c1"><h2>Start here</h2><p class="desc">Terms, facts, decisions in force, and how sure we are of each claim.</p><p class="file">Gazpacho knowledge base · <code>docs/KNOWLEDGE-BASE.md</code></p>
 <div class="intro"><p>The single place to start. It gathers what has been learned and decided, says how sure we are of each thing, and points to the document that holds the detail. Updated 2026-11-12. Update it whenever a decision is made or a fact is checked.</p></div>
 <details id="c1-1-where-everything-is"><summary>1. Where everything is</summary><div class="body"><div class="tw"><table>
@@ -1234,7 +1235,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li><strong>Sign before fund:</strong> the host signs funding only after the whole tree is signed and verified.</li>
 <li><strong>Every partial signature is verified</strong> as it arrives.</li>
 <li><strong>Signing secrets are never stored.</strong> An interrupted round is abandoned.</li>
-<li><strong>A restored backup never publishes its own channel state automatically.</strong> It asks the host to prove the latest and waits for the host to close. If the host has not closed by its forcing date, publishing is offered as the person's own choice, with the risk stated (<code>spec/exit.md</code> 5.7).</li>
+<li><strong>A restored backup never publishes its own channel state automatically.</strong> It asks the host to prove the latest and waits for the host to close. If the host has not closed by its forcing date, publishing is offered as the person's own choice, with the risk stated (<code>spec/exit.md</code> 5.7). <em>Proposed change, under audit (<code>docs/reviews/deviation-audit-2026-11-18.md</code>): after a restore the wallet assumes every channel stale and asks for a close with a message that alone does not say it is behind; it does not ask the host to prove the latest, which would tell the host it is behind (<code>spec/exit.md</code> 6.7, CH-21).</em></li>
 <li><strong>The exit deadline is the leaf's timeout.</strong> Every tree output carries a host-only timeout; the binding one is the member's leaf's, at <strong>E − 10·d</strong> (E the end height, d the leaf's depth), and the member's commitment must be buried before it. The member starts leaving alone by that height less burial, one confirmation allowance per missing transaction (d + 3 of them) and margins: 50 to 82 blocks before E at Slice 1's signet constants (<code>spec/exit.md</code> 4, <code>spec/safety-rule.md</code> C5).</li>
 <li><strong>A locked wallet keeps watching</strong> (from Slice 3): a watcher publishes the member's tree path and answers old host states from already-signed transactions, but the last step, the member's own commitment, needs the passphrase by a stated <code>unlock_by</code> (<code>spec/exit.md</code> 5.6). Its files never hold a commitment of the member's own.</li>
 <li><strong>Exit fees</strong> are built in from the host's side, with pay-to-anchor outputs so anyone can raise a fee. No on-chain reserve is required or recommended in 1.0.0 (owner decision 6); in 1.1.0 a member above its coverage keeps a small on-chain coin (decision 5).</li>
@@ -1268,7 +1269,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </ul></div></details>
 <details id="c3-9-storage-and-backup"><summary>9. Storage and backup</summary><div class="body"><ul>
 <li>An append-only journal of typed records with periodic snapshots, encrypted at rest.</li>
-<li>The encrypted journal is also the backup: one copy with the host, one the user can export.</li>
+<li>The encrypted journal is also the backup: one copy with the host, one the user can export. <em>Proposed, under audit (<code>docs/reviews/deviation-audit-2026-11-18.md</code>): the host's copy is never the only copy of the channel penalty data (<code>spec/safety-rule.md</code> R8; <code>spec/exit.md</code> CH-19, CH-20, options A, B and C, pending the owner).</em></li>
 <li>A restored copy is never used to publish a channel state.</li>
 </ul></div></details>
 <details id="c3-10-chain-view"><summary>10. Chain view</summary><div class="body"><ul>
@@ -1440,6 +1441,48 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <td>M6 (as confirmed, N1)</td>
 <td>Payouts pay a script the member names from its BIP 86 receive chain (<code>exit.md</code> 3.4), found after a restore by the gap-limit scan; C12 and R3 unchanged</td>
 <td>C2</td>
+</tr>
+</tbody>
+</table></div></div></details>
+<details id="c4-changes-2026-11-17-penalty-fixes"><summary>Changes, 2026-11-17: penalty fixes</summary><div class="body"><p>Proposed, under audit (<code>docs/reviews/deviation-audit-2026-11-18.md</code>); not itself reviewed. From the penalty check (<code>docs/reviews/penalty-check.md</code>), with <code>exit.md</code>'s penalty fixes. Nothing here is decided.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Finding</th>
+<th>Change</th>
+<th>Where</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Review of #59 to #63 (2026-11-18), H1, M3, L4</td>
+<td>C12 keeps #59's single text; the exception is a separate bullet, names the epoch and index of the penalty record, and says "MAY derive", not "derive or read"</td>
+<td>C12</td>
+</tr>
+<tr>
+<td>Same review, M2</td>
+<td>The exception may not derive or use a factory or contribution key, nor produce a MuSig2 nonce or partial; a test is owed (<code>exit.md</code> CH-18)</td>
+<td>C12</td>
+</tr>
+<tr>
+<td>T4, M8</td>
+<td>C12 gains one narrow exception: a channel's revocation basepoint secret of an earlier epoch, only to sign a penalty against a host commitment already confirmed, paying the member's current <code>payout_script</code> (<code>exit.md</code> CH-18)</td>
+<td>C12</td>
+</tr>
+<tr>
+<td>T3, M7</td>
+<td>New R8: the penalty data has a copy the host does not choose; option A requires it before any balance, option B warns, option C caps the balance before one (owner to choose; P7); a restored wallet assumes every channel stale</td>
+<td>Section 9</td>
+</tr>
+<tr>
+<td>T3</td>
+<td>New exclusion: a restore from a backup older than the newest revocation, with no independent copy of the penalty data</td>
+<td>Section 11</td>
+</tr>
+<tr>
+<td>M3</td>
+<td>The second-stage exclusion marked pending <code>exit.md</code> CH-OP-2</td>
+<td>Section 11</td>
 </tr>
 </tbody>
 </table></div></div></details>
@@ -1975,6 +2018,9 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <p><strong>C10. One open round per output.</strong> The member takes part in at most one unresolved round touching any given output it has an interest in. A second proposal touching such an output is refused (reason 6). What a round touches: a <strong>creation round touches only its own funding outpoint and the outputs of its own tree</strong>, not the inputs of its funding transaction. An attempt of the same lobby that is Unfinished, Complete or Awaiting funding does not block that lobby's next attempt, which H11 puts on a new outpoint spending an input of the old funding transaction; at most one of the two can ever be funded, and C7 keeps both records. An Abandoned or Dead creation no longer counts as unresolved. (Review 3, F6: without this rule every retry after a partial-signature failure would be refused.)</p>
 <p><strong>C11. A factory is live only when its funding is buried.</strong> The member treats a factory as live, and accepts any payment in it, only when the exact funding output of its held tree, with the exact amount and script, is buried. The funding is the host's own coins and can be spent elsewhere until then. If the funding is not buried by the member's funding deadline, the creation is abandoned. Funding buried later makes an abandoned creation live only if the member still holds the whole signed tree <strong>and</strong> C5's and C8's time checks pass again at that moment, since the margin was judged at signing; otherwise it stays abandoned. Watching for this needs a "watch this txid to a depth" action (<code>signing-round.md</code> section 12.1).</p>
 <p><strong>C12. After a restore, sign nothing with old keys.</strong> A restored node signs only with keys of its current restore epoch, and contributes to a request only through C7's fresh-key rule: its own entry must be its current key for that lobby, the pair fixed at the seat's first <code>ready</code> under the current epoch. A seat whose saved epoch is not the current one sends no <code>ready</code> (<code>messages.md</code> 6.4, BD2), so it never gets a factory key under an old epoch. It never derives a key of an earlier epoch in order to sign, so it cannot sign with one, whatever the request names, and whether or not the backup knew of the factory or round. This is how C12 is implemented; no step tries to recognise an old key in a request (review 3, F3: a restored node does not know the epochs and indexes used after the backup, so it could not). The recovery procedure (a recovery close or exit after the host proves the latest state, <code>DESIGN.md</code> sections 6 and 9) belongs with the exit engine (Slice 3), and it alone may ever derive old keys. Its 1.0.0 part is now <code>exit.md</code> 5.7: the restored member asks the host to close with its own commitment, never publishes its own automatically, and at <code>host_force_by</code> is offered the choice; recovering the keys of factories joined after the backup (R7) is not yet specified. Section 9 gives the rules.</p>
+<ul>
+<li><strong>C12 exception (proposed).</strong> <em>Proposed, under audit (<code>docs/reviews/deviation-audit-2026-11-18.md</code>); not itself reviewed.</em> A restored node MAY derive a channel's revocation basepoint secret of an earlier epoch, at the epoch and index named in that channel's penalty record (<code>exit.md</code> CH-19) (the key family of <code>exit.md</code> CH-18, used for nothing else), solely to sign a penalty transaction, and only when (a) the transaction it spends is a commitment of the host already confirmed on the node's trusted chain view, (b) that commitment is one the node holds the revocation secret for, and (c) every output of the penalty pays the member's current <code>payout_script</code> for that factory. The secret is used for nothing else and never leaves the signing module. It MUST NOT be used to derive or use a key of the factory or contribution branches, or to produce a MuSig2 nonce or partial signature (<code>exit.md</code> CH-18). <strong>Rationale for the exception:</strong> a penalty is a one-key spend of an output that is already on chain; no round, tree or nonce is involved, so it cannot cause the double signing R3 prevents. Without it, a restored wallet holding only the compact penalty record (<code>exit.md</code> CH-19) could see a breach and not answer it. The alternative, signing every penalty at revocation and keeping only signed data, cannot be held in a constant-size record (one ladder per revoked commitment).</li>
+</ul>
 <p><strong>C13. A payment is a signature.</strong> Accepting or making a payment signs new channel states, so it runs this module like any other request. A member with an unbroadcast cooperative close in its exposed set therefore refuses further payments on that channel.</p>
 <p>If any check fails, the member's software sends nothing for that request, tells the host it refused, and keeps its sets unchanged.</p></div></details>
 <details id="c4-4-tree-changes-and-the-channel"><summary>4. Tree changes and the channel</summary><div class="body"><p>A channel is funded by an output of a leaf transaction. When the tree under a channel changes, that output changes. In 1.0.0 trees are advanceless (owner decision 9, 2026-11-12: fixed levels only), so it happens only through rotation, which creates a new factory and a new funding output. From 1.1.0, <strong>a state update in a timed layer</strong> also changes it: it rebuilds every transaction below it, so every channel below gains a new anchor. Leaf changes are 1.1.0 work (section 4.2).</p>
@@ -2110,6 +2156,10 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <p><strong>R4. Nothing is signed with a recovery-only key</strong> except the recovery procedure (C12; its 1.0.0 part is <code>exit.md</code> 5.7). R4 is a consequence of C7's fresh-key rule and needs no step of its own: a replayed proposal names the member's old key, the member's current key for that lobby is absent from it (or the member has no current key for that lobby at all), and the member refuses with <code>round_abort</code> reason 12 (<code>messages.md</code> section 7.9). It signs no nonce for it. This closes the restart frame of review 2, N1, step 4a.</p>
 <p><strong>R5. A creation round needs a fresh funding output</strong> (C7, "Fresh funding output"). This closes the second tree on an old outpoint, review 2, N1, step 4b: every tree signed before the restore commits to an old key, so it cannot spend an output whose script commits to the new one [R].</p>
 <p><strong>R6. A restore guard record detects stale backups.</strong> A small record holding a write counter, the epochs used, the highest key index allocated under each, and the count of rounds ever started (format in <code>journal.md</code> section 8.3). The core puts a <code>guard</code> record, with the complete new contents, <strong>in the same save batch</strong> as each <code>key_index</code> record (before a key is used) and each <code>round_started</code> record (before a round's first contribution). The storage program stores the batch in the journal <strong>and</strong> replaces the guard file, which lives on the device outside the journal in a place a restore never overwrites, and confirms the batch only when both are synced (<code>journal.md</code> section 8.3). So the existing runner rule (nothing outward before the save is confirmed) orders the guard before the key's first use and before the first nonce; no new action or port is needed. The guard is also in every export the user holds; it is never only in the host's copy. On a restore, if a guard is found whose counter is ahead of the backup's newest <code>guard</code> record, the backup is known to be stale and the app tells the user. If no guard is found, the backup is treated as possibly stale. <strong>The guard only detects; R2 to R5 are what protect.</strong></p>
+<p><strong>R8. Penalty data the host does not choose</strong> (Proposed, under audit (<code>docs/reviews/deviation-audit-2026-11-18.md</code>); not itself reviewed.). The backup the host keeps (<code>DESIGN.md</code> 9) is a version the host chooses when it returns it. A host that returns one older than the newest revocation, and then publishes a commitment revoked after it, takes what the member held in that state above what it holds now (<code>exit.md</code> 6.7, T3). So:
+- the wallet MUST NOT present the host's copy as the member's only backup of the penalty data (<code>exit.md</code> CH-19), and MUST offer a copy the host does not control: a tower, or an automatic encrypted write to a folder the person chooses;
+- <strong>option A (require):</strong> the wallet keeps every channel's balance at zero until such a copy has acknowledged a write, and waits for it at every update. <strong>Option B (warn):</strong> it accepts payments without one and shows <code>no_independent_copy</code> while there is none. <strong>Option C (softened, the chain re-check's Q4):</strong> a small cap (<code>UNPROTECTED_MAX</code>) before any independent copy; above it, each update counts only after the copy or a tower acknowledges; assume stale on restore. <strong>PENDING OWNER DECISION (P7)</strong>: the owner has not chosen (<code>exit.md</code> CH-20, 10.1.2);
+- after any restore the wallet assumes every channel stale: it publishes nothing of its own, stops payments, sends only <code>close_request</code> (which alone does not say that it is behind; <code>exit.md</code> CH-21), and treats each channel's funds as <code>at_risk</code> until its close is buried or a complete penalty record is found (<code>exit.md</code> 6.7). "Complete" needs a revocation count per channel in the restore guard (R6; <code>exit.md</code> open point 38).</p>
 <p><strong>R7. Recovering keys.</strong> The keys of factories joined after the backup can be found again only if the guard, or a later export, holds their epoch. Without one, those keys cannot be re-derived from the seed, and funds in those factories depend on the recovery procedure the host must support. That is listed in section 11.</p></div></details>
 <details id="c4-10-the-host-s-side"><summary>10. The host&#x27;s side</summary><div class="body"><p>The host's software runs the same module with the roles exchanged, plus:</p>
 <p><strong>H1. Funding last.</strong> The host signs funding only after every tree transaction is fully signed and verified, and it holds a valid <code>round_ack</code> from every chosen member (<code>signing-round.md</code> section 4). It signs exactly the funding transaction it sent in the proposal. That transaction spends only segwit inputs, so its txid cannot change between the round and the broadcast.</p>
@@ -2146,6 +2196,8 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li><strong>INTERIM: a wallet left locked past <code>unlock_by</code></strong> with a factory balance: the locked watcher publishes the tree path but cannot publish the member's own commitment (<code>spec/exit.md</code> 5.6). After H_leaf a dishonest host takes the balance. An honest host closes with its own commitment by <code>host_force_by</code> (H17), and the balance then waits in the member's output, with no deadline, until the unlock.</li>
 <li><strong>A penalty file cut while locked</strong> (or replaced by an older copy) by anyone who can write the data folder, which needs no key: the locked watcher detects it, reports it (<code>penalty_file_short</code>, <code>at_risk</code>) and keeps answering with the penalties it still holds, but a host that publishes one of the newest revoked states while the person stays locked past that state's revocation window takes that channel's balance (<code>storage-encryption.md</code> 8.7.4 rule 7, 8.7.5). Not detected at all if the OS key store is rolled back with it.</li>
 <li><strong>A locked wallet with no watch-and-exit bundle</strong> ("maximum privacy", no OS key store, or Slice 1): nothing is published while locked.</li>
+<li><strong>A restore from a backup older than the newest revocation, with no copy of the penalty data the host does not control</strong> (Proposed, under audit (<code>docs/reviews/deviation-audit-2026-11-18.md</code>); not itself reviewed.). A host that returns such a backup and publishes a commitment revoked after it takes up to the member's balance in that channel. The restored wallet cannot prevent it alone, unless it was restored at most d + 2 blocks before the end height with its path still off chain, and even then only through a fee race in block E + 1 (<code>exit.md</code> 6.7). Under option A of R8 this needs the independent copy to be lost too; under option B it needs only that the person ignored the warning.</li>
+<li><strong>Pending <code>exit.md</code> CH-OP-2</strong> (Proposed, under audit (<code>docs/reviews/deviation-audit-2026-11-18.md</code>); not itself reviewed.): the next exclusion exists only if <code>channel.md</code> keeps two-stage payment outputs. With single-stage outputs, as upstream SuperScalar builds them, every payment-output penalty is pre-signed at revocation and the locked watcher sends it.</li>
 <li><strong>A breach while locked, for the payment outputs.</strong> Penalties against the host's second-stage payment transactions cannot be pre-signed; a member that stays locked for the revocation window after such a transaction confirms loses those payment outputs, at most the sum of the payment outputs of the revoked state (<code>spec/exit.md</code> 4.4).</li>
 <li><strong>Loss of the held set or the exposed set.</strong> Losing the record of what was signed is as serious as losing the transactions.</li>
 <li><strong>A host that returns an old backup.</strong> Section 9 stops it from getting a second tree or a second nonce. It does not stop the member losing sight of factories joined after the backup, whose keys it may not be able to re-derive (R7). Nor does the backup hold the <strong>held set</strong> of those factories, the signed tree the member needs to leave alone: in 1.0.0 that is a loss of funds unless the host or another member hands the signed tree back, not only a denial of service (review 3, F16). Not relevant in Slice 1, where nothing is owed.</li>
@@ -2947,6 +2999,10 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <ul>
 <li><strong>The randomness port, tagged secret.</strong> In release builds a secret request reads the operating system's random source at the moment of the call. The bytes go only to the caller. They are never journaled, logged, put in an event, or produced by a generator whose state is saved or can be restored. Randomness that <strong>is</strong> saved (the restore epoch, <code>safety-rule.md</code> R2; the host's random values, check identifiers and lobby salts, which travel in messages) uses the ordinary, untagged request.</li>
 <li><strong>How <code>session_id32</code> is formed</strong> <em>(added after the signing engine build, 2026-11-12; the engine builder's decision, now the rule)</em>. <code>session_id32 = TH("gazpacho/session-id", s ‖ incarnation ‖ counter)</code>, where <code>s</code> is 32 bytes from a secret-tagged request, <code>incarnation</code> is the node's saved count of starts (8 bytes, big-endian), and <code>counter</code> is an 8-byte big-endian count kept in memory only, starting at zero in each incarnation and incremented for every <code>session_id32</code> made. Neither the result nor <code>s</code> is saved. The incarnation and counter add no secrecy; they make sure that a repeating random source (a restored backup, a copied machine, a seeded simulator) still never gives two nonce calls the same <code>session_id32</code> within or across incarnations. The fresh secret bytes remain the protection.</li>
+<li><strong>Three digests local to one implementation</strong> (added 2026-11-18, from <code>core/signing/signing.c</code> on <code>main</code>; not part of the shared protocol: no other party recomputes them, so they need a definition, not interoperability).</li>
+<li><code>host_random = TH("gazpacho/host-random", r ‖ u64(incarnation) ‖ u64(attempt_counter))</code>, where r is 32 bytes from the randomness port's ordinary request and the integers are big-endian. The counter is incremented after each use (<code>RULE:HOST_RANDOM_MIX</code>). Only <code>host_random</code> travels.</li>
+<li><code>all_nonces_digest = TH("gazpacho/allnonces", records)</code>, where <code>records</code> is the received <code>round_all_nonces</code> record stream (<code>messages.md</code> 4.2): every byte after the 38-byte envelope header, as received, so it would include a record 240 if one were present (this kind carries none, <code>messages.md</code> 7.4). It is used only to tell the same bytes from a different copy (7.4). Never sent or signed.</li>
+<li>The refused-identifier filter: h = <code>TH("gazpacho/known-filter", round_id)</code>. For k = 0 to 9, position k is the 24-bit little-endian value of h[3k..3k+2], reduced mod 2^20. The filter holds 2^20 bits. An identifier is refused if it is in the exact list of the newest 256 refused identifiers, or if all ten of its positions are set. So the filter can answer a false "seen" (a fresh identifier refused), never a false "unseen". When a saved proposal is replayed after a restart, only the exact list is used; a filter hit alone never drops a saved round (<code>RULE:REPLAY_EXACT</code>, <code>core/signing/signing.c</code>).</li>
 <li><strong>Seeded only in the simulator.</strong> The core is handed its randomness so that a factory can be simulated from a seed (<code>DESIGN.md</code> section 4). The seeded source exists only in simulator builds and cannot be linked into a release build.</li>
 <li><strong>Not used from the import:</strong> <code>musig_generate_nonce</code> and the import's nonce pool. Both read <code>/dev/urandom</code> themselves, so they cannot take the port's randomness and fail where there is no such file, including a native Windows build; and <code>musig_generate_nonce</code> passes no message and no extra input [C: <code>src/musig.c:9-15</code>, <code>:171-209</code>, <code>:463-480</code>]. No imported file needs editing for this: the import itself calls <code>secp256k1_musig_nonce_gen</code> with a message [C: <code>src/musig.c:75-77</code>] and with an extra input [C: <code>:198-201</code>].</li>
 <li><strong>Memory only.</strong> A secret nonce lives in memory only, and is erased as soon as it has signed or the round ends for any reason. The library itself zeroes a secret nonce when it signs and aborts if handed an all-zero one [S: <code>secp256k1_musig_partial_sign</code>, same header].</li>
@@ -5579,6 +5635,15 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <td>2026-11-12</td>
 <td>Consistent after the listed fixes</td>
 <td>D1 to D4 medium (the short penalty file, the unlock order, when the bundle is rewritten, Slice 1's lock echo), D5 to D16 low, stale references, threat-model gaps, and a missing headline for a member the host closed out while locked. All applied as alignment fixes, without new draft numbers ("Changes after cross-spec review 1" in each changed document). <strong>The fixes have not had a second review</strong></td>
+</tr>
+<tr>
+<td><code>exit.md</code> penalties (with <code>safety-rule.md</code>), against SuperScalar's design and code</td>
+<td>1</td>
+<td><code>penalty-check.md</code></td>
+<td>3 (<code>3083d99</code>)</td>
+<td>2026-11-17</td>
+<td>Open point 34 valid but mis-aimed; not trustless across a stale restore</td>
+<td>M1 to M11, T1 to T7. Applied as the "penalty fixes" of exit.md and safety-rule.md (draft PR on <code>penalty-fixes</code>). <strong>The fixes have not had a review</strong></td>
 </tr>
 <tr>
 <td><code>transport.md</code></td>
@@ -8979,7 +9044,7 @@ docs/      plan, assessment, user guides
 {
  "about": "Not displayed. Sources and conventions for readers working from this file alone. The full text of every document is in the page itself, inside the collapsed sections.",
  "repository": "https://github.com/gazpacho-wallet/gazpacho",
- "built": "2026-11-24",
+ "built": "2026-11-25",
  "wording": "Say host (the papers say LSP) and member (client). Never say staking; say hosting, providing liquidity, fees.",
  "authoritative": "The Markdown files in the repository. This page is generated from them by tools/build-handbook.py.",
  "chapters": [

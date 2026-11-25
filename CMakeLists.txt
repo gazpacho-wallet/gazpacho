@@ -652,6 +652,9 @@ target_compile_options(fuzz_signing_replay PRIVATE ${GZ_NEW_CODE_WARNINGS} -Wno-
 # --- the local API server (spec/local-api.md), its fake backend and tests ------
 add_subdirectory(ports/api)
 
+# --- the signer (docs/notes/signer.md): the one library that holds secrets and signs ---
+add_subdirectory(signer)
+
 # --- the gazpacho program (stream S11): executor, port adapters, executables ----
 add_subdirectory(program)
 
@@ -659,3 +662,6 @@ add_subdirectory(program)
 add_executable(test_c7_audit tests/signing/test_c7_audit.c)
 target_link_libraries(test_c7_audit PRIVATE gazpacho_signing gazpacho_sim gazpacho_superscalar gazpacho_tree)
 add_test(NAME signing_c7_audit COMMAND test_c7_audit)
+
+# --- K20 at configure time and in every shipped binary (review A of #71, H3, N1).
+include(${CMAKE_CURRENT_SOURCE_DIR}/signer/vectors_guard.cmake)

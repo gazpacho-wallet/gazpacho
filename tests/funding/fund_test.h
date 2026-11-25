@@ -81,6 +81,11 @@ typedef struct {
     int no_change, third_output, must_at_1, in1_bigger, adopt_refuse, factory_twice;
     int sb_two_outputs, zero_prev, scriptsig, factory_at_1;   /* more faults the engine must refuse */
     uint32_t last_sb_index;
+    int can_plan;              /* what `can_plan` answers: 1, 0 or -1 */
+    uint64_t can_have;         /* and its sum and count of usable coins */
+    size_t can_n;
+    uint64_t can_amount, can_feerate;   /* what it was asked */
+    int p2wpkh_prev, p2wsh_change;      /* L-1: a plan the engine must refuse */
     unsigned next_plan;
     ft_plan_t plans[FT_PLANS];   /* memory only: a restart forgets them */
 } ft_wallet_t;
@@ -128,6 +133,7 @@ static inline int ftw_plan(void *ctx, uint64_t amount, const uint8_t script[34],
     memcpy(scr[0], script, 34);
     amts[1] = sum - amount - 200;
     ft_script(scr[1], 0xcc);   /* the wallet's change */
+    if (w->p2wsh_change) scr[1][0] = 0x00;   /* a v0 program of 32 bytes: P2WSH, not P2TR */
     if (w->third_output) { amts[1] -= 1000; amts[2] = 1000; ft_script(scr[2], 0xcd); nout = 3; }
     if (w->extra_output) { amts[2] = amount; memcpy(scr[2], script, 34); nout = 3; }
     if (w->no_change) nout = 1;
@@ -155,6 +161,7 @@ static inline int ftw_plan(void *ctx, uint64_t amount, const uint8_t script[34],
         prev[i].script_len = 34;
         ft_script(prev[i].script, 0xdd);
         if (w->legacy_prev && i == 1) { prev[i].script_len = 25; prev[i].script[0] = 0x76; }
+        if (w->p2wpkh_prev && i == 1) { prev[i].script_len = 22; prev[i].script[0] = 0x00; prev[i].script[1] = 0x14; }
         if (w->zero_prev && i == 1) prev[i].amount = 0;
         if (w->tiny_prev && i == 1) {   /* OP_1 and a 0- or 1-byte program */
             prev[i].script_len = (uint8_t)(1 + w->tiny_prev);
@@ -244,6 +251,15 @@ static inline void ftw_release(void *ctx, const uint8_t *tx, size_t len)
 }
 
 /* The spend-back of a plan this wallet holds, by its txid. */
+static inline int ftw_can_plan(void *ctx, uint64_t amount, uint64_t feerate, uint64_t *have, size_t *n)
+{
+    ft_wallet_t *w = (ft_wallet_t *)ctx;
+    w->can_amount = amount;
+    w->can_feerate = feerate;
+    *have = w->can_have;
+    *n = w->can_n;
+    return w->can_plan;
+}
 static inline int ftw_sb(void *ctx, const uint8_t txid[32], uint32_t index, uint64_t fee, uint8_t *out, size_t cap,
                   size_t *out_len)
 {
@@ -325,6 +341,7 @@ static inline void ft_cfg(ft_t *t, int host, gz_host_funding_t mode)
         t->cfg.wallet.adopt = ftw_adopt;
         t->cfg.wallet.release = ftw_release;
         t->cfg.wallet.spend_back = ftw_sb;
+        t->cfg.wallet.can_plan = ftw_can_plan;
     }
 }
 

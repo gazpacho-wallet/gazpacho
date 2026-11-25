@@ -1,0 +1,109 @@
+# Symbols only signer/ may use (docs/notes/signer.md 7.1), for
+# tools/check-signer-boundary.sh. One per line: `sym NAME` for an identifier,
+# `hook NAME` for a struct member that is called, declared as a function
+# pointer or assigned (the generic hooks); `hard NAME` and `hardprefix PREFIX`
+# for identifiers that fail the check in every mode and no allow list holds.
+
+# libsecp256k1-zkp: signing, nonces, ECDH and every call that takes a secret key
+sym secp256k1_schnorrsig_sign32
+sym secp256k1_schnorrsig_sign_custom
+sym secp256k1_schnorrsig_sign
+sym secp256k1_ecdsa_sign
+sym secp256k1_ecdsa_sign_recoverable
+sym secp256k1_musig_nonce_gen
+sym secp256k1_musig_nonce_gen_counter
+sym secp256k1_musig_partial_sign
+sym secp256k1_ecdh
+sym secp256k1_keypair_create
+sym secp256k1_keypair_sec
+sym secp256k1_keypair_xonly_tweak_add
+sym secp256k1_ec_pubkey_create
+sym secp256k1_ec_seckey_verify
+sym secp256k1_ec_seckey_negate
+sym secp256k1_ec_seckey_tweak_add
+sym secp256k1_ec_seckey_tweak_mul
+sym secp256k1_ec_privkey_negate
+sym secp256k1_ec_privkey_tweak_add
+sym secp256k1_ec_privkey_tweak_mul
+
+# The wallet libraries' secret-key and signing entry points
+sym gzw_bip32_master
+sym gzw_bip32_child_priv
+sym gzw_bip32_derive_priv
+sym gzw_bip86_account_xprv
+sym gzw_bip86_tweaked_keypair
+sym gzw_taproot_tweak_seckey
+sym gzt_sign_keypath
+sym gzt_funding_build
+sym gzt_funding_release
+sym gzt_funding_spend_back
+
+# The generic hooks and the secrets they hand out (signer.md 4.1)
+hook secret
+hook sign
+sym host_secret
+sym gate_secret
+sym factory_secret
+sym contribution_secret
+sym static_key
+sym sign_digest
+sym port_sign
+sym port_secret
+sym ls_sign
+sym gzp_net_sign
+sym gzp_net_sign_host
+
+# Added after review A of #71 (M1): ECDH by ElligatorSwift, the zkp modules
+# that take a secret, the seed and extended private keys as text, and
+# SuperScalar's signing functions that signer.md 7.1 names
+sym secp256k1_ellswift_create
+sym secp256k1_ellswift_xdh
+sym secp256k1_ecdsa_adaptor_encrypt
+sym secp256k1_ecdsa_adaptor_decrypt
+sym secp256k1_ecdsa_s2c_sign
+sym secp256k1_musig_adapt
+sym gzw_phrase_to_seed
+sym gzw_xprv_from_string
+sym gzw_xprv_to_string
+sym musig_sign_taproot
+sym musig_sign_all_local
+sym musig_create_partial_sig
+sym musig_nonce_pool_generate
+sym musig_nonce_pool_next
+sym factory_sign_all
+
+# Never allowed outside signer/, in any mode (review A of #71, H3): the
+# fixed-aux test build of the signer and its names
+hard GZ_SG_VECTORS
+hard gz_sg_vectors_build_never_ship
+hardprefix gz_sgv_
+
+# The imported SuperScalar library's signing and secret entry points
+# (signer.md 7.1: adaptor_*, factory_* and bolt11_* that sign; review B of
+# #71, M4). From core/superscalar/include/superscalar/*.h
+sym channel_sign_commitment
+sym channel_derive_privkey
+sym channel_derive_revocation_privkey
+sym channel_get_per_commitment_secret
+sym channel_get_revocation_secret
+sym factory_sign_node
+sym factory_sign_all_with_retry
+sym factory_sign_l_stock_poison_tx
+sym factory_sign_l_stock_cooperative_spend
+sym factory_derive_l_stock_secret
+sym factory_derive_lstock_seed
+sym factory_generate_flat_secrets
+sym factory_set_flat_secrets
+sym factory_set_shachain_seed
+sym factory_get_revocation_secret
+sym factory_assemble_poison_with_secret
+sym factory_session_complete_node
+sym factory_session_complete_node_input
+sym factory_session_complete_node_poison
+sym factory_session_complete_dist
+sym factory_session_assemble_signed_tx_multi
+sym adaptor_create_turnover_presig
+sym adaptor_adapt
+sym adaptor_extract_secret
+sym musig_generate_nonce
+sym bolt11_encode
