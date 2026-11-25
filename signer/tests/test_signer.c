@@ -552,8 +552,8 @@ static void env_refused(gz_signer_t *sg, gz_sg_key_t key, const uint8_t *scope, 
     CHECK(g_rnd.calls == calls);   /* a refusal draws nothing */
 }
 
-#define ENV_REFUSED(sg, key, scope, kind, rec, len, fresh, want) \
-    env_refused(sg, key, scope, kind, rec, len, fresh, want, __LINE__)
+#define ENV_REFUSED(sg, key, scope, kind, rec, len, want) \
+    env_refused(sg, key, scope, kind, rec, len, want, __LINE__)
 
 /* A stream of one record of type 2 whose whole length is `total` (>= 6). */
 static size_t one_record(uint8_t *buf, size_t total)
@@ -714,7 +714,7 @@ static void test_envelope(void)
     CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 64, big, one_record(big, GZ_RMSG_MAX_RECORDS_ONE + 1),
                               sig) == GZ_SG_OK);
     CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 64, big, one_record(big, GZ_RMSG_MAX_WHOLE - GZ_RMSG_HEADER),
-                              1, sig) == GZ_SG_OK);
+                              sig) == GZ_SG_OK);
     ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 64, big, one_record(big, GZ_RMSG_MAX_WHOLE - GZ_RMSG_HEADER + 1),
                 GZ_SG_E_ARG);
     /* BigSize lengths at each width's edge (review A of #71, N5), with the
@@ -782,7 +782,7 @@ static void test_envelope(void)
     /* arguments */
     ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, NULL, 22, rec, 8, GZ_SG_E_ARG);
     ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, NULL, 8, GZ_SG_E_ARG);
-    CHECK(gz_sg_sign_envelope(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, rec, 8, 1, NULL) == GZ_SG_E_ARG);
+    CHECK(gz_sg_sign_envelope(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, rec, 8, NULL) == GZ_SG_E_ARG);
     /* a dropped slot signs nothing more */
     gz_sg_slot_drop(m, scope);
     ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, rec, 8, GZ_SG_E_SLOT);
