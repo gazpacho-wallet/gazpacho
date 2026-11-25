@@ -25,7 +25,6 @@ env-key	signer/signer.c	    if (!((sg->cfg.role == GZ_SG_ROLE_HOST && key == GZ_
 # equivalent env-key: defence in depth; gz_sg_kind_allowed refuses every other key and role too (policy-key is its mutant)
 env-tag	signer/signer.c	||\n        !gz_sg_may_sign_tag(sg->cfg.role, key, "gazpacho/msg"))	)
 # equivalent env-tag: defence in depth; the role and key checks admit only the two keys whose row has the tag (tag-factory is the table's mutant)
-fixed-aux-production	signer/signer.c	#define SG_FIXED_AUX 0	#define SG_FIXED_AUX 1
 env-len	signer/signer.c	    if (len > max) return GZ_SG_E_ARG;	
 env-len-round	signer/signer.c	host_round_kind(kind) ?	0 ?
 env-len-host	signer/signer.c	max = sg->cfg.role == GZ_SG_ROLE_HOST && host_round_kind	max = host_round_kind
@@ -35,7 +34,7 @@ env-past-end	signer/signer.c	 || len > n - at) return 0;	) return 0;
 env-minimal	signer/signer.c	    if ((w == 2 && x < 0xfd) || (w == 4 && x <= 0xffffu) || (w == 8 && x <= 0xffffffffu)) return 0;	
 env-slot	signer/signer.c	    if (!s) return GZ_SG_E_SLOT;	    if (!s) s = &sg->slots[1];
 env-hash	signer/signer.c	gz_rmsg_hash(kind, scope, records, len, h);	gz_rmsg_hash(kind, scope, records, 0, h);
-env-aux	signer/signer.c	    if (fresh) sg->cfg.random.fill	    if (0) sg->cfg.random.fill
+env-aux	signer/signer.c	    sg->cfg.random.fill(sg->cfg.random.ctx, GZ_RANDOM_SECRET	    if (0) sg->cfg.random.fill(sg->cfg.random.ctx, GZ_RANDOM_SECRET
 env-verify	signer/signer.c	    if (ok) ok = secp256k1_schnorrsig_verify(sg->cfg.secp, sig, msg, 32, &pk);	
 # equivalent env-verify: a self-check that fails only if libsecp256k1 signs wrongly
 # --- the fee cap
@@ -58,8 +57,6 @@ tags-report	tools/check-tags.py	    return 0 if report or not findings else 1	  
 # --- tools/check-signer-boundary.sh
 boundary-comment	tools/check-signer-boundary.sh	{ inblk = 1; out = out "  "; i += 2; continue }	{ out = out c; i++; continue }
 boundary-string	tools/check-signer-boundary.sh	{ instr = 1; q = c; out = out " "; i++; continue }	{ out = out c; i++; continue }
-boundary-signer	tools/check-signer-boundary.sh	-path ./signer -o 		1
-boundary-imported	tools/check-signer-boundary.sh	-path ./core/superscalar -o 	
 boundary-fail	tools/check-signer-boundary.sh	MODE == "fail" && total > 0	MODE == "fail" && total > 99
 boundary-growth	tools/check-signer-boundary.sh	if (!(k in allowed) || cur[k] > allowed[k]) {	if (!(k in allowed)) {
 boundary-stale	tools/check-signer-boundary.sh	if (!(k in cur) || cur[k] < allowed[k]) {	if (!(k in cur)) {
@@ -72,8 +69,6 @@ old-kind-funded	signer/policy.c	    {GZ_KIND_ROUND_ABORT, 1, 1},	    {GZ_KIND_RO
 kind-ready-host	signer/policy.c	    {GZ_KIND_READY, 0, 1},	    {GZ_KIND_READY, 1, 1},
 kind-abort-member	signer/policy.c	    {GZ_KIND_ROUND_ABORT, 1, 1},	    {GZ_KIND_ROUND_ABORT, 1, 0},
 env-kind	signer/signer.c	    if (!gz_sg_kind_allowed(sg->cfg.role, key, kind) ||	    if ((gz_sg_kind_allowed(sg->cfg.role, key, kind), 0) ||
-env-determ	signer/signer.c	    if (!fresh && !fixed_aux_kind(sg->cfg.role, kind)) return GZ_SG_E_KIND;	
-fixed-aux-any-kind	signer/signer.c	return SG_FIXED_AUX && role == GZ_SG_ROLE_HOST && (kind == GZ_KIND_ROUND_TIER_RESULT || kind == GZ_KIND_ROUND_ABORT);	(void)role; (void)kind; return SG_FIXED_AUX;
 aux-ordinary	signer/signer.c	GZ_RANDOM_SECRET, aux, sizeof aux	GZ_RANDOM_ORDINARY, aux, sizeof aux
 aux-len16	signer/signer.c	GZ_RANDOM_SECRET, aux, sizeof aux	GZ_RANDOM_SECRET, aux, 16
 round-kind-complete	signer/signer.c	 kind == GZ_KIND_ROUND_COMPLETE ||	
@@ -89,12 +84,8 @@ fee-max-eq	signer/signer.c	plan_fee > UINT64_C(2100000000000000) ||	plan_fee >= 
 bigsize-w4	signer/signer.c	 || (w == 4 && x <= 0xffffu)	
 bigsize-w8	signer/signer.c	 || (w == 8 && x <= 0xffffffffu)	
 boundary-hard	tools/check-signer-boundary.sh	    hard_fail=1	    hard_fail=0
-boundary-continued	tools/check-signer-boundary.sh	    if (!(instr && substr(line, n, 1) == "\\\\")) instr = 0	    instr = 0
-boundary-ext	tools/check-signer-boundary.sh	 -o -name '*.inc'	
 boundary-base	tools/check-signer-boundary.sh	          else if ($3 + 0 > b[k])	          else if (0)
 boundary-base-new	tools/check-signer-boundary.sh	          if (!(k in b)) {	          if (0) {
-boundary-include	tools/check-signer-boundary.sh	        print FILENAME "\\thard:include-signer-source\\t" FNR	        next
-boundary-prune	tools/check-signer-boundary.sh	-path ./build -o -path './build-*' \\\n        -o -path ./_deps -o -path ./.git \\) -prune -o -type f	-path './build*' -o -path ./.git \\\n        -o -name _deps \\) -prune -o -type f
 # --- review A of #71, re-review: N1 and N5
 bigsize-w2-edge	signer/signer.c	(w == 2 && x < 0xfd)	(w == 2 && x < 0xfc)
 bigsize-w4-edge	signer/signer.c	(w == 4 && x <= 0xffffu)	(w == 4 && x < 0xffffu)
@@ -104,3 +95,28 @@ boundary-build-flag	tools/check-signer-boundary.sh	            if (l ~ /GZ_SG_VE
 boundary-build-lib	tools/check-signer-boundary.sh	            if (l ~ /gazpacho_signer_vectors/) print	            if (0) print
 boundary-build-source	tools/check-signer-boundary.sh	            if (l ~ /signer\\/[A-Za-z0-9_.\\/${}-]*\\.(c|inc)([^A-Za-z0-9_]|$)/) print	            if (0) print
 boundary-token-paste	tools/check-signer-boundary.sh	    if (s0 ~ /gz_sg[A-Za-z0-9_]*[ \\t]*##/ || s0 ~ /##[ \\t]*gz_sg/)	    if (0)
+# --- review B of #71
+pair-overlap	signer/signer.c	    if (pair_taken(sg, slot)) return GZ_SG_E_SLOT;	
+pair-member-adjacent	signer/signer.c	o->key_index <= s->key_index + 1 && s->key_index <= o->key_index + 1	o->key_index == s->key_index
+pair-host-factory	signer/signer.c	            if (o->key_index == s->key_index) return 1;   /* the same factory key, i + 1 */	            (void)0;
+pair-epoch	signer/signer.c	        if (!sg->slots[i].used || o->epoch != s->epoch) continue;	        if (!sg->slots[i].used) continue;
+# equivalent pair-epoch: slot_add refuses every epoch but the current one, so two held slots never differ in epoch
+fee-plan-ceiling	signer/signer.c	    if (plan_fee > fee_at(ceiling_rate, plan_vsize)) return 0;	
+fee-ceiling-zero	signer/signer.c	    if (ceiling_rate == 0 || plan_vsize == 0	    if (plan_vsize == 0
+# equivalent fee-ceiling-zero: gz_signer_init refuses max_feerate 0, so a live signer never has it; the check is defence in depth
+vectors-fixed-kind	signer/vectors_aux.c	    if (sg->cfg.role != GZ_SG_ROLE_HOST || (kind != GZ_KIND_ROUND_TIER_RESULT && kind != GZ_KIND_ROUND_ABORT))	    if (0)
+vectors-fixed-restore	signer/vectors_aux.c	    sg->cfg.random = saved;	
+vectors-fixed-zero	signer/vectors_aux.c	    memset(out, 0, len);	    memset(out, 1, len);
+ctime-leak	signer/signer.c	    memset(aux, 0, sizeof aux);	    memset(aux, 0, sizeof aux);\n    { volatile int leak = 0; if (((const unsigned char *)kp)[0] & 1) leak = 1; (void)leak; }
+boundary-signer	tools/check-signer-boundary.sh	grep -v -e '^signer/' -e	grep -v -e
+boundary-imported	tools/check-signer-boundary.sh	 -e '^core/superscalar/' "$tmp/all"	 "$tmp/all"
+boundary-continued	tools/check-signer-boundary.sh	    if (!(instr && substr(line, n, 1) == "\\\\")) instr = 0	    instr = 0
+# equivalent boundary-continued: lines are spliced before strip() sees them, so no line strip() reads ends in a backslash
+boundary-ext	tools/check-signer-boundary.sh	|inc|cpp|cc|cxx|hpp|hh|S|s)$	|inc|cpp|cc|S)$
+boundary-include	tools/check-signer-boundary.sh	        print FILENAME "\\thard:include-signer-source\\t" at	        next
+boundary-computed-include	tools/check-signer-boundary.sh	        print FILENAME "\\thard:computed-include\\t" at	        next
+boundary-prune	tools/check-signer-boundary.sh	    git -C "$root" ls-files > "$tmp/all"	    git -C "$root" ls-files | grep -v '^build' > "$tmp/all"
+boundary-splice	tools/check-signer-boundary.sh	    if (line ~ /\\\\$/) { pend	    if (0) { pend
+boundary-digit-sep	tools/check-signer-boundary.sh	            if (j < i - 1 && substr(line, j + 1, 1) ~ /[0-9]/) { out = out c; i++; continue }	
+boundary-recipes	tools/check-signer-boundary.sh	|[^/]*\\.(cmake|yml|yaml|sh|json)|	|[^/]*\\.(cmake)|
+boundary-base-symbols	tools/check-signer-boundary.sh	    if [ -s "$tmp/gone-syms" ]; then	    if false; then

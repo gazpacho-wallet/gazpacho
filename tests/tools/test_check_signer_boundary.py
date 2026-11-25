@@ -72,7 +72,24 @@ WANT = {
 }
 
 
+# The check lists the files git tracks (review B of #71, M4), so every fixture
+# is a git work tree: everything is tracked but the paths named here, which
+# stand for build output.
+UNTRACKED = {}
+GIT_ENV = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", HOME=tempfile.gettempdir())
+
+
+def git(d, *args):
+    subprocess.run(["git", "-c", "init.defaultBranch=main", "-C", d] + list(args), check=True,
+                   capture_output=True, env=GIT_ENV)
+
+
 def run(d, *args):
+    if not os.path.isdir(os.path.join(d, ".git")):
+        git(d, "init", "-q")
+    git(d, "add", "-A")
+    for p in UNTRACKED.get(d, ()):
+        git(d, "rm", "-r", "-q", "--cached", "--ignore-unmatch", p)
     r = subprocess.run(["sh", CHECK, "--root", d] + list(args), capture_output=True, text=True)
     return r.returncode, r.stdout + r.stderr
 
@@ -95,6 +112,7 @@ def expect(name, cond, out=""):
 
 
 d = tree()
+UNTRACKED[d] = ("build",)   # build output: never tracked, never scanned
 
 # --write-allow gives exactly the uses above: the listing is right.
 code, out = run(d, "--write-allow", os.path.join(d, "written.txt"))
@@ -203,6 +221,7 @@ for rel, text in {
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write(text)
+UNTRACKED[m1] = ("build", "build-asan")
 code, out = run(m1, "--write-allow", os.path.join(m1, "w.txt"))
 got = {}
 with open(os.path.join(m1, "w.txt"), encoding="utf-8") as f:
@@ -269,6 +288,93 @@ with open(os.path.join(hd, "CMakeLists.txt"), "w", encoding="utf-8") as f:
             "add_executable(x core/signing/signing.c)\n")
 code, out = run(hd, "--report")
 expect("a comment naming the test build is not a hard finding", code == 0 and "HARD" not in out, out)
+
+# Review B of #71, M4: a tracked build-* folder, splicing, a computed include,
+# more file types, digit separators and the SuperScalar signing functions.
+m4 = tempfile.mkdtemp()
+os.makedirs(os.path.join(m4, "tools"))
+shutil.copy(SYMBOLS, os.path.join(m4, "tools", "signer-only-symbols.txt"))
+for rel, text in {
+    "build-helpers/d.c": "void f(void) { secp256k1_ecdsa_sign(0, 0, 0, 0, 0, 0); }\n",
+    "core/s.c": "int f(void) { return secp256k1_schnorrsig_si\\\ngn32(0, 0, 0, 0, 0); }\n",
+    "core/x.cxx": "int f() { return secp256k1_ecdh(0, 0, 0, 0, 0, 0); }\n",
+    "core/y.hpp": "inline int f() { return secp256k1_ecdh(0, 0, 0, 0, 0, 0); }\n",
+    "core/z.hh": "inline int f() { return secp256k1_ecdh(0, 0, 0, 0, 0, 0); }\n",
+    "core/w.s": "call secp256k1_ecdh\n",
+    "core/sep.c": "int a = 1'0; void f(void) { secp256k1_keypair_create(0, 0, 0); } int b = 2'0;\n",
+    "core/ch.c": "char c = 'x'; const char *s = \"secp256k1_ecdh\"; /* factory_sign_node */\n",
+    "core/sq.c": "void f(void) { channel_sign_commitment(0); factory_sign_node(0); adaptor_create_turnover_presig(0);\n"
+                 "  channel_derive_privkey(0); bolt11_encode(0); }\n",
+    "build/y.c": "void f(void) { secp256k1_ecdh(0, 0, 0, 0, 0, 0); }\n",
+}.items():
+    path = os.path.join(m4, rel)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+UNTRACKED[m4] = ("build",)
+code, out = run(m4, "--write-allow", os.path.join(m4, "w.txt"))
+got = {}
+with open(os.path.join(m4, "w.txt"), encoding="utf-8") as f:
+    for line in f:
+        if not line.startswith("#") and line.strip():
+            fn, sym, n = line.rstrip("\n").split("\t")
+            got[(fn, sym)] = int(n)
+WANT_M4 = {
+    ("build-helpers/d.c", "secp256k1_ecdsa_sign"): 1,
+    ("core/s.c", "secp256k1_schnorrsig_sign32"): 1,
+    ("core/x.cxx", "secp256k1_ecdh"): 1,
+    ("core/y.hpp", "secp256k1_ecdh"): 1,
+    ("core/z.hh", "secp256k1_ecdh"): 1,
+    ("core/w.s", "secp256k1_ecdh"): 1,
+    ("core/sep.c", "secp256k1_keypair_create"): 1,
+    ("core/sq.c", "channel_sign_commitment"): 1,
+    ("core/sq.c", "factory_sign_node"): 1,
+    ("core/sq.c", "adaptor_create_turnover_presig"): 1,
+    ("core/sq.c", "channel_derive_privkey"): 1,
+    ("core/sq.c", "bolt11_encode"): 1,
+}
+expect("a tracked build-* folder, a spliced name, .cxx/.hpp/.hh/.s, digit separators and SuperScalar are seen",
+       got == WANT_M4, "%r\n%s" % (got, out))
+
+for name, rel, text in [
+    ("a tracked build-* folder's build file", "build-helpers/CMakeLists.txt",
+     "add_library(x STATIC ../signer/signer.c)\ntarget_compile_definitions(x PRIVATE GZ_SG_VECTORS)\n"),
+    ("a computed #include", "program/inc.c", "#define SRC \"../signer/signer.c\"\n#include SRC\n"),
+    ("GZ_SG_VECTORS spliced across lines", "program/def.c", "#define GZ_SG_VECT\\\nORS 1\n"),
+    ("-DGZ_SG_VECTORS in a workflow", ".github/workflows/release.yml",
+     "jobs:\n  b:\n    steps:\n      - run: cmake -B b -DCMAKE_C_FLAGS=-DGZ_SG_VECTORS\n"),
+    ("CFLAGS in a shell script", "tools/release.sh", "CFLAGS=-DGZ_SG_VECTORS make\n"),
+    ("a CMake preset", "CMakePresets.json", "{\"configurePresets\": [{\"cacheVariables\": {\"CMAKE_C_FLAGS\": \"-DGZ_SG_VECTORS\"}}]}\n"),
+    ("a Dockerfile", "Dockerfile", "RUN cmake -B b -DCMAKE_C_FLAGS=-DGZ_SG_VECTORS\n"),
+]:
+    hd = tempfile.mkdtemp()
+    os.makedirs(os.path.join(hd, "tools"))
+    shutil.copy(SYMBOLS, os.path.join(hd, "tools", "signer-only-symbols.txt"))
+    path = os.path.join(hd, rel)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+    code, out = run(hd, "--report")
+    expect("%s fails --report" % name, code == 1 and "HARD %s:" % rel in out, out)
+
+# Review A of #71, re-review: the symbol list may only grow against the merge base.
+sb = tempfile.mkdtemp()
+os.makedirs(os.path.join(sb, "tools"))
+shutil.copy(SYMBOLS, os.path.join(sb, "tools", "signer-only-symbols.txt"))
+base_syms = os.path.join(sb, "base-symbols.txt")
+shutil.copy(SYMBOLS, base_syms)
+with open(SYMBOLS, encoding="utf-8") as f:
+    cur = f.read()
+with open(os.path.join(sb, "tools", "signer-only-symbols.txt"), "w", encoding="utf-8") as f:
+    f.write(cur.replace("sym secp256k1_ecdh\n", ""))
+code, out = run(sb, "--base-symbols", base_syms)
+expect("a symbol removed against the merge base fails",
+       code == 1 and "SYMBOL-REMOVED sym secp256k1_ecdh" in out, out)
+with open(os.path.join(sb, "tools", "signer-only-symbols.txt"), "w", encoding="utf-8") as f:
+    f.write("# a comment that moved\n" + cur + "sym some_new_signer_symbol\n")
+code, out = run(sb, "--base-symbols", base_syms)
+expect("the same symbols plus one, reordered comments, pass",
+       code == 0 and "nothing removed against the merge base" in out, out)
 if failures:
     print("RESULT: FAIL (%d)" % len(failures))
     sys.exit(1)

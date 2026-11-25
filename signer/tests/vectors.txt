@@ -1,7 +1,7 @@
 # The signer's vectors: the output of `python3 -I tools/signer-vectors.py`
 # (pure Python, independent of the C code). CTest's signer_vectors_py checks
 # this file against it; signer reads it. Test values only, never for coins.
-# host_sig_* use BIP 340's all-zero aux_rand: outputs of the vectors build only.
+# host_sig_* use BIP 340's all-zero aux_rand: outputs of the vectors build's gz_sgv_sign_envelope_fixed only.
 # The production signer always draws fresh aux_rand (K20) and is only verified.
 seed 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f
 scope 404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f
@@ -23,11 +23,13 @@ host_sig_78_empty 453ec7152c61c6168c5dc54f22c77be060bce34fd9332a1a0f29b46630d86f
 msg_hash_22 6625e9e5fdcae96e5a45fb5248887451215fd3acb8ede2a2d000234aac0dc3e2
 fee_cap_16_154_111_1000 127
 fee_cap_16_154_111_100 127
-fee_cap_2000_154_111_1000 2111
+fee_cap_2000_154_111_1000 0
 fee_cap_16_154_111_5000 555
-fee_cap_1_400_111_0 112
-fee_cap_100000_100_300_0 300001
+fee_cap_1_400_111_0 0
+fee_cap_100000_100_300_0 0
 fee_cap_1_400_111_4999 555
-fee_cap_2100000000000000_154_111_1000 2100000000000111
+fee_cap_2100000000000000_154_111_1000 0
 fee_cap_16_154_111_5001 0
 fee_cap_16_0_111_1000 0
+fee_cap_154_154_111_1000 265
+fee_cap_155_154_111_1000 0

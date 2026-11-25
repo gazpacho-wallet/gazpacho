@@ -16,6 +16,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef GZ_SG_VECTORS
+#include "../vectors_aux.h"   /* the vectors build's fixed-aux entry point */
+#endif
+
 #ifndef GZ_SIGNER_VECTORS
 #define GZ_SIGNER_VECTORS "signer/tests/vectors.txt"
 #endif
@@ -209,7 +213,7 @@ static void test_init(void)
         CHECK(z && gz_signer_init(z, gz_signer_size(), &c) == GZ_SG_E_ARG);
         CHECK(all(z, 0, gz_signer_size()));
         memset(sig, 0xff, 64);
-        CHECK(gz_sg_sign_envelope(z, GZ_SG_KEY_HOST, scope, 72, NULL, 0, 1, sig) == GZ_SG_E_ARG);
+        CHECK(gz_sg_sign_envelope(z, GZ_SG_KEY_HOST, scope, 72, NULL, 0, sig) == GZ_SG_E_ARG);
         CHECK(all(sig, 0, 64));
         free(z);
     }
@@ -233,7 +237,7 @@ static void test_init(void)
         CHECK(gz_signer_init(sg, gz_signer_size(), NULL) == GZ_SG_E_ARG);
         CHECK(same(sg, before));
         memset(sig, 0xff, 64);
-        CHECK(gz_sg_sign_envelope(sg, GZ_SG_KEY_CONTRIBUTION, s.scope, 22, NULL, 0, 1, sig) == GZ_SG_OK);
+        CHECK(gz_sg_sign_envelope(sg, GZ_SG_KEY_CONTRIBUTION, s.scope, 22, NULL, 0, sig) == GZ_SG_OK);
     }
     gz_signer_wipe(sg);
     free(sg);
@@ -465,7 +469,7 @@ static void test_slots(gz_sg_role_t role)
         t = s; t.scope[31] = (uint8_t)(t.scope[31] + i); t.key_index = (uint32_t)(2 * i + 10);
         CHECK(gz_sg_slot_add(sg, &t, cpub, fpub) == GZ_SG_OK);
     }
-    t = s; t.scope[30] ^= 1;
+    t = s; t.scope[30] ^= 1; t.key_index = 200;   /* a free pair: only the room is missing */
     slot_refused(sg, &t, GZ_SG_E_SLOT, __LINE__);                               /* full */
     /* dropping one makes room; dropping an unknown scope changes nothing */
     {
@@ -480,16 +484,67 @@ static void test_slots(gz_sg_role_t role)
     drop(fz);
 }
 
+/* review B of #71, H1: no key serves two purposes or two lobbies. */
+static void test_pairs(void)
+{
+    gz_signer_t *m = make(GZ_SG_ROLE_MEMBER, 0), *h = make(GZ_SG_ROLE_HOST, 0);
+    gz_sg_slot_t s1 = slot_of(7, 1), s3 = slot_of(7, 3), o = slot_of(7, 2);
+    uint8_t cpub[33], fpub[33], want[33];
+    s3.scope[0] ^= 0x55;
+    o.scope[1] ^= 0x33;
+
+    /* the member holds pairs (1, 2) and (3, 4) */
+    CHECK(gz_sg_slot_add(m, &s1, cpub, fpub) == GZ_SG_OK);
+    CHECK(gz_sg_slot_add(m, &s3, cpub, fpub) == GZ_SG_OK);
+    /* b-demo-overlap: index 2 would make the first slot's factory key this
+     * slot's contribution key, which then BIP-340-signs */
+    slot_refused(m, &o, GZ_SG_E_SLOT, __LINE__);
+    o.key_index = 0;   /* (0, 1): its factory key is the first slot's contribution key */
+    slot_refused(m, &o, GZ_SG_E_SLOT, __LINE__);
+    o.key_index = 1;   /* the same pair under another scope */
+    slot_refused(m, &o, GZ_SG_E_SLOT, __LINE__);
+    o.key_index = 3;
+    slot_refused(m, &o, GZ_SG_E_SLOT, __LINE__);
+    o.key_index = 4;   /* (4, 5) meets (3, 4) */
+    slot_refused(m, &o, GZ_SG_E_SLOT, __LINE__);
+    o.key_index = 5;   /* (5, 6) meets neither */
+    CHECK(gz_sg_slot_add(m, &o, cpub, fpub) == GZ_SG_OK);
+    gz_sg_slot_drop(m, o.scope);
+    /* a dropped slot's pair is free again */
+    gz_sg_slot_drop(m, s1.scope);
+    o.key_index = 0;
+    CHECK(gz_sg_slot_add(m, &o, cpub, fpub) == GZ_SG_OK);
+    vhex("member_factory_pub", want, 33);
+    CHECK(memcmp(cpub, want, 33) != 0);   /* index 0's keys are not index 1's pair */
+
+    /* b-demo-host-same-index: a host's second scope at index 1 would put its
+     * factory key for (7, 2) into two lobbies */
+    CHECK(gz_sg_slot_add(h, &s1, cpub, fpub) == GZ_SG_OK);
+    vhex("host_factory_pub", want, 33);
+    CHECK(memcmp(fpub, want, 33) == 0);
+    o = s1;
+    o.scope[2] ^= 0x77;
+    slot_refused(h, &o, GZ_SG_E_SLOT, __LINE__);
+    /* the host's index i itself is burned, not a key: only the factory key
+     * at i + 1 must differ, so index 2 (factory at 3) is allowed */
+    o.key_index = 2;
+    CHECK(gz_sg_slot_add(h, &o, cpub, fpub) == GZ_SG_OK);
+    vhex("host_factory_pub", want, 33);
+    CHECK(memcmp(fpub, want, 33) != 0);
+    drop(m);
+    drop(h);
+}
+
 /* ---- envelopes ---- */
 
 static void env_refused(gz_signer_t *sg, gz_sg_key_t key, const uint8_t *scope, uint16_t kind, const uint8_t *rec,
-                        size_t len, int fresh, gz_sg_err_t want, int line)
+                        size_t len, gz_sg_err_t want, int line)
 {
     uint8_t sig[64];
     uint8_t *before = snap(sg);
     int calls = g_rnd.calls;
     memset(sig, 0xff, 64);
-    gz_sg_err_t e = gz_sg_sign_envelope(sg, key, scope, kind, rec, len, fresh, sig);
+    gz_sg_err_t e = gz_sg_sign_envelope(sg, key, scope, kind, rec, len, sig);
     if (e != want) printf("  sign_envelope at line %d: %d, wanted %d\n", line, (int)e, (int)want);
     CHECK(e == want);
     CHECK(all(sig, 0, 64));
@@ -539,44 +594,62 @@ static void test_envelope(void)
     CHECK(memcmp(hh, want_h, 32) == 0);
 
 #ifdef GZ_SG_VECTORS
-    /* the vectors build: fixed aux_rand for the host's rebuilt kinds, the vectors exactly */
+    /* the vectors build's own entry point (vectors_aux.c): fixed aux_rand for
+     * the host's 72 and 78 only, the vectors exactly, nothing drawn */
     calls = g_rnd.calls;
     vhex("host_sig_72", want_sig, 64);
-    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 72, rec, 8, 0, sig) == GZ_SG_OK);
+    CHECK(gz_sgv_sign_envelope_fixed(h, GZ_SG_KEY_HOST, scope, 72, rec, 8, sig) == GZ_SG_OK);
     CHECK(memcmp(sig, want_sig, 64) == 0);
     vhex("host_sig_78_empty", want_sig, 64);
-    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 78, NULL, 0, 0, sig) == GZ_SG_OK);
+    CHECK(gz_sgv_sign_envelope_fixed(h, GZ_SG_KEY_HOST, scope, 78, NULL, 0, sig) == GZ_SG_OK);
     CHECK(memcmp(sig, want_sig, 64) == 0);
-    CHECK(g_rnd.calls == calls);   /* nothing drawn */
-#else
-    /* production: fixed aux_rand never, for any kind, key or role */
+    CHECK(g_rnd.calls == calls);
+    /* any other kind, or a member, is refused; and the random port is the
+     * caller's again afterwards */
     {
+        static const uint16_t other[] = {22, 30, 32, 34, 64, 74};
+        for (size_t i = 0; i < sizeof other / sizeof other[0]; i++) {
+            memset(sig, 0xff, 64);
+            CHECK(gz_sgv_sign_envelope_fixed(h, GZ_SG_KEY_HOST, scope, other[i], rec, 8, sig) == GZ_SG_E_KIND &&
+                  all(sig, 0, 64));
+        }
+        memset(sig, 0xff, 64);
+        CHECK(gz_sgv_sign_envelope_fixed(m, GZ_SG_KEY_CONTRIBUTION, scope, 78, rec, 8, sig) == GZ_SG_E_KIND &&
+              all(sig, 0, 64));
+        CHECK(gz_sgv_sign_envelope_fixed(h, GZ_SG_KEY_HOST, scope, 72, rec, 8, NULL) == GZ_SG_E_ARG);
+        calls = g_rnd.calls;
+        CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 72, rec, 8, sig) == GZ_SG_OK);
+        CHECK(g_rnd.calls == calls + 1);
+        vhex("host_sig_72", want_sig, 64);
+        CHECK(memcmp(sig, want_sig, 64) != 0);
+    }
+#else
+    /* production: there is no fixed-aux mode. Every signature of every
+     * signable kind draws exactly one 32-byte secret aux_rand (K20) */
+    {
+        static const uint16_t host_kinds[] = {30, 32, 34, 64, 72, 74, 78};
         int bad = 0;
-        for (unsigned k = 0; k <= 0xffffu; k++) {
-            memset(sig, 0xff, 64);
-            if (gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, (uint16_t)k, rec, 8, 0, sig) == GZ_SG_OK || !all(sig, 0, 64))
-                bad++;
-            memset(sig, 0xff, 64);
-            if (gz_sg_sign_envelope(m, GZ_SG_KEY_CONTRIBUTION, scope, (uint16_t)k, rec, 8, 0, sig) == GZ_SG_OK ||
-                !all(sig, 0, 64))
+        for (size_t i = 0; i < sizeof host_kinds / sizeof host_kinds[0]; i++) {
+            int c0 = g_rnd.calls, s0 = g_rnd.secret;
+            g_rnd.last_len = 0;
+            if (gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, host_kinds[i], rec, 8, sig) != GZ_SG_OK ||
+                g_rnd.calls != c0 + 1 || g_rnd.secret != s0 + 1 || g_rnd.last_len != 32)
                 bad++;
         }
         CHECK(bad == 0);
     }
-    ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 72, rec, 8, 0, GZ_SG_E_KIND);
-    ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 78, NULL, 0, 0, GZ_SG_E_KIND);
     /* the kinds the vectors sign with fixed aux_rand: here one fresh draw
      * each, a valid signature, never the vector's and never twice the same */
     calls = g_rnd.calls;
     vhex("host_sig_72", want_sig, 64);
-    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 72, rec, 8, 1, sig) == GZ_SG_OK);
+    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 72, rec, 8, sig) == GZ_SG_OK);
     CHECK(g_rnd.calls == calls + 1);
     CHECK(verify(sig, want_h, hp) && memcmp(sig, want_sig, 64) != 0);
-    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 72, rec, 8, 1, sig2) == GZ_SG_OK);
+    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 72, rec, 8, sig2) == GZ_SG_OK);
     CHECK(verify(sig2, want_h, hp) && memcmp(sig2, sig, 64) != 0 && memcmp(sig2, want_sig, 64) != 0);
     vhex("msg_hash_78_empty", hh, 32);
     vhex("host_sig_78_empty", want_sig, 64);
-    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 78, NULL, 0, 1, sig) == GZ_SG_OK);
+    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 78, NULL, 0, sig) == GZ_SG_OK);
     CHECK(verify(sig, hh, hp) && memcmp(sig, want_sig, 64) != 0);
     CHECK(g_rnd.calls == calls + 3);
 #endif
@@ -586,67 +659,63 @@ static void test_envelope(void)
     calls = g_rnd.calls;
     int sec = g_rnd.secret, ord = g_rnd.ordinary;
     g_rnd.last_len = 0;
-    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 30, rec, 8, 1, sig) == GZ_SG_OK);
+    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 30, rec, 8, sig) == GZ_SG_OK);
     CHECK(g_rnd.calls == calls + 1 && g_rnd.secret == sec + 1 && g_rnd.ordinary == ord && g_rnd.last_len == 32);
     gz_rmsg_hash(30, scope, rec, 8, hh);
     CHECK(verify(sig, hh, hp));
-    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 30, rec, 8, 1, sig2) == GZ_SG_OK);
+    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 30, rec, 8, sig2) == GZ_SG_OK);
     CHECK(verify(sig2, hh, hp) && memcmp(sig, sig2, 64) != 0);
-    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 72, rec, 8, 1, sig) == GZ_SG_OK);   /* fresh allowed too */
+    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 72, rec, 8, sig) == GZ_SG_OK);
 
     /* a member: its contribution key over the vector's hash */
     vhex("msg_hash_22", want_h, 32);
-    CHECK(gz_sg_sign_envelope(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, rec, 8, 1, sig) == GZ_SG_OK);
+    CHECK(gz_sg_sign_envelope(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, rec, 8, sig) == GZ_SG_OK);
     vhex("member_contribution_pub", cpub, 33);
     CHECK(memcmp(cpub, mp, 33) == 0 && verify(sig, want_h, cpub));
     CHECK(!verify(sig, want_h, hp));
 
     /* 1. the key matches the role: never the factory or a wallet key */
-    ENV_REFUSED(h, GZ_SG_KEY_CONTRIBUTION, scope, 72, rec, 8, 0, GZ_SG_E_KIND);
-    ENV_REFUSED(h, GZ_SG_KEY_FACTORY, scope, 72, rec, 8, 0, GZ_SG_E_KIND);
-    ENV_REFUSED(h, GZ_SG_KEY_FACTORY, scope, 18, rec, 8, 1, GZ_SG_E_KIND);
-    ENV_REFUSED(h, GZ_SG_KEY_WALLET, scope, 18, rec, 8, 1, GZ_SG_E_KIND);
-    ENV_REFUSED(h, (gz_sg_key_t)0, scope, 18, rec, 8, 1, GZ_SG_E_KIND);
-    ENV_REFUSED(m, GZ_SG_KEY_HOST, scope, 22, rec, 8, 1, GZ_SG_E_KIND);
-    ENV_REFUSED(m, GZ_SG_KEY_FACTORY, scope, 22, rec, 8, 1, GZ_SG_E_KIND);
-    ENV_REFUSED(m, GZ_SG_KEY_WALLET, scope, 22, rec, 8, 1, GZ_SG_E_KIND);
+    ENV_REFUSED(h, GZ_SG_KEY_CONTRIBUTION, scope, 72, rec, 8, GZ_SG_E_KIND);
+    ENV_REFUSED(h, GZ_SG_KEY_FACTORY, scope, 72, rec, 8, GZ_SG_E_KIND);
+    ENV_REFUSED(h, GZ_SG_KEY_FACTORY, scope, 18, rec, 8, GZ_SG_E_KIND);
+    ENV_REFUSED(h, GZ_SG_KEY_WALLET, scope, 18, rec, 8, GZ_SG_E_KIND);
+    ENV_REFUSED(h, (gz_sg_key_t)0, scope, 18, rec, 8, GZ_SG_E_KIND);
+    ENV_REFUSED(m, GZ_SG_KEY_HOST, scope, 22, rec, 8, GZ_SG_E_KIND);
+    ENV_REFUSED(m, GZ_SG_KEY_FACTORY, scope, 22, rec, 8, GZ_SG_E_KIND);
+    ENV_REFUSED(m, GZ_SG_KEY_WALLET, scope, 22, rec, 8, GZ_SG_E_KIND);
     /* 2. the kind is in the key's row */
     /* the ten kinds draft 1 signed and messages.md leaves unsigned (review A, H1) */
     {
         static const uint16_t host_unsigned[] = {18, 28, 68, 81}, member_unsigned[] = {16, 20, 24, 26, 66, 80};
         for (size_t i = 0; i < sizeof host_unsigned / sizeof host_unsigned[0]; i++)
-            ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, host_unsigned[i], rec, 8, 1, GZ_SG_E_KIND);
+            ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, host_unsigned[i], rec, 8, GZ_SG_E_KIND);
         for (size_t i = 0; i < sizeof member_unsigned / sizeof member_unsigned[0]; i++)
-            ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, member_unsigned[i], rec, 8, 1, GZ_SG_E_KIND);
+            ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, member_unsigned[i], rec, 8, GZ_SG_E_KIND);
     }
-    ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 22, rec, 8, 1, GZ_SG_E_KIND);    /* a member's kind on the host */
-    ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 66, rec, 8, 1, GZ_SG_E_KIND);
-    ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 18, rec, 8, 1, GZ_SG_E_KIND);   /* the host's on a member */
-    ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 72, rec, 8, 1, GZ_SG_E_KIND);
-    ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 100, rec, 8, 1, GZ_SG_E_KIND);   /* no such kind */
-    ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 32767, rec, 8, 1, GZ_SG_E_KIND);
-    /* 3. deterministic only for the host's rebuilt kinds */
-    ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 64, rec, 8, 0, GZ_SG_E_KIND);
-    ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 18, rec, 8, 0, GZ_SG_E_KIND);
-    ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 78, rec, 8, 0, GZ_SG_E_KIND);
-    ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, rec, 8, 0, GZ_SG_E_KIND);
+    ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 22, rec, 8, GZ_SG_E_KIND);    /* a member's kind on the host */
+    ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 66, rec, 8, GZ_SG_E_KIND);
+    ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 18, rec, 8, GZ_SG_E_KIND);   /* the host's on a member */
+    ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 72, rec, 8, GZ_SG_E_KIND);
+    ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 100, rec, 8, GZ_SG_E_KIND);   /* no such kind */
+    ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 32767, rec, 8, GZ_SG_E_KIND);
+    /* 3. (there is no fixed-aux mode to refuse: the parameter is gone, K20) */
     /* 4. length: one envelope's records, or a reassembled host round message */
-    CHECK(gz_sg_sign_envelope(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, big, one_record(big, GZ_RMSG_MAX_RECORDS_ONE), 1,
+    CHECK(gz_sg_sign_envelope(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, big, one_record(big, GZ_RMSG_MAX_RECORDS_ONE),
                               sig) == GZ_SG_OK);
-    ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, big, one_record(big, GZ_RMSG_MAX_RECORDS_ONE + 1), 1, GZ_SG_E_ARG);
-    ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 70, big, one_record(big, GZ_RMSG_MAX_RECORDS_ONE + 1), 1, GZ_SG_E_ARG);
-    ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 78, big, one_record(big, GZ_RMSG_MAX_RECORDS_ONE + 1), 1, GZ_SG_E_ARG);
-    ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 30, big, one_record(big, GZ_RMSG_MAX_RECORDS_ONE + 1), 1, GZ_SG_E_ARG);
-    ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 34, big, one_record(big, GZ_RMSG_MAX_RECORDS_ONE + 1), 1, GZ_SG_E_ARG);
+    ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, big, one_record(big, GZ_RMSG_MAX_RECORDS_ONE + 1), GZ_SG_E_ARG);
+    ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 70, big, one_record(big, GZ_RMSG_MAX_RECORDS_ONE + 1), GZ_SG_E_ARG);
+    ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 78, big, one_record(big, GZ_RMSG_MAX_RECORDS_ONE + 1), GZ_SG_E_ARG);
+    ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 30, big, one_record(big, GZ_RMSG_MAX_RECORDS_ONE + 1), GZ_SG_E_ARG);
+    ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 34, big, one_record(big, GZ_RMSG_MAX_RECORDS_ONE + 1), GZ_SG_E_ARG);
     /* each of the host's signed round kinds may be a reassembled message */
-    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 72, big, one_record(big, GZ_RMSG_MAX_WHOLE - GZ_RMSG_HEADER), 1, sig) == GZ_SG_OK);
-    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 74, big, one_record(big, GZ_RMSG_MAX_WHOLE - GZ_RMSG_HEADER), 1, sig) == GZ_SG_OK);
-    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 78, big, one_record(big, GZ_RMSG_MAX_WHOLE - GZ_RMSG_HEADER), 1, sig) == GZ_SG_OK);
-    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 64, big, one_record(big, GZ_RMSG_MAX_RECORDS_ONE + 1), 1,
+    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 72, big, one_record(big, GZ_RMSG_MAX_WHOLE - GZ_RMSG_HEADER), sig) == GZ_SG_OK);
+    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 74, big, one_record(big, GZ_RMSG_MAX_WHOLE - GZ_RMSG_HEADER), sig) == GZ_SG_OK);
+    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 78, big, one_record(big, GZ_RMSG_MAX_WHOLE - GZ_RMSG_HEADER), sig) == GZ_SG_OK);
+    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 64, big, one_record(big, GZ_RMSG_MAX_RECORDS_ONE + 1),
                               sig) == GZ_SG_OK);
     CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 64, big, one_record(big, GZ_RMSG_MAX_WHOLE - GZ_RMSG_HEADER),
                               1, sig) == GZ_SG_OK);
-    ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 64, big, one_record(big, GZ_RMSG_MAX_WHOLE - GZ_RMSG_HEADER + 1), 1,
+    ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 64, big, one_record(big, GZ_RMSG_MAX_WHOLE - GZ_RMSG_HEADER + 1),
                 GZ_SG_E_ARG);
     /* BigSize lengths at each width's edge (review A of #71, N5), with the
      * bytes present, so only minimality decides */
@@ -654,22 +723,22 @@ static void test_envelope(void)
         /* 2 bytes: 0xfc is not minimal there, 0xfd is */
         memset(big, 0x5a, 3 + 253);
         big[0] = 2; big[1] = 0xfd; big[2] = 0x00; big[3] = 0xfc;
-        ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, big, 4 + 0xfc, 1, GZ_SG_E_ARG);
+        ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, big, 4 + 0xfc, GZ_SG_E_ARG);
         big[3] = 0xfd;
-        CHECK(gz_sg_sign_envelope(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, big, 4 + 0xfd, 1, sig) == GZ_SG_OK);
+        CHECK(gz_sg_sign_envelope(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, big, 4 + 0xfd, sig) == GZ_SG_OK);
         /* 4 bytes: 0xffff is not minimal there, 0x10000 is (a host round kind, for the size) */
         memset(big, 0x5a, 6 + 0x10000);
         big[0] = 2; big[1] = 0xfe; big[2] = 0x00; big[3] = 0x00; big[4] = 0xff; big[5] = 0xff;
-        ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 64, big, 6 + 0xffff, 1, GZ_SG_E_ARG);
+        ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 64, big, 6 + 0xffff, GZ_SG_E_ARG);
         big[2] = 0x00; big[3] = 0x01; big[4] = 0x00; big[5] = 0x00;
-        CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 64, big, 6 + 0x10000, 1, sig) == GZ_SG_OK);
+        CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 64, big, 6 + 0x10000, sig) == GZ_SG_OK);
         /* 8 bytes: 0xffffffff is not minimal there; 0x100000000 is minimal but
          * longer than any message, so both are refused */
         {
             static const uint8_t w8_max[] = {0x02, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xaa};
             static const uint8_t w8_min[] = {0x02, 0xff, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0xaa};
-            ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 64, w8_max, sizeof w8_max, 1, GZ_SG_E_ARG);
-            ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 64, w8_min, sizeof w8_min, 1, GZ_SG_E_ARG);
+            ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 64, w8_max, sizeof w8_max, GZ_SG_E_ARG);
+            ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 64, w8_min, sizeof w8_min, GZ_SG_E_ARG);
         }
     }
     /* 5. a well-formed stream, without the signature record */
@@ -689,36 +758,34 @@ static void test_envelope(void)
         static const uint8_t no_len[] = {0x02};
         static const uint8_t t239[] = {0x02, 0x00, 0xef, 0x01, 0x00};
         static const uint8_t zero_type[] = {0x00, 0x01, 0x07};
-        ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, sig240, sizeof sig240, 1, GZ_SG_E_ARG);
-        ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, only240, sizeof only240, 1, GZ_SG_E_ARG);
-        ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, past240, sizeof past240, 1, GZ_SG_E_ARG);
-        ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, big_type, sizeof big_type, 1, GZ_SG_E_ARG);
-        ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, down, sizeof down, 1, GZ_SG_E_ARG);
-        ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, twice, sizeof twice, 1, GZ_SG_E_ARG);
-        ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, wide, sizeof wide, 1, GZ_SG_E_ARG);
-        ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, wide_len, sizeof wide_len, 1, GZ_SG_E_ARG);
-        ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, past_end, sizeof past_end, 1, GZ_SG_E_ARG);
-        ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, cut, sizeof cut, 1, GZ_SG_E_ARG);
-        ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, wide4_len, sizeof wide4_len, 1, GZ_SG_E_ARG);
-        ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, wide8_len, sizeof wide8_len, 1, GZ_SG_E_ARG);
-        ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, no_len, sizeof no_len, 1, GZ_SG_E_ARG);
-        ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 72, sig240, sizeof sig240, 1, GZ_SG_E_ARG);
-        CHECK(gz_sg_sign_envelope(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, t239, sizeof t239, 1, sig) == GZ_SG_OK);
-        CHECK(gz_sg_sign_envelope(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, zero_type, sizeof zero_type, 1, sig) == GZ_SG_OK);
-        CHECK(gz_sg_sign_envelope(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, rec, 0, 1, sig) == GZ_SG_OK);
+        ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, sig240, sizeof sig240, GZ_SG_E_ARG);
+        ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, only240, sizeof only240, GZ_SG_E_ARG);
+        ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, past240, sizeof past240, GZ_SG_E_ARG);
+        ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, big_type, sizeof big_type, GZ_SG_E_ARG);
+        ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, down, sizeof down, GZ_SG_E_ARG);
+        ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, twice, sizeof twice, GZ_SG_E_ARG);
+        ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, wide, sizeof wide, GZ_SG_E_ARG);
+        ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, wide_len, sizeof wide_len, GZ_SG_E_ARG);
+        ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, past_end, sizeof past_end, GZ_SG_E_ARG);
+        ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, cut, sizeof cut, GZ_SG_E_ARG);
+        ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, wide4_len, sizeof wide4_len, GZ_SG_E_ARG);
+        ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, wide8_len, sizeof wide8_len, GZ_SG_E_ARG);
+        ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, no_len, sizeof no_len, GZ_SG_E_ARG);
+        ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 72, sig240, sizeof sig240, GZ_SG_E_ARG);
+        CHECK(gz_sg_sign_envelope(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, t239, sizeof t239, sig) == GZ_SG_OK);
+        CHECK(gz_sg_sign_envelope(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, zero_type, sizeof zero_type, sig) == GZ_SG_OK);
+        CHECK(gz_sg_sign_envelope(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, rec, 0, sig) == GZ_SG_OK);
     }
     /* 6. a held slot */
-    ENV_REFUSED(h, GZ_SG_KEY_HOST, other, 72, rec, 8, 1, GZ_SG_E_SLOT);
-    ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, other, 22, rec, 8, 1, GZ_SG_E_SLOT);
+    ENV_REFUSED(h, GZ_SG_KEY_HOST, other, 72, rec, 8, GZ_SG_E_SLOT);
+    ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, other, 22, rec, 8, GZ_SG_E_SLOT);
     /* arguments */
-    ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, NULL, 22, rec, 8, 1, GZ_SG_E_ARG);
-    ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, NULL, 8, 1, GZ_SG_E_ARG);
-    ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, rec, 8, 2, GZ_SG_E_ARG);
-    ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, rec, 8, -1, GZ_SG_E_ARG);
+    ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, NULL, 22, rec, 8, GZ_SG_E_ARG);
+    ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, NULL, 8, GZ_SG_E_ARG);
     CHECK(gz_sg_sign_envelope(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, rec, 8, 1, NULL) == GZ_SG_E_ARG);
     /* a dropped slot signs nothing more */
     gz_sg_slot_drop(m, scope);
-    ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, rec, 8, 1, GZ_SG_E_SLOT);
+    ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, rec, 8, GZ_SG_E_SLOT);
     drop(h);
     drop(m);
 }
@@ -779,7 +846,7 @@ static void test_wipe(void)
     gz_signer_wipe(h);
     CHECK(all(h, 0, gz_signer_size()));
     memset(sig, 0xff, 64);
-    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, s.scope, 72, NULL, 0, 0, sig) == GZ_SG_E_ARG && all(sig, 0, 64));
+    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, s.scope, 72, NULL, 0, sig) == GZ_SG_E_ARG && all(sig, 0, 64));
     CHECK(gz_sg_host_pub(h, pub) == GZ_SG_E_ARG);
     gz_signer_wipe(NULL);
     free(h);
@@ -797,6 +864,20 @@ static void test_wipe(void)
 
 /* ---- the spend-back's fee cap ---- */
 
+/* The cap under a signer whose max_feerate is `ceiling` (review B of #71, M1:
+ * the ceiling is the signer's own). A ceiling init refuses (0, or above the
+ * hard maximum) gives no signer, so no cap: 0. */
+static uint64_t cap_at(uint64_t plan_fee, uint64_t plan_vsize, uint64_t sb_vsize, uint64_t ceiling)
+{
+    gz_sg_config_t c = config(GZ_SG_ROLE_HOST);
+    gz_signer_t *sg = malloc(gz_signer_size());
+    uint64_t r = 0;
+    c.max_feerate = ceiling;
+    if (sg && gz_signer_init(sg, gz_signer_size(), &c) == GZ_SG_OK) r = gz_sg_spend_back_fee_cap(sg, plan_fee, plan_vsize, sb_vsize);
+    if (sg) drop(sg);
+    return r;
+}
+
 static void test_fee_cap(void)
 {
     int seen = 0;
@@ -804,28 +885,44 @@ static void test_fee_cap(void)
         unsigned long long a, b, c, d, want;
         if (sscanf(vecs[i].name, "fee_cap_%llu_%llu_%llu_%llu", &a, &b, &c, &d) != 4) continue;
         want = strtoull(vecs[i].value, NULL, 10);
-        CHECK(gz_sg_spend_back_fee_cap(a, b, c, d) == want);
+        CHECK(cap_at(a, b, c, d) == want);
         seen++;
     }
-    CHECK(seen == 10);
+    CHECK(seen == 12);
     /* review B of #56, M-3: a 16 sat, 154 vB funding; a 111 vB spend-back;
      * the harness's ceiling of 1 sat/vB. Level 0 at 0.1 sat/vB is 12 sat,
      * level 1 is 28, level 2 is 127; "ceiling x vsize" would be 111. */
-    uint64_t cap = gz_sg_spend_back_fee_cap(16, 154, 111, 1000);
+    uint64_t cap = cap_at(16, 154, 111, 1000);
     CHECK(cap == 127);
     CHECK(12 <= cap && 28 <= cap && 127 <= cap && !(128 <= cap));
     CHECK((1000u * 111u + 999u) / 1000u < 127u);   /* the old cap refused level 2 */
     /* bounds */
-    CHECK(gz_sg_spend_back_fee_cap(16, 0, 111, 1000) == 0);
-    CHECK(gz_sg_spend_back_fee_cap(16, 154, 0, 1000) == 0);
-    CHECK(gz_sg_spend_back_fee_cap(16, 4000001, 111, 1000) == 0);
-    CHECK(gz_sg_spend_back_fee_cap(16, 154, 4000001, 1000) == 0);
-    CHECK(gz_sg_spend_back_fee_cap(16, 154, 111, GZ_SG_FEERATE_HARD_MAX + 1) == 0);   /* a request's ceiling never raises it */
-    CHECK(gz_sg_spend_back_fee_cap(16, 154, 111, UINT64_C(100000000)) == 0);
-    CHECK(gz_sg_spend_back_fee_cap(UINT64_C(2100000000000001), 154, 111, 1000) == 0);
-    CHECK(gz_sg_spend_back_fee_cap(UINT64_C(2100000000000000), 154, 4000000, 1000) == 0);   /* overflow */
-    CHECK(gz_sg_spend_back_fee_cap(16, 4000000, 4000000, GZ_SG_FEERATE_HARD_MAX) == 20000000u);
-    CHECK(gz_sg_spend_back_fee_cap(UINT64_C(2100000000000000), 154, 111, 1000) != 0);   /* the bound itself is admitted */
+    CHECK(cap_at(16, 0, 111, 1000) == 0);
+    CHECK(cap_at(16, 154, 0, 1000) == 0);
+    CHECK(cap_at(16, 4000001, 111, 1000) == 0);
+    CHECK(cap_at(16, 154, 4000001, 1000) == 0);
+    CHECK(cap_at(16, 154, 111, GZ_SG_FEERATE_HARD_MAX + 1) == 0);
+    CHECK(cap_at(16, 154, 111, 0) == 0);
+    CHECK(cap_at(UINT64_C(2100000000000001), 154, 111, 1000) == 0);
+    CHECK(cap_at(16, 4000000, 4000000, GZ_SG_FEERATE_HARD_MAX) == 20000000u);
+    /* review B of #71, M1 (a decision against review A's M4, which asked for
+     * this vector to be admitted): a plan fee above the ceiling on the plan's
+     * own size never came from a plan the signer built, so it is refused, the
+     * 21 million BTC bound included. At the ceiling it is admitted; one more
+     * satoshi is not. */
+    CHECK(cap_at(UINT64_C(2100000000000000), 154, 111, 1000) == 0);
+    CHECK(cap_at(154, 154, 111, 1000) == 154u + 111u);
+    CHECK(cap_at(155, 154, 111, 1000) == 0);
+    CHECK(cap_at(2000, 154, 111, 1000) == 0);
+    /* no signer, or a wiped one: no cap */
+    CHECK(gz_sg_spend_back_fee_cap(NULL, 16, 154, 111) == 0);
+    {
+        gz_signer_t *sg = make(GZ_SG_ROLE_HOST, 0);
+        CHECK(gz_sg_spend_back_fee_cap(sg, 16, 154, 111) == 127);
+        gz_signer_wipe(sg);
+        CHECK(gz_sg_spend_back_fee_cap(sg, 16, 154, 111) == 0);
+        free(sg);
+    }
 }
 
 int main(int argc, char **argv)
@@ -840,6 +937,7 @@ int main(int argc, char **argv)
     test_keys();
     test_slots(GZ_SG_ROLE_MEMBER);
     test_slots(GZ_SG_ROLE_HOST);
+    test_pairs();
     test_envelope();
     test_not_yet();
     test_wipe();

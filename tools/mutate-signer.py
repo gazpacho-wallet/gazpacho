@@ -104,6 +104,15 @@ def main(argv):
     vectors = os.path.join(src, "signer", "tests", "vectors.txt")
     signer_tests = [[os.path.join(build, "signer", t), vectors] for t in ("test_signer", "test_signer_vectors")]
     targets = ["--target", "test_signer", "--target", "test_signer_vectors"]
+    # The constant-time test too, under memcheck, where valgrind and its
+    # headers are (review B of #71, M3): a secret-dependent branch changes no
+    # result, so only this test can kill such a mutant.
+    if shutil.which("valgrind") and os.path.exists("/usr/include/valgrind/memcheck.h"):
+        targets += ["--target", "test_signer_ctime"]
+        signer_tests.append(["valgrind", "--quiet", "--error-exitcode=9", "--track-origins=yes",
+                             os.path.join(build, "signer", "test_signer_ctime")])
+    else:
+        print("note: no valgrind here; the constant-time test is not run (ctime-* mutants will survive)")
     if need_build:
         # GZ_MUTATION_BUILD: a variable a fault leaves unused must not stop the build.
         subprocess.run(["cmake", "-S", src, "-B", build, "-DCMAKE_BUILD_TYPE=Release", "-DGZW_BREAK_CHECKS=OFF",

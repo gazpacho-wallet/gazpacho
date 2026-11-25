@@ -111,9 +111,12 @@ U64 = 2**64 - 1
 
 
 def fee_cap(plan_fee, plan_vsize, sb_vsize, ceiling):
-    """signer.md 2.3; 0 (refuse every fee) for any input out of range."""
-    if not (0 < plan_vsize <= 4000000 and 0 < sb_vsize <= 4000000 and ceiling <= FEERATE_HARD_MAX
+    """signer.md 2.3; 0 (refuse every fee) for any input out of range, and for a
+    plan fee above the ceiling on the plan's own size (review B of #71, M1)."""
+    if not (0 < ceiling and 0 < plan_vsize <= 4000000 and 0 < sb_vsize <= 4000000 and ceiling <= FEERATE_HARD_MAX
             and plan_fee <= 2100000000000000 and plan_fee <= U64 // sb_vsize):
+        return 0
+    if plan_fee > fee(ceiling, plan_vsize):
         return 0
     top = plan_fee + fee(1000, sb_vsize)
     top = max(top, plan_fee * sb_vsize // plan_vsize + 1)
@@ -199,7 +202,8 @@ def vectors():
     # plan fee, plan vsize, spend-back vsize, ceiling (sat/kvB) -> cap; 0 refuses every fee
     for case in ((16, 154, 111, 1000), (16, 154, 111, 100), (2000, 154, 111, 1000), (16, 154, 111, 5000),
                  (1, 400, 111, 0), (100000, 100, 300, 0), (1, 400, 111, 4999),
-                 (2100000000000000, 154, 111, 1000), (16, 154, 111, 5001), (16, 0, 111, 1000)):
+                 (2100000000000000, 154, 111, 1000), (16, 154, 111, 5001), (16, 0, 111, 1000),
+                 (154, 154, 111, 1000), (155, 154, 111, 1000)):
         out.append(("fee_cap_%d_%d_%d_%d" % case, str(fee_cap(*case))))
     return out
 

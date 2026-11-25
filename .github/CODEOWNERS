@@ -1,0 +1,14 @@
+# The signer boundary guards itself only if a maintainer reviews every change
+# to its parts (review A of #71, re-review; review B, L7). Requiring a code
+# owner's review on main is a repository setting: the owner's call.
+/signer/                              @8144225309
+/tools/check-signer-boundary.sh       @8144225309
+/tools/signer-only-symbols.txt        @8144225309
+/tools/signer-boundary-allowed.txt    @8144225309
+/tools/check-tags.py                  @8144225309
+/tools/mutate-signer.py               @8144225309
+/tools/signer-vectors.py              @8144225309
+/tests/tools/test_check_signer_boundary.py  @8144225309
+/tests/tools/test_check_tags.py       @8144225309
+/.github/workflows/ci.yml             @8144225309
+/.github/CODEOWNERS                   @8144225309

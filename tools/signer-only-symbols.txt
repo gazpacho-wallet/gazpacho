@@ -77,3 +77,33 @@ sym factory_sign_all
 hard GZ_SG_VECTORS
 hard gz_sg_vectors_build_never_ship
 hardprefix gz_sgv_
+
+# The imported SuperScalar library's signing and secret entry points
+# (signer.md 7.1: adaptor_*, factory_* and bolt11_* that sign; review B of
+# #71, M4). From core/superscalar/include/superscalar/*.h
+sym channel_sign_commitment
+sym channel_derive_privkey
+sym channel_derive_revocation_privkey
+sym channel_get_per_commitment_secret
+sym channel_get_revocation_secret
+sym factory_sign_node
+sym factory_sign_all_with_retry
+sym factory_sign_l_stock_poison_tx
+sym factory_sign_l_stock_cooperative_spend
+sym factory_derive_l_stock_secret
+sym factory_derive_lstock_seed
+sym factory_generate_flat_secrets
+sym factory_set_flat_secrets
+sym factory_set_shachain_seed
+sym factory_get_revocation_secret
+sym factory_assemble_poison_with_secret
+sym factory_session_complete_node
+sym factory_session_complete_node_input
+sym factory_session_complete_node_poison
+sym factory_session_complete_dist
+sym factory_session_assemble_signed_tx_multi
+sym adaptor_create_turnover_presig
+sym adaptor_adapt
+sym adaptor_extract_secret
+sym musig_generate_nonce
+sym bolt11_encode

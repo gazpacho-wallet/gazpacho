@@ -35,9 +35,11 @@
 #
 # usage: check-signer-boundary.sh [--report|--no-growth|--fail] [--root DIR]
 #            [--symbols FILE] [--allow FILE] [--write-allow FILE]
+# --base-allow FILE, --base-symbols FILE: the merge base's allow list and symbol
+# list; the first may only shrink, the second may only grow.
 # --write-allow FILE writes the current uses in the allow list's format (for
 # the person shrinking the list; review the diff).
-# POSIX sh, find, awk and sort only.
+# POSIX sh, git (ls-files), find, awk, sort and comm only.
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -47,6 +49,7 @@ symbols=
 allow=
 write_allow=
 base_allow=
+base_symbols=
 while [ $# -gt 0 ]; do
     case "$1" in
         --report) mode=report ;;
@@ -57,11 +60,13 @@ while [ $# -gt 0 ]; do
         --allow) allow=$2; shift ;;
         --write-allow) write_allow=$2; shift ;;
         --base-allow) base_allow=$2; shift ;;
-        *) echo "usage: $0 [--report|--no-growth|--fail] [--root DIR] [--symbols FILE] [--allow FILE] [--write-allow FILE] [--base-allow FILE]" >&2
+        --base-symbols) base_symbols=$2; shift ;;
+        *) echo "usage: $0 [--report|--no-growth|--fail] [--root DIR] [--symbols FILE] [--allow FILE] [--write-allow FILE] [--base-allow FILE] [--base-symbols FILE]" >&2
            exit 2 ;;
     esac
     shift
 done
+root=$(cd "$root" && pwd)   # absolute: the scan runs from inside it
 [ -n "$symbols" ] || symbols=$root/tools/signer-only-symbols.txt
 [ -n "$allow" ] || allow=$root/tools/signer-boundary-allowed.txt
 if [ ! -f "$symbols" ]; then
@@ -73,15 +78,22 @@ fi
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
-# The files, as paths relative to the root, in a stable order.
-(cd "$root" && find . \( -path ./signer -o -path ./core/superscalar -o -path ./build -o -path './build-*' \
-        -o -path ./_deps -o -path ./.git \) -prune -o -type f \( -name '*.c' -o -name '*.h' -o -name '*.inc' \
-        -o -name '*.cpp' -o -name '*.cc' -o -name '*.S' \) -print) |
-    sed 's|^\./||' | LC_ALL=C sort > "$tmp/files"
+# Every file the repository tracks, as paths relative to the root (review B of
+# #71, M4): build output is never tracked, so no folder name is pruned, and a
+# tracked build-*/ folder is scanned like any other. Outside a git work tree
+# (the tools' own fixtures before they are tracked) every file under the root.
+# Only signer/ and core/superscalar/ (imported) are left out.
+if git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git -C "$root" ls-files > "$tmp/all"
+else
+    (cd "$root" && find . -path ./.git -prune -o -type f -print | sed 's|^\./||') > "$tmp/all"
+fi
+grep -v -e '^signer/' -e '^core/superscalar/' "$tmp/all" | LC_ALL=C sort > "$tmp/tracked" || true
+grep -E '\.(c|h|inc|cpp|cc|cxx|hpp|hh|S|s)$' "$tmp/tracked" > "$tmp/files" || true
 
 # One line per use: FILE<TAB>SYMBOL<TAB>LINE.
 (cd "$root" && awk -v SYMS="$symbols" '
-function strip(line,    out, i, c, n) {
+function strip(line,    out, i, c, n, j) {
     if (!inblk && !instr && line !~ /[\/"'"'"']/) return line
     out = ""; n = length(line); i = 1
     while (i <= n) {
@@ -97,6 +109,13 @@ function strip(line,    out, i, c, n) {
         }
         if (c == "/" && substr(line, i + 1, 1) == "*") { inblk = 1; out = out "  "; i += 2; continue }
         if (c == "/" && substr(line, i + 1, 1) == "/") break
+        if (c == "'"'"'") {
+            # a digit separator (1'"'"'000, C23 and C++14) is not a literal: the
+            # quote then follows a number token (review B of #71, M4)
+            j = i - 1
+            while (j >= 1 && substr(line, j, 1) ~ /[0-9A-Za-z_.'"'"']/) j--
+            if (j < i - 1 && substr(line, j + 1, 1) ~ /[0-9]/) { out = out c; i++; continue }
+        }
         if (c == "\"" || c == "'"'"'") { instr = 1; q = c; out = out " "; i++; continue }
         out = out c; i++
     }
@@ -122,19 +141,28 @@ BEGIN {
     }
     if (ns == 0) { print "check-signer-boundary: empty symbol list" > "/dev/stderr"; bad = 1; exit 2 }
 }
-FNR == 1 { inblk = 0; instr = 0 }
+FNR == 1 { inblk = 0; instr = 0; pend = ""; pstart = 0 }
 {
+    # Backslash-newline splicing, as the C preprocessor does it first: a line
+    # ending in a backslash is joined with the next, and a finding is reported
+    # at the first line of the joined text (review B of #71, M4).
+    if (pend != "") { line = pend $0; at = pstart } else { line = $0; at = FNR }
+    if (line ~ /\\$/) { pend = substr(line, 1, length(line) - 1); pstart = at; next }
+    pend = ""
     # #include of a source file of signer/: a way round the library (H3)
-    if ($0 ~ /^[ \t]*#[ \t]*include[ \t]*["<][^">]*signer\/[^">]*\.(c|inc)[">]/)
-        print FILENAME "\thard:include-signer-source\t" FNR
-    s0 = strip($0)
+    if (line ~ /^[ \t]*#[ \t]*include[ \t]*["<][^">]*signer\/[^">]*\.(c|inc)[">]/)
+        print FILENAME "\thard:include-signer-source\t" at
+    # a computed #include (a macro, not a literal) could name anything (M4)
+    if (line ~ /^[ \t]*#[ \t]*include[ \t]*[^"< \t]/)
+        print FILENAME "\thard:computed-include\t" at
+    s0 = strip(line)
     # token pasting onto a gz_sg name: gz_sg##v_sign_envelope (N1)
     if (s0 ~ /gz_sg[A-Za-z0-9_]*[ \t]*##/ || s0 ~ /##[ \t]*gz_sg/)
-        print FILENAME "\thard:token-paste-gz_sg\t" FNR
+        print FILENAME "\thard:token-paste-gz_sg\t" at
     for (j = 1; j <= ns; j++) {
         s = s0
         while (match(s, re[j])) {
-            print FILENAME "\t" label[j] "\t" FNR
+            print FILENAME "\t" label[j] "\t" at
             # the rest after the match; "^" lets a symbol right after a boundary match again
             s = substr(s, RSTART + RLENGTH)
         }
@@ -150,9 +178,12 @@ END { if (bad) exit 2 }
 grep "	hard:" "$tmp/uses" > "$tmp/hard" || true
 grep -v "	hard:" "$tmp/uses" > "$tmp/uses.soft" || true
 mv "$tmp/uses.soft" "$tmp/uses"
-(cd "$root" && find . \( -path ./signer -o -path ./build -o -path './build-*' -o -path ./_deps -o -path ./.git \) -prune \
-        -o -type f \( -name CMakeLists.txt -o -name '*.cmake' \) -print | sed 's|^\./||' | LC_ALL=C sort |
-    while read -r bf; do
+# Build and recipe files: CMake, workflows, shell scripts, JSON (presets) and
+# Dockerfiles, so that a global -DGZ_SG_VECTORS in a release recipe is seen
+# too (review B of #71, M2). This script itself names them, so it is left out.
+grep -E '(^|/)(CMakeLists\.txt|[^/]*\.(cmake|yml|yaml|sh|json)|Dockerfile[^/]*)$' "$tmp/tracked" |
+    grep -v -x 'tools/check-signer-boundary.sh' > "$tmp/buildfiles" || true
+(cd "$root" && while read -r bf; do
         # Substrings, not words: -DGZ_SG_VECTORS, CMAKE_C_FLAGS, an ALIAS of
         # the library, $<TARGET_FILE:...> and a list of signer/ sources all
         # count (review A of #71, N1). A comment is not a use.
@@ -162,7 +193,7 @@ mv "$tmp/uses.soft" "$tmp/uses"
             if (l ~ /gazpacho_signer_vectors/) print F "\thard:gazpacho_signer_vectors-in-build-file\t" FNR
             if (l ~ /signer\/[A-Za-z0-9_.\/${}-]*\.(c|inc)([^A-Za-z0-9_]|$)/) print F "\thard:signer-source-in-build-file\t" FNR
         }' "$bf"
-    done) >> "$tmp/hard"
+    done < "$tmp/buildfiles") >> "$tmp/hard"
 hard_fail=0
 if [ -s "$tmp/hard" ]; then
     awk -F '\t' '{ printf "HARD %s:%s: %s (never allowed outside signer/)\n", $1, $3, substr($2, 6) }' "$tmp/hard"
@@ -186,6 +217,24 @@ if [ -n "$base_allow" ]; then
           else if ($3 + 0 > b[k]) { printf "ALLOW-GROWTH %s: %s raised from %d to %d\n", $1, $2, b[k], $3; g++ } }
         END { if (g) { printf "FAIL: the allow list grew against the merge base (%d lines)\n", g; exit 1 }
               print "allow list: no growth against the merge base" }' "$tmp/base" "$tmp/allowed" || exit 1
+fi
+
+# --base-symbols FILE: the symbol list of the merge base. Every line of it
+# must still be in the list, so that deleting a symbol and adding a use of it
+# in the same change counts as growth (review A of #71, re-review). Comments
+# and spacing do not count.
+if [ -n "$base_symbols" ]; then
+    [ -f "$base_symbols" ] || base_symbols=/dev/null
+    norm() { sed 's/#.*//' "$1" | awk 'NF { print $1 " " $2 }' | LC_ALL=C sort -u; }
+    norm "$base_symbols" > "$tmp/base-syms"
+    norm "$symbols" > "$tmp/cur-syms"
+    LC_ALL=C comm -23 "$tmp/base-syms" "$tmp/cur-syms" > "$tmp/gone-syms"
+    if [ -s "$tmp/gone-syms" ]; then
+        sed 's/^/SYMBOL-REMOVED /' "$tmp/gone-syms"
+        echo "FAIL: the symbol list lost lines against the merge base"
+        exit 1
+    fi
+    echo "symbol list: nothing removed against the merge base"
 fi
 
 if [ -n "$write_allow" ]; then

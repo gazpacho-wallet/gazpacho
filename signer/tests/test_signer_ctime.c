@@ -5,10 +5,13 @@
  * declassified through the signer's GZ_SG_DECLASSIFY hook, and libsecp256k1
  * runs with SECP256K1_CONTEXT_DECLASSIFY, as in its own ctime test.
  *
- * Checked: the host signing an envelope (fresh aux_rand; fixed aux refused) with its
- * long-term key undefined; a member signing with its contribution key
- * undefined; a refusal after the key is held; dropping a slot and wiping the
- * signer with the keys still undefined. Each must report nothing.
+ * Checked: the seed the seed source gives and the aux_rand the random port
+ * gives are marked undefined, so the derivation (BIP 32 in wallet/src/bip32.c,
+ * built here with its own declassify hook, and the signer's walk and key
+ * pairs) and every signature run with secret-marked data (review B of #71,
+ * M3). The host derives its key and its factory key, signs and refuses; a
+ * member adds two slots, signs and refuses; slots are dropped and the signers
+ * wiped. Each must report nothing.
  *
  * Without valgrind the marks do nothing and the test only runs the paths:
  * it is registered (as signer_ctime) to run under memcheck only. */
@@ -24,6 +27,7 @@ static int seed_fn(void *c, uint8_t out[64])
 {
     (void)c;
     for (int i = 0; i < 64; i++) out[i] = (uint8_t)i;
+    VALGRIND_MAKE_MEM_UNDEFINED(out, 64);   /* the seed is secret: derivation runs under the marks */
     return 1;
 }
 
@@ -31,6 +35,7 @@ static void fill(void *c, gz_random_purpose_t purpose, uint8_t *out, size_t len)
 {
     (void)c; (void)purpose;
     for (size_t i = 0; i < len; i++) out[i] = (uint8_t)(0xa0 + i);
+    VALGRIND_MAKE_MEM_UNDEFINED(out, len);  /* aux_rand is secret too (review B of #71, M3) */
 }
 
 static gz_signer_t *make(secp256k1_context *ctx, gz_sg_role_t role)
@@ -66,12 +71,12 @@ int main(void)
     s.key_index = 1;
 
     gz_signer_t *h = make(ctx, GZ_SG_ROLE_HOST);
-    CHECK(gz_sg_slot_add(h, &s, pub, NULL) == GZ_SG_OK);
+    CHECK(gz_sg_host_pub(h, pub) == GZ_SG_OK);            /* the host key, derived from the marked seed */
+    CHECK(gz_sg_slot_add(h, &s, pub, NULL) == GZ_SG_OK);  /* and its factory key */
     VALGRIND_MAKE_MEM_UNDEFINED(&h->host_kp, sizeof h->host_kp);
-    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, s.scope, 72, rec, sizeof rec, 1, sig) == GZ_SG_OK);
-    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, s.scope, 72, rec, sizeof rec, 0, sig) == GZ_SG_E_KIND);   /* never fixed aux */
-    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, s.scope, 30, rec, sizeof rec, 1, sig) == GZ_SG_OK);
-    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, s.scope, 22, rec, sizeof rec, 1, sig) == GZ_SG_E_KIND);
+    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, s.scope, 72, rec, sizeof rec, sig) == GZ_SG_OK);
+    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, s.scope, 30, rec, sizeof rec, sig) == GZ_SG_OK);
+    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, s.scope, 22, rec, sizeof rec, sig) == GZ_SG_E_KIND);
     gz_sg_slot_drop(h, s.scope);
     gz_signer_wipe(h);
     free(h);
@@ -79,8 +84,17 @@ int main(void)
     gz_signer_t *m = make(ctx, GZ_SG_ROLE_MEMBER);
     CHECK(gz_sg_slot_add(m, &s, pub, NULL) == GZ_SG_OK);
     VALGRIND_MAKE_MEM_UNDEFINED(&m->slots[0].contribution_kp, sizeof m->slots[0].contribution_kp);
-    CHECK(gz_sg_sign_envelope(m, GZ_SG_KEY_CONTRIBUTION, s.scope, 22, rec, sizeof rec, 1, sig) == GZ_SG_OK);
-    CHECK(gz_sg_sign_envelope(m, GZ_SG_KEY_CONTRIBUTION, s.scope, 78, rec, sizeof rec, 0, sig) == GZ_SG_E_KIND);
+    CHECK(gz_sg_sign_envelope(m, GZ_SG_KEY_CONTRIBUTION, s.scope, 22, rec, sizeof rec, sig) == GZ_SG_OK);
+    CHECK(gz_sg_sign_envelope(m, GZ_SG_KEY_CONTRIBUTION, s.scope, 30, rec, sizeof rec, sig) == GZ_SG_E_KIND);
+    /* a second slot of the member: the pair overlap check under the marks */
+    {
+        gz_sg_slot_t s2 = s;
+        s2.scope[0] ^= 1;
+        s2.key_index = 2;
+        CHECK(gz_sg_slot_add(m, &s2, pub, NULL) == GZ_SG_E_SLOT);
+        s2.key_index = 3;
+        CHECK(gz_sg_slot_add(m, &s2, pub, NULL) == GZ_SG_OK);
+    }
     gz_sg_slot_drop(m, s.scope);
     gz_signer_wipe(m);
     free(m);

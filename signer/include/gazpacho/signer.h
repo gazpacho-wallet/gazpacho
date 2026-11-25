@@ -45,6 +45,12 @@
 #include "gazpacho/wallet_tx.h"    /* gzt_funding_request, gzt_coin, gzt_funding_info */
 
 #ifdef GZ_SG_VECTORS   /* the test-only build: other names, so nothing else can link it */
+#ifndef GZ_SG_VECTORS_BUILD_TARGET
+/* A tripwire only: set by gazpacho_signer_vectors' own compile definitions.
+ * The real guard is that the production sources hold no fixed-aux path at
+ * all (vectors_aux.c is compiled into the vectors build only). */
+#error "GZ_SG_VECTORS outside the signer's vectors build (docs/notes/signer.md, K20)"
+#endif
 #include "gazpacho/signer_vectors_names.h"
 #endif
 
@@ -208,22 +214,19 @@ gz_sg_err_t gz_sg_seat_key(gz_signer_t *sg, const uint8_t scope[32], const uint8
  *      member; never FACTORY (the factory key signs no message) and never
  *      WALLET                                                  GZ_SG_E_KIND
  *   2. `kind` is in the key's row of table 3.2                 GZ_SG_E_KIND
- *   3. `fresh` is 1. In the vectors build only (GZ_SG_VECTORS, other
- *      entry-point names, never linked into a program) it may be 0 for the
- *      host's round_tier_result and round_abort                GZ_SG_E_KIND
- *   4. `len` is at most one envelope's records (65,495), or for the host's
+ *   3. `len` is at most one envelope's records (65,495), or for the host's
  *      signed round kinds (64, 72, 74, 78) a reassembled message's
  *      (messages.md 5)                                         GZ_SG_E_ARG
- *   5. `records` is a well-formed record stream (messages.md 4.2: minimal
+ *   4. `records` is a well-formed record stream (messages.md 4.2: minimal
  *      BigSize, increasing types, no length past the end) of types below
  *      240: no signature record, which is the signer's to append   GZ_SG_E_ARG
- *   6. `scope` is a held slot (a member's lobby, or a lobby this host has
+ *   5. `scope` is a held slot (a member's lobby, or a lobby this host has
  *      open)                                                   GZ_SG_E_SLOT
- * `fresh` = 1 draws aux_rand from the random port: every signature the
- * production library makes does. 0 (vectors build only) uses 32 zero bytes. The
- * signature is verified before it is returned. */
+ * Every signature draws 32 bytes of aux_rand (GZ_RANDOM_SECRET) from the
+ * random port: there is no deterministic mode (decision K20; review B of
+ * #71, M2). The signature is verified before it is returned. */
 gz_sg_err_t gz_sg_sign_envelope(gz_signer_t *sg, gz_sg_key_t key, const uint8_t scope[32], uint16_t kind,
-                                const uint8_t *records, size_t len, int fresh, uint8_t sig[64]);
+                                const uint8_t *records, size_t len, uint8_t sig[64]);
 
 /* S4: the terms (host) and the binding. */
 gz_sg_err_t gz_sg_sign_terms(gz_signer_t *sg, const uint8_t *outer, size_t olen, const uint8_t *current,
@@ -278,17 +281,18 @@ void gz_sg_fund_release(gz_signer_t *sg, const uint8_t txid[32]);
  *     rate on the spend-back's size (Core's rule 6: plan_fee x vsize /
  *     plan_vsize + 1).
  * `plan_fee` and `plan_vsize` are the held plan's, computed by the signer
- * from the plan it built or adopted (inputs minus outputs; its own size), and
- * `plan_fee` was itself checked against the ceiling when the plan was made,
- * so the cap is bounded by the policy alone; the caller chooses neither.
- * `ceiling_rate` is the signer's own max_feerate (gz_sg_config_t), never a
- * request's. Rates are sat/kvB, sizes vbytes. Fails closed: returns 0, which
- * refuses every fee, for an out-of-range input (a size of 0 or above
- * 4,000,000 vB, a ceiling above GZ_SG_FEERATE_HARD_MAX, a fee above 21
- * million BTC) (review A of #71, M3). */
+ * from the plan it built or adopted (inputs minus outputs; its own size).
+ * The ceiling is the signer's own max_feerate, read from `sg`: no caller
+ * chooses it (review B of #71, M1). Rates are sat/kvB, sizes vbytes.
+ * Fails closed: returns 0, which refuses every fee, when `sg` is not a live
+ * signer, for an out-of-range input (a size of 0 or above 4,000,000 vB, a
+ * fee above 21 million BTC), and when `plan_fee` is above the ceiling on the
+ * plan's own size, ceil(max_feerate x plan_vsize / 1000): such a plan was
+ * never one the signer built or adopted, so the cap is bounded by the policy
+ * alone. */
 #define GZ_SG_INCREMENTAL_HIGH 1000u
-uint64_t gz_sg_spend_back_fee_cap(uint64_t plan_fee, uint64_t plan_vsize, uint64_t spend_back_vsize,
-                                  uint64_t ceiling_rate);
+uint64_t gz_sg_spend_back_fee_cap(const gz_signer_t *sg, uint64_t plan_fee, uint64_t plan_vsize,
+                                  uint64_t spend_back_vsize);
 
 #ifdef __cplusplus
 }

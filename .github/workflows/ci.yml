@@ -436,7 +436,11 @@ jobs:
           esac
           if [ -n "$base" ] && [ "$growth" != true ]; then
             if git show "$base:tools/signer-boundary-allowed.txt" > "$RUNNER_TEMP/base-allow.txt" 2>/dev/null; then
-              sh tools/check-signer-boundary.sh --no-growth --base-allow "$RUNNER_TEMP/base-allow.txt"
+              # the symbol list may only grow: a symbol deleted in the same
+              # change as a new use of it is growth too
+              git show "$base:tools/signer-only-symbols.txt" > "$RUNNER_TEMP/base-symbols.txt"
+              sh tools/check-signer-boundary.sh --no-growth --base-allow "$RUNNER_TEMP/base-allow.txt" \
+                --base-symbols "$RUNNER_TEMP/base-symbols.txt"
             elif [ "$GITHUB_EVENT_NAME" = merge_group ] &&
                  git cat-file -e "$base:tools/check-signer-boundary.sh" 2>/dev/null; then
               # the base has the check but no allow list: something is wrong
@@ -456,12 +460,12 @@ jobs:
   signer-mutants:
     name: signer mutants
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libcurl4-openssl-dev
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libcurl4-openssl-dev valgrind
       - name: Every check of signer/ and of the two S1 tools is killed by a test
         run: python3 -I tools/mutate-signer.py . "$RUNNER_TEMP/signer-mutants" -j "$(nproc)"
