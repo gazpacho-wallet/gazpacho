@@ -423,9 +423,33 @@ static int wait_unlocked(const gzp_options_t *o)
 #else
     (void)o;
 #endif
-    /* No unlock path in this build yet (the local interface is P5/P6): stay
-     * locked, with nothing read, listening or connecting, until a stop. */
+    /* Locked until the local interface's sign-in or set-up opens storage
+     * (unlock.h): nothing of the journal is read and no peer is listened for
+     * or connected to meanwhile. Without the interface, until a stop. */
     gzp_log("locked: waiting for the local interface");
+    if (!o->no_interface) {
+        size_t cap = 1 + gzp_api_max_fds(&api), n;
+        struct pollfd *fds = calloc(cap, sizeof *fds);
+        int t = -1, rc = -1;
+        if (!fds) return GZP_EXIT_FAILED;
+        gzp_api_node_starting(&api); /* no node: the API's held calls are answered */
+        while (!stop_flag) {
+            if (gzp_wallet_state(wallet) == GZP_WALLET_UNLOCKED) {
+                gzp_log("wallet state=unlocked");
+                rc = 0;
+                break;
+            }
+            fds[0].fd = stop_pipe[0];
+            fds[0].events = POLLIN;
+            fds[0].revents = 0;
+            n = gzp_api_pollfds(&api, fds + 1, cap - 1, &t);
+            if (poll(fds, (nfds_t)(1 + n), t) < 0 && errno != EINTR) break;
+            if (fds[0].revents) break;
+            gzp_api_dispatch(&api, fds + 1, n);
+        }
+        free(fds);
+        return rc;
+    }
     while (!stop_flag) {
         struct pollfd pf;
         pf.fd = stop_pipe[0];
@@ -581,7 +605,18 @@ int main(int argc, char **argv)
         gzp_store_test_kill_at((unsigned)opt.test_power_cut_at);
     }
     if (opt.test_restore_from && !opt.test_standin_store) gzp_wallet_test_restore_from(wallet, opt.test_restore_from);
+    if (opt.test_entropy_hex && gzp_wallet_test_entropy(wallet, opt.test_entropy_hex) != 0) {
+        fprintf(stderr, "gazpacho: --test-entropy-hex takes 64 hex digits\n");
+        rc = GZP_EXIT_USAGE;
+        goto out;
+    }
 #endif
+    /* The local interface (P5) opens now, with the folder lock held and the
+     * wallet locked: its sign-in and set-up drive the wallet (unlock.h over
+     * store_unlock.c), and the locked wait serves it. It outlives every
+     * incarnation, as the transport does (B3). */
+    if ((rc = gzp_api_open(&api, &opt, &dir, network == GZ_NET_TESTNET4 ? "testnet4" : "signet", &chain)) != 0) goto out;
+    have_api = 1;
     rc = wait_unlocked(&opt);
     if (rc == -1) {
         rc = 0;
@@ -656,10 +691,6 @@ int main(int argc, char **argv)
         gzp_log("member key=%s host-peer=%016llx", hex, (unsigned long long)gzp_peer_id(opt.connect_key));
     }
 
-    /* The local interface (P5): the API server in the one loop, fed by the
-     * node's notices. It outlives every incarnation, as the transport does. */
-    if ((rc = gzp_api_open(&api, &opt, &dir, network == GZ_NET_TESTNET4 ? "testnet4" : "signet", &chain)) != 0) goto out;
-    have_api = 1;
 
 #ifdef GZP_TEST_BUILD
     gzp_testping_init(&tp, opt.test_pings, opt.test_ping_ms, opt.name, opt.test_engines);

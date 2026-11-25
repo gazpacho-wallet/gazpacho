@@ -23,6 +23,7 @@
 #include "datadir.h"
 #include "gzp.h"
 #include "store_unlock.h"
+#include "unlock_impl.h"
 #ifdef GZP_TEST_BUILD
 #include "gz_storage_crypto_test.h"
 #endif
@@ -43,9 +44,15 @@ struct gzp_wallet {
     char restore_from[GZP_PATH_MAX];
     int keys_only;
     int seed_fault; /* tests: seed() answers as if storage failed */
+    uint8_t test_entropy[32]; /* tests: a new wallet's entropy, fixed */
+    int have_test_entropy;
     int cut_after_derive; /* tests: a power cut when the derivation says wrong, before finish writes */
 #endif
 };
+
+/* The process's one wallet (main.c opens it), for unlock_impl.h. */
+static gzp_wallet_t *the_wallet;
+
 
 /* What begin leaves for finish (job->keys). */
 typedef struct {
@@ -191,6 +198,7 @@ int gzp_wallet_open(gzp_wallet_t **out, const char *dir, const uint8_t chain[32]
     w = calloc(1, sizeof *w);
     if (!w) return GZP_EXIT_FAILED;
     strcpy(w->dir, dir);
+    the_wallet = w;
     strcpy(w->helper, helper);
     memcpy(w->chain, chain, 32);
 #ifdef GZP_TEST_BUILD
@@ -232,6 +240,7 @@ void gzp_wallet_lock(gzp_wallet_t *w)
 void gzp_wallet_free(gzp_wallet_t *w)
 {
     if (!w) return;
+    if (the_wallet == w) the_wallet = NULL;
     gzp_wallet_lock(w);
     OPENSSL_cleanse(w, sizeof *w);
     free(w);
@@ -522,6 +531,21 @@ static int precount(gzp_wallet_t *w, gzp_unlock_job_t *job, job_keys_t *k)
     return 0;
 }
 
+/* A new wallet's 256 bits of entropy: the storage randomness (gazpacho-test
+ * may fix it, --test-entropy-hex, so a test knows the 24 words). */
+static int fill_entropy(gzp_wallet_t *w, uint8_t entropy[32])
+{
+#ifdef GZP_TEST_BUILD
+    if (w->have_test_entropy) {
+        memcpy(entropy, w->test_entropy, 32);
+        return 0;
+    }
+#else
+    (void)w;
+#endif
+    return gz_sc_random(entropy, 32) == GZ_SC_OK ? 0 : -1;
+}
+
 void gzp_wallet_begin(gzp_wallet_t *w, gzp_unlock_job_t *job)
 {
     job_keys_t *k = calloc(1, sizeof *k);
@@ -568,7 +592,7 @@ void gzp_wallet_begin(gzp_wallet_t *w, gzp_unlock_job_t *job)
         goto out;
     }
     if (job->op == GZP_UNLOCK_OP_CREATE) {
-        if (gz_sc_random(entropy, 32) != GZ_SC_OK || gzw_phrase_from_entropy(entropy, phrase) != 1) {
+        if (fill_entropy(w, entropy) != 0 || gzw_phrase_from_entropy(entropy, phrase) != 1) {
             set_result(&job->result, GZP_UNLOCK_STORAGE_FAILED, "random");
             goto out;
         }
@@ -859,10 +883,30 @@ void gzp_wallet_discard(gzp_wallet_t *w, gzp_unlock_job_t *job, int64_t now_ms)
 /* ---- the table -------------------------------------------------------------------- */
 
 static gzp_wallet_state_t t_state(void *c) { return gzp_wallet_state(c); }
-static void t_attempts(void *c, int64_t now, gzp_unlock_result_t *o) { gzp_wallet_attempts(c, now, o); }
+/* The attempts persist across restarts (storage 12.3), so they run on the
+ * wall clock, whatever clock the caller passes (the API passes its own). */
+static int64_t wall_now(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+static void t_attempts(void *c, int64_t now, gzp_unlock_result_t *o)
+{
+    (void)now;
+    gzp_wallet_attempts(c, wall_now(), o);
+}
 static void t_begin(void *c, gzp_unlock_job_t *j) { gzp_wallet_begin(c, j); }
-static void t_finish(void *c, gzp_unlock_job_t *j, int64_t now) { gzp_wallet_finish(c, j, now); }
-static void t_discard(void *c, gzp_unlock_job_t *j, int64_t now) { gzp_wallet_discard(c, j, now); }
+static void t_finish(void *c, gzp_unlock_job_t *j, int64_t now)
+{
+    (void)now;
+    gzp_wallet_finish(c, j, wall_now());
+}
+static void t_discard(void *c, gzp_unlock_job_t *j, int64_t now)
+{
+    (void)now;
+    gzp_wallet_discard(c, j, wall_now());
+}
 static void t_lock(void *c) { gzp_wallet_lock(c); }
 static int t_seed(void *c, uint8_t out64[64]) { return gzp_wallet_seed(c, out64); }
 
@@ -941,6 +985,12 @@ void gzp_wallet_test_kdf_floor(gzp_wallet_t *w)
 
 void gzp_wallet_test_keys_only(gzp_wallet_t *w) { w->keys_only = 1; }
 void gzp_wallet_test_seed_fault(gzp_wallet_t *w, int on) { w->seed_fault = on; }
+int gzp_wallet_test_entropy(gzp_wallet_t *w, const char *hex)
+{
+    if (!hex || strlen(hex) != 64 || !gzp_unhex(hex, 64, w->test_entropy, 32)) return -1;
+    w->have_test_entropy = 1;
+    return 0;
+}
 void gzp_wallet_test_cut_after_derive(gzp_wallet_t *w) { w->cut_after_derive = 1; }
 
 /* gazpacho-test (review B of PR 54, M1): keys.gzk replaced by a key file with
@@ -969,3 +1019,11 @@ void gzp_wallet_test_restore_from(gzp_wallet_t *w, const char *backup)
     snprintf(w->restore_from, sizeof w->restore_from, "%s", backup);
 }
 #endif
+
+/* unlock_impl.h: the API's passphrase layer is this wallet (B3). */
+void gzp_unlock_impl(gzp_unlock_t *u, gzp_datadir_t *dir)
+{
+    (void)dir;
+    *u = gzp_wallet_unlock_api(the_wallet);
+    gzp_log("unlock encrypted-storage");
+}

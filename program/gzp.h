@@ -64,6 +64,7 @@ typedef struct {
     int test_storage_fail_at;      /* the K-th append of the first incarnation fails */
     int test_start_delay_ms;       /* keep the start open this long, the loop running (inputs queued) */
     int test_listen_during_start;  /* host: listen before the start, so its queue is exercised */
+    const char *test_entropy_hex;  /* a new wallet's entropy, fixed (64 hex digits) */
     const char *test_restore_from; /* put this journal in place as a restore (sets the marker) */
     int test_sync_fail_at;         /* the K-th batch is written, then its sync reports failure */
     int test_cut_fail;             /* ... and cutting it back fails too (the store is poisoned) */

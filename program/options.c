@@ -130,6 +130,7 @@ void gzp_usage(void)
         "  --test-start-delay-ms MS      keep the start open (inputs queued) this long\n"
         "  --test-listen-during-start    host: listen before the start completes\n"
         "  --test-restore-from FILE      put FILE in place as the journal, as a restore\n"
+        "  --test-entropy-hex HEX        a new wallet's 256 bits of entropy (64 hex digits)\n"
         "  --test-sync-fail-at K [--test-cut-fail]   the K-th batch's sync fails (and its undo)\n"
         "  --test-crash-after-counter    exit between the start counter and the incarnation entry\n"
         "  --test-timer-ms MS            a test timer in the executor's table\n"
@@ -310,6 +311,7 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--test-storage-fail-at")) { ok = num(val, 1, 1000000, &v); o->test_storage_fail_at = (int)v; }
         else if (!strcmp(a, "--test-start-delay-ms")) { ok = num(val, 0, 600000, &v); o->test_start_delay_ms = (int)v; }
         else if (!strcmp(a, "--test-restore-from")) o->test_restore_from = val;
+        else if (!strcmp(a, "--test-entropy-hex")) o->test_entropy_hex = val;
         else if (!strcmp(a, "--test-passphrase-file")) o->test_passphrase_file = val;
         else if (!strcmp(a, "--test-append-batch")) o->test_append_batch = val;
         else if (!strcmp(a, "--test-kill-at")) { ok = num(val, 1, 100000000, &v); o->test_kill_at = (int)v; }
