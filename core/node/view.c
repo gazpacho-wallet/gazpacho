@@ -438,6 +438,7 @@ static gz_status_t attention(gz_node_t *c, slot_t *s, int force, gz_action_list_
     } else {
         for (int q = 0; q < s->lobby.h.n_seats; q++) count += s->lobby.h.seats[q].refused != 0;
         if (count) code = GZ_ATT_MEMBER_REFUSED;
+        if (s->funds_blocked && s->lobby.h.state == GZ_LOBBY_OPEN) code = GZ_ATT_HOST_FUNDS_SHORT;   /* the more pressing */
     }
     if (!s->view.local_id[0]) return GZ_OK;
     if (!force && code == s->view.att_code && count == s->view.att_count) return GZ_OK;
@@ -454,6 +455,10 @@ static gz_status_t attention(gz_node_t *c, slot_t *s, int force, gz_action_list_
         put(&w, GZ_VAT_LOBBY, s->view.local_id, slen(s->view.local_id));
         put64(&w, GZ_VAT_SINCE, wall(c));
         if (count) put16(&w, GZ_VAT_COUNT, count);
+        if (code == GZ_ATT_HOST_FUNDS_SHORT) {
+            put64(&w, GZ_VAT_NEED, s->funds_need);
+            put64(&w, GZ_VAT_HAVE, s->funds_have);
+        }
         if (w.bad) return gz_c_bug(c, ENG_NODE);
     }
     return emit(c, GZ_VIEW_ATTENTION, id, c->view.body, w.at, !code, &last, 1, out);

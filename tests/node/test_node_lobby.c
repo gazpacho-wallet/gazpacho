@@ -180,6 +180,7 @@ static int SIGNS[NN];          /* member signatures of each node (w_sign) */
  * 1 short, 2 cannot tell; W_NO_WALLET: the next w_node has no port at all. */
 static int FUNDS[NN], W_NO_WALLET;
 static uint64_t FUNDS_ASKED[NN];
+static gz_wallet_port_t WWALLET[NN];
 
 static int w_can_plan(void *ctx, uint64_t amount, uint64_t feerate, uint64_t *have_sat, size_t *n_coins);
 
@@ -508,8 +509,9 @@ static void w_node(int n, int ident, gz_member_signing_t signing, uint32_t outco
     h->cfg.member_signing = signing;
     h->cfg.test_sign_outcome = outcome;
     h->cfg.test_sign_delay_ms = 50;
-    h->cfg.funds.can_plan = W_NO_WALLET ? NULL : w_can_plan;
-    h->cfg.funds.ctx = h;
+    WWALLET[n].can_plan = w_can_plan;
+    WWALLET[n].ctx = h;
+    h->cfg.wallet = W_NO_WALLET ? NULL : &WWALLET[n];
     h_new_node(h);
 }
 
@@ -517,7 +519,7 @@ static void w_node(int n, int ident, gz_member_signing_t signing, uint32_t outco
  * secrets; its hand-offs still go to the stand-in (`outcome`), so only the key hook and the gate are the
  * engine's here. */
 static secp256k1_context *TCTX;
-static void *TMEM[4];
+static void *TMEM[NN];          /* one engine memory per node, the scratch node included */
 static int w_secret(void *ctx, uint32_t epoch, uint32_t index, uint8_t sec[32])
 {
     (void)ctx; (void)epoch;
@@ -550,8 +552,9 @@ static void w_node_engine(int n, int ident, gz_member_signing_t signing, uint32_
     h->cfg.secp = TCTX;
     h->cfg.sign_mem = TMEM[n];
     h->cfg.sign_mem_size = gz_node_sign_size();
-    h->cfg.funds.can_plan = W_NO_WALLET ? NULL : w_can_plan;
-    h->cfg.funds.ctx = h;
+    WWALLET[n].can_plan = w_can_plan;
+    WWALLET[n].ctx = h;
+    h->cfg.wallet = W_NO_WALLET ? NULL : &WWALLET[n];
     h_new_node(h);
 }
 
@@ -1356,7 +1359,8 @@ static void test_join_ready_key_hook(void)
     w_reset();
     w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
     w_node_engine(1, 1, GZ_MEMBER_SIGNING_AT_JOIN, GZ_TEST_SIGN_UNFINISHED);
-    for (int n = 0; n <= 1; n++) CHECK(w_start(n) == GZ_OK);
+    w_node_engine(2, 2, GZ_MEMBER_SIGNING_AT_JOIN, GZ_TEST_SIGN_UNFINISHED);
+    for (int n = 0; n <= 2; n++) CHECK(w_start(n) == GZ_OK);
     make_terms(&t, 4, 4, 3010);
     CHECK(host_open(&t, 0) == 200);
     gz_terms_current_digest(t.current, t.cn, d);
@@ -1365,13 +1369,27 @@ static void test_join_ready_key_hook(void)
     {
         h_arg_t j[5] = {{12, t.scope, 32}, {14, hk.pub, 33}, {16, ADDR, sizeof ADDR - 1}, {24, &one, 1}, {26, d, 32}};
         CHECK(w_cmd(1, GZ_CMD_LOBBY_JOIN, j, 5) == 200);
+        /* no key before the terms are here (L-4): the join holds none */
+        CHECK(slot(1, &t) && !memcmp(slot(1, &t)->gate_secret, (const uint8_t[32]){0}, 32));
+        /* member 2 joined ready for values the host does not have: no key at all, ever */
+        h_arg_t j2[5] = {{12, t.scope, 32}, {14, hk.pub, 33}, {16, ADDR, sizeof ADDR - 1}, {24, &one, 1}, {26, other, 32}};
+        CHECK(w_cmd(2, GZ_CMD_LOBBY_JOIN, j2, 5) == 200);
     }
     w_run(4000, 100);
+    CHECK(slot(2, &t) && slot(2, &t)->lobby.m.have_terms && !memcmp(slot(2, &t)->gate_secret, (const uint8_t[32]){0}, 32));
     slot_t *s = slot(1, &t);
     CHECK(s && N[1].n->sign_on && s->gate_open && s->gate_have && !memcmp(s->gate_digest, d, 32));
     CHECK(gz_sg_keys(N[1].n, t.scope, d, &f, &kc) == 1);          /* the factory key, for the values joined for */
     CHECK(gz_sg_keys(N[1].n, t.scope, other, &f, &kc) == 0);      /* and for no other */
-    w_free(1);
+    /* a lock closes the gate: the secret is wiped, every byte, and the key is gone */
+    CHECK(w_cmd(1, GZ_CMD_SIGNING_LOCK, NULL, 0) == 200);
+    w_run(1000, 100);
+    if (s) {
+        uint8_t zero[32] = {0};
+        CHECK(!s->gate_have && !memcmp(s->gate_secret, zero, 32));
+    }
+    CHECK(gz_sg_keys(N[1].n, t.scope, d, &f, &kc) == 0);
+    w_free(2);
 }
 
 static void test_at_join_key_hook(void)
@@ -4271,7 +4289,7 @@ static void test_funds_no_wallet_start(void)
     for (int n = 1; n <= 3; n++) CHECK(member_join(n, &t) == 200);
     w_run(3000, 100);
     /* the host restarts without a port (the wallet went away): its start is refused */
-    N[0].cfg.funds.can_plan = NULL;
+    N[0].cfg.wallet = NULL;
     CHECK(w_restart(0) == GZ_OK);
     w_run(3000, 100);
     {
@@ -4313,6 +4331,70 @@ static void test_ready_over_limit(void)
     w_free(1);
 }
 
+/* The signing engine runs only with a secp256k1 context (node.h): a node
+ * given the engine's memory but no context starts without it, and never
+ * reaches the engine with a NULL context (mutant sg-init-without-secp). */
+static void test_sign_needs_secp(void)
+{
+    h_t *x = &N[SCRATCH];
+    w_reset();
+    w_node_engine(SCRATCH, 5, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    CHECK(w_start(SCRATCH) == GZ_OK && x->n->sign_on && x->n->sign != NULL);   /* the control: with a context */
+    x->cfg.secp = NULL;
+    h_new_node(x);
+    CHECK(w_start(SCRATCH) == GZ_OK && !x->n->sign_on && x->n->sign == NULL);
+    ALIVE[SCRATCH] = 0;
+    NT[SCRATCH] = 0;
+    for (int i = 0; i < 64; i++)
+        if (C[i].used && C[i].node == SCRATCH) C[i].used = 0;
+    h_free(x);
+    memset(x, 0, sizeof *x);
+}
+/* Review B of #55, M-1: the automatic start (the target reached) asks the host's funds as
+ * the early start does. Coins drop after the open: the target is reached, no ready check
+ * is sent, the lobby stays Open and host_funds_short is up (11.4, with need and have);
+ * the coins come back and the next tip starts it, the item gone. */
+static void test_funds_auto_start(void)
+{
+    terms_t t;
+    char aid[GZ_LOCAL_ID_MAX + 8];
+    wview_t *w;
+    gz_bytes_t v;
+    w_world(3, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    make_terms(&t, 3, 3, 3803);
+    CHECK(host_open(&t, 0) == 200 && slot(0, &t));
+    if (!slot(0, &t)) { w_free(3); return; }
+    snprintf(aid, sizeof aid, "att_%s", lid(0, &t) + 4);
+    FUNDS[0] = 1;                                                  /* the coins dropped since the open */
+    for (int n = 1; n <= 3; n++) CHECK(member_join(n, &t) == 200);
+    w_run(4000, 100);
+    CHECK(host_ready(&t) == 3);                                    /* the target is reached */
+    CHECK(host_state(&t) == GZ_LOBBY_OPEN && h_records_of(&N[0], GZ_REC_FREEZE) == 0 && slot(0, &t)->funds_blocked);
+    w = view_of(0, GZ_VIEW_ATTENTION, aid);
+    CHECK(w && !w->gone && vf8(w, GZ_VAT_CODE) == GZ_ATT_HOST_FUNDS_SHORT && vf(w, GZ_VAT_NEED, &v) && v.len == 8 &&
+          vf(w, GZ_VAT_HAVE, &v) && v.len == 8);
+    FUNDS[0] = 2;                                                  /* nor when the wallet cannot tell */
+    {
+        gz_event_t ev;
+        memset(&ev, 0, sizeof ev);
+        ev.kind = GZ_EVENT_CHAIN;
+        ev.u.chain.kind = GZ_CHAIN_NEW_TIP;
+        ev.u.chain.height = 1001;
+        CHECK(w_event(0, &ev) == GZ_OK);
+        w_run(500, 100);
+        CHECK(host_state(&t) == GZ_LOBBY_OPEN && slot(0, &t)->funds_blocked);
+        FUNDS[0] = 0;                                              /* the coins are back: the next tip starts it */
+        ev.u.chain.height = 1002;
+        CHECK(w_event(0, &ev) == GZ_OK);
+    }
+    w_run(1000, 100);
+    CHECK(host_state(&t) == GZ_LOBBY_READY_CHECK && !slot(0, &t)->funds_blocked);
+    w = view_of(0, GZ_VIEW_ATTENTION, aid);
+    CHECK(w && w->gone);
+    no_errors(3);
+    w_free(3);
+}
+
 int main(int argc, char **argv)
 {
     unsigned long events = argc > 1 ? strtoul(argv[1], NULL, 10) : 20000;
@@ -4328,6 +4410,7 @@ int main(int argc, char **argv)
     test_gate_closes_with_seat();
     test_funds_check();
     test_funds_no_wallet_start();
+    test_funds_auto_start();
     test_two_lobbies();
     test_cancel_and_tombstone();
     test_refusals();
@@ -4367,6 +4450,7 @@ int main(int argc, char **argv)
     test_left_out();
     test_node_record_fields();
     test_index_ceiling();
+    test_sign_needs_secp();
     test_timer_of_ended_lobby();
     test_gate_refused_ready();
     test_hostile(events, seed);

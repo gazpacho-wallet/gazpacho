@@ -654,6 +654,26 @@ jobs:
       - name: The signer's vectors, recomputed in pure Python
         run: python3 -I tools/signer-vectors.py --check signer/tests/vectors.txt
 
+  # The composite node's mutants (tests/node/mutants.txt, tools/mutate-node.py),
+  # in six shards: each mutant must be killed by a node test, or triaged in the
+  # list with a reason. Not required for merging.
+  node-mutants:
+    name: node mutants (shard ${{ matrix.shard }} of 6)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libcurl4-openssl-dev
+      - name: Every node mutant of this shard is killed or triaged
+        run: python3 -I tools/mutate-node.py . "$RUNNER_TEMP/node-mutants" -j "$(nproc)" --shard ${{ matrix.shard }}/6
+
   signer-mutants:
     name: signer mutants
     runs-on: ubuntu-24.04

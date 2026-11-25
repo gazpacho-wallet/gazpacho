@@ -176,6 +176,9 @@
 #define GZ_ATT_UNLOCK_TO_TAKE_PART 1
 #define GZ_ATT_LOBBY_LEFT_OUT      2
 #define GZ_ATT_MEMBER_REFUSED      3
+#define GZ_ATT_HOST_FUNDS_SHORT    4   /* 11.4: the automatic start waits for the host's funds */
+#define GZ_VAT_NEED                16  /* u64: host_funds_short, what the funding needs */
+#define GZ_VAT_HAVE                18  /* u64: ... what the wallet holds for it */
 
 /* ---- the local-API engine (area 0x000d) --------------------------------- */
 /* Commands (command.h; arguments from type 10). */

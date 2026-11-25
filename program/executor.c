@@ -32,6 +32,7 @@
 
 #include "gazpacho/command.h"
 #include "gazpacho/envelope.h"
+#include "gazpacho/funding.h"
 #include "gazpacho/tree_import.h"
 #include "executor.h"
 #ifdef GZP_TEST_BUILD
@@ -96,6 +97,8 @@ static int port_sign(void *ctx, int host, uint32_t epoch, uint32_t index, const 
  * answer is the test's (--test-funds): enough, short or cannot tell. A
  * release build gives the node none, and a host's open and start are
  * refused no_wallet until the real wallet port is there. */
+static gz_wallet_port_t TEST_WALLET;
+
 static int port_can_plan(void *ctx, uint64_t amount, uint64_t feerate, uint64_t *have_sat, size_t *n_coins)
 {
     gzp_exec_t *ex = ctx;
@@ -1224,8 +1227,9 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     cfg.test_ready_cap = (uint32_t)ex->opt->test_ready_cap;
     cfg.sign_tick_ms = (uint32_t)ex->opt->test_sign_tick_ms;
     cfg.test_engines = (uint32_t)ex->opt->test_engines;
-    cfg.funds.can_plan = port_can_plan;
-    cfg.funds.ctx = ex;
+    TEST_WALLET.can_plan = port_can_plan;
+    TEST_WALLET.ctx = ex;
+    cfg.wallet = &TEST_WALLET;
 #endif
     if (!ex->node && !(ex->node = malloc(gz_node_size()))) abort();
     if (gz_node_init(ex->node, &ports, &cfg, ex->incarnation) != GZ_OK ||
