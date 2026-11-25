@@ -86,6 +86,8 @@ typedef struct {
     size_t can_n;
     uint64_t can_amount, can_feerate;   /* what it was asked */
     int p2wpkh_prev, p2wsh_change;      /* L-1: a plan the engine must refuse */
+    int noted;                 /* note_tx calls, and the tag of the last one's output 0 */
+    uint8_t noted_tag;
     unsigned next_plan;
     ft_plan_t plans[FT_PLANS];   /* memory only: a restart forgets them */
 } ft_wallet_t;
@@ -220,6 +222,19 @@ static inline int ftw_sign_plan(void *ctx, const uint8_t txid[32], uint8_t *out,
     return 1;
 }
 
+/* A spend-back from the journal, without witnesses (B2-3, review B of PR 93). */
+static inline void ftw_note(void *ctx, const uint8_t *tx, size_t len)
+{
+    ft_wallet_t *w = (ft_wallet_t *)ctx;
+    gz_tx_info_t info;
+    uint64_t amt;
+    const uint8_t *scr;
+    size_t sl;
+    w->noted++;
+    if (gz_tx_parse(tx, len, &info) && info.n_out >= 1 && gz_tx_output(tx, len, &info, 0, &amt, &scr, &sl) && sl == 34)
+        w->noted_tag = scr[2];
+}
+
 /* Holds a plan again after a restart, if its outputs are the factory's and
  * this wallet's change (script 0xcc) only. */
 static inline int ftw_adopt(void *ctx, const uint8_t *tx, size_t len, const uint8_t script[34], uint64_t amount)
@@ -342,6 +357,7 @@ static inline void ft_cfg(ft_t *t, int host, gz_host_funding_t mode)
         t->cfg.wallet.release = ftw_release;
         t->cfg.wallet.spend_back = ftw_sb;
         t->cfg.wallet.can_plan = ftw_can_plan;
+        t->cfg.wallet.note_tx = ftw_note;
     }
 }
 

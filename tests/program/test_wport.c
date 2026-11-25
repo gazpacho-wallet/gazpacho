@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: MIT */
+#define _POSIX_C_SOURCE 200809L   /* clock_gettime */
 /* The program's wallet port for the funding engine (program/wport.c), on
  * the real wallet code (review of PR 80, N-1): a plan's holds survive a new
  * coin list, coins in the mempool and change not yet buried are not
@@ -8,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <secp256k1.h>
 
@@ -276,12 +278,16 @@ typedef struct {
     gz_chain_result hist_as;
     int hist_left;
     int bad_limited, bad_left; /* bad_script answered bad_as only bad_left times */
+    int hist_unsupported;    /* every history answered GZ_CHAIN_UNSUPPORTED (no such route) */
+    gzp_wport_t *stop_w;     /* stopped once the tip has been read stop_after times */
+    int stop_after;
 } fake_chain;
 
 static gz_chain_result fk_tip(void *ctx, gz_chain_tip *out)
 {
     fake_chain *f = ctx;
     f->tip_calls++;
+    if (f->stop_w && f->tip_calls >= f->stop_after) f->stop_w->stop = 1;   /* a test's time limit */
     if (f->outputs_calls) f->tip_after_outputs = 1;
     if (f->tip_fails > 0) {
         f->tip_fails--;
@@ -351,6 +357,7 @@ static gz_chain_result fk_history(void *ctx, const uint8_t *script, size_t scrip
     fake_chain *f = ctx;
     memset(out, 0, sizeof *out);
     if (script_len != 34) return GZ_CHAIN_INVALID_ARG;
+    if (f->hist_unsupported) return GZ_CHAIN_UNSUPPORTED;
     if (f->hist_left > 0 && memcmp(f->hist_script, script, 34) == 0) {
         f->hist_left--;
         return f->hist_as;
@@ -368,6 +375,8 @@ static gz_chain_result fk_history(void *ctx, const uint8_t *script, size_t scrip
 }
 
 static const gz_chain_ops fk_ops = {.tip = fk_tip, .script_outputs = fk_outputs, .script_history = fk_history};
+/* A server with no history call. */
+static const gz_chain_ops fk_ops_nohist = {.tip = fk_tip, .script_outputs = fk_outputs};
 
 static void fk_add(fake_chain *f, const gzt_coin *c, uint32_t height)
 {
@@ -1245,7 +1254,7 @@ static void test_wide_history_refused(void)
     CHECK(gzp_wport_scan_view(&w, &view) == 1);   /* three in a row: left out, counted as used */
     CHECK(w.next_change >= 10);
     CHECK(ms.cleared == 0 && w.wide == 1);
-    CHECK(coins_json_has(&w, "\"change_mark\":\"reading\""));
+    CHECK(coins_json_has(&w, "\"change_mark\":\"history_refused\""));   /* the cause, not "reading" (P97-1) */
     CHECK(plan(&w, 100000, tx, &len) == 0);
     gzp_wport_close(&w);
 }
@@ -1424,6 +1433,327 @@ static void test_not_opened_told(void)
     gzp_wport_close(&w);
 }
 
+/* B2-2 (review B of PR 93): a spend-back is made while a wide read is
+ * pending, at an index above what that read can collide with, kept as the
+ * mark with the read still pending. (Today only a plan this run made can be
+ * spent back, and plans are refused while a read is pending, so the test sets
+ * the pending read by hand after the plan.) */
+static void test_spend_back_during_pending_read(void)
+{
+    static gzp_wport_t w;
+    mark_store ms;
+    gzt_coin k;
+    uint32_t h = 100;
+    static uint8_t tx[GZ_FUND_MAX_TX], sb[GZ_FUND_MAX_TX];
+    size_t len, sbl = 0;
+    memset(&ms, 0, sizeof ms);
+    open_marked(&w, &ms);
+    k = coin(&w, 0, 0, 500000, 0xec);
+    CHECK(gzp_wport_publish(&w, &k, &h, 1, 110) == 0);
+    CHECK(plan(&w, 300000, tx, &len) == 1);
+    w.wide = 1;
+    CHECK(w.port.spend_back(w.port.ctx, w.plans[0].info.txid, 0, 1000, sb, sizeof sb, &sbl) == 1);
+    CHECK(ms.v == GZP_WPORT_SB_FLOOR + 1 && ms.wv == 1 && w.next_change == GZP_WPORT_SB_FLOOR + 1);
+    gzp_wport_close(&w);
+}
+
+/* B2-2: a wide read that cannot settle is asked again while it is pending,
+ * not only at the next start: three refusals, then answers. */
+static void test_pending_read_asked_again(void)
+{
+    static gzp_wport_t w;
+    mark_store ms;
+    fake_chain f;
+    gz_chain view;
+    gzt_coin b;
+    memset(&ms, 0, sizeof ms);
+    ms.wide = 1;
+    open_marked(&w, &ms);
+    memset(&f, 0, sizeof f);
+    f.tip_before = f.tip_later = 110;
+    b = coin(&w, 1, 5, 1, 0);
+    memcpy(f.hist_script, b.script, 34);
+    f.hist_as = GZ_CHAIN_REJECTED;
+    f.hist_left = 3;
+    view.ctx = &f;
+    view.ops = &fk_ops;
+    CHECK(gzp_wport_scan_until(&w, &view, 1) == 1);
+    CHECK(w.wide == 0 && ms.cleared == 1 && ms.wv == 0);
+    gzp_wport_close(&w);
+}
+
+/* B2-3 (review B of PR 93): a spend-back in the journal, not in any mempool,
+ * the mark lost, then a restore: the spend-back raises the mark, and the next
+ * plan does not pay its change address again. */
+static void test_journaled_spend_back_raises_mark(void)
+{
+    static gzp_wport_t a, b;
+    mark_store ma, mb;
+    fake_chain f;
+    gz_chain view;
+    gzt_coin k;
+    uint32_t h = 100;
+    static uint8_t tx[GZ_FUND_MAX_TX], sb[GZ_FUND_MAX_TX], st[GZ_FUND_MAX_TX];
+    size_t len, sbl = 0, stl = 0;
+    memset(&ma, 0, sizeof ma);
+    memset(&mb, 0, sizeof mb);
+    open_marked(&a, &ma);
+    k = coin(&a, 0, 0, 500000, 0xed);
+    CHECK(gzp_wport_publish(&a, &k, &h, 1, 110) == 0);
+    CHECK(plan(&a, 300000, tx, &len) == 1);   /* change 0 */
+    CHECK(a.port.spend_back(a.port.ctx, a.plans[0].info.txid, 0, 1000, sb, sizeof sb, &sbl) == 1);   /* change 1 */
+    CHECK(gz_fund_tx_strip(sb, sbl, st, sizeof st, &stl));
+    gzp_wport_close(&a);
+    mb.wide = 1;   /* the mark lost: a restore */
+    open_marked(&b, &mb);
+    CHECK(b.port.note_tx != NULL);
+    if (b.port.note_tx) b.port.note_tx(b.port.ctx, st, stl);
+    CHECK(b.next_change == 2 && mb.v == 2 && mb.wv == 1);
+    memset(&f, 0, sizeof f);   /* nothing on chain: the spend-back was never seen */
+    f.tip_before = f.tip_later = 110;
+    view.ctx = &f;
+    view.ops = &fk_ops;
+    CHECK(gzp_wport_scan_view(&b, &view) == 1);
+    CHECK(b.wide == 0 && mb.v == 2);
+    k = coin(&b, 0, 0, 500000, 0xee);
+    CHECK(gzp_wport_publish(&b, &k, &h, 1, 110) == 0);
+    CHECK(plan(&b, 300000, tx, &len) == 1);
+    CHECK(b.plans[0].info.change_index == 2);   /* not 1, the spend-back's */
+    gzp_wport_close(&b);
+}
+
+/* B2-1 (review B of PR 93): a history of "never used" for an address that has
+ * unspent outputs is a server that lies or lags: the address counts as used,
+ * the read is not settled. Change address 3, and receive address 0. */
+static void test_history_zero_with_outputs(void)
+{
+    static gzp_wport_t w;
+    mark_store ms;
+    fake_chain f;
+    gz_chain view;
+    gzt_coin c;
+    for (int chain = 1; chain >= 0; chain--) {
+        memset(&ms, 0, sizeof ms);
+        ms.wide = 1;
+        open_marked(&w, &ms);
+        memset(&f, 0, sizeof f);
+        f.tip_before = f.tip_later = 110;
+        c = coin(&w, (uint32_t)chain, chain ? 3 : 0, 40000, 0xf1);
+        fk_add(&f, &c, 100);
+        memcpy(f.hist_script, c.script, 34);
+        f.hist_as = GZ_CHAIN_OK;   /* answered with zero counts */
+        f.hist_left = 1000000;
+        view.ctx = &f;
+        view.ops = &fk_ops;
+        CHECK(gzp_wport_scan_view(&w, &view) == 1);
+        CHECK(w.wide == 1 && ms.cleared == 0);
+        if (chain) CHECK(w.next_change >= 4);
+        gzp_wport_close(&w);
+    }
+}
+
+/* B2-4 (review B of PR 93): while a wide read is pending, can_plan cannot
+ * tell (coins_unknown), and status.coins says why; a server with no history
+ * call says that, not "reading" for ever (review A, round 2). */
+static void test_can_plan_while_pending(void)
+{
+    static gzp_wport_t w;
+    mark_store ms;
+    fake_chain f;
+    gz_chain view;
+    gzt_coin k;
+    uint32_t h = 100;
+    uint64_t have;
+    size_t n;
+    memset(&ms, 0, sizeof ms);
+    ms.wide = 1;
+    open_marked(&w, &ms);
+    k = coin(&w, 0, 0, 500000, 0xf2);
+    CHECK(gzp_wport_publish(&w, &k, &h, 1, 110) == 0);
+    CHECK(w.port.can_plan(w.port.ctx, 100000, 100, &have, &n) == -1);
+    memset(&f, 0, sizeof f);
+    f.tip_before = f.tip_later = 110;
+    view.ctx = &f;
+    view.ops = &fk_ops_nohist;
+    CHECK(gzp_wport_scan_view(&w, &view) == 1);
+    CHECK(w.wide == 1 && coins_json_has(&w, "\"change_mark\":\"no_history\""));
+    gzp_wport_close(&w);
+}
+
+/* B2-5 (review B of PR 93): past index 1,000 a wide read goes 200 past the
+ * highest used address, so 20 or more abandoned lobbies in a row do not hide
+ * the change after them. Change used at 1,150 only. */
+static void test_wide_gap_past_1000(void)
+{
+    static gzp_wport_t w;
+    mark_store ms;
+    fake_chain f;
+    gz_chain view;
+    gzt_coin c;
+    memset(&ms, 0, sizeof ms);
+    ms.wide = 1;
+    open_marked(&w, &ms);
+    memset(&f, 0, sizeof f);
+    f.tip_before = f.tip_later = 110;
+    c = coin(&w, 1, 1150, 40000, 0xf3);
+    fk_add(&f, &c, 100);
+    view.ctx = &f;
+    view.ops = &fk_ops;
+    CHECK(gzp_wport_scan_view(&w, &view) == 1);
+    CHECK(w.next_change == 1151 && ms.v == 1151 && w.wide == 0);
+    gzp_wport_close(&w);
+}
+
+static long now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+/* M1 (review A of PR 97), P97-1 (review B): a wide read that does not settle
+ * is asked again later and later: the base doubled each time, capped. */
+static void test_retry_backs_off(void)
+{
+    CHECK(gzp_wport_retry_ms(15000, 0) == 15000);
+    CHECK(gzp_wport_retry_ms(15000, 1) == 30000);
+    CHECK(gzp_wport_retry_ms(15000, 2) == 60000);
+    CHECK(gzp_wport_retry_ms(15000, 5) == 480000);
+    CHECK(gzp_wport_retry_ms(15000, 6) == GZP_WPORT_RETRY_CAP_MS);
+    CHECK(gzp_wport_retry_ms(15000, 1000) == GZP_WPORT_RETRY_CAP_MS);
+}
+
+/* P97-1: a history refused for good: scan_until backs off between the reads
+ * and stops after GZP_WPORT_UNSETTLED_MAX of them, the cause in status. */
+static void test_refused_for_good_backs_off_and_stops(void)
+{
+    static gzp_wport_t w;
+    mark_store ms;
+    fake_chain f;
+    gz_chain view;
+    gzt_coin b;
+    long t0, dt;
+    memset(&ms, 0, sizeof ms);
+    ms.wide = 1;
+    open_marked(&w, &ms);
+    memset(&f, 0, sizeof f);
+    f.tip_before = f.tip_later = 110;
+    b = coin(&w, 1, 5, 1, 0);
+    memcpy(f.hist_script, b.script, 34);
+    f.hist_as = GZ_CHAIN_REJECTED;
+    f.hist_left = 1000000;
+    f.stop_w = &w;
+    f.stop_after = 40;   /* a time limit: today it never stops */
+    view.ctx = &f;
+    view.ops = &fk_ops;
+    t0 = now_ms();
+    CHECK(gzp_wport_scan_until(&w, &view, 2) == 1);
+    dt = now_ms() - t0;
+    /* two refusals asked again at the base, then GZP_WPORT_UNSETTLED_MAX reads
+     * that did not settle, 2, 4, ... 512 ms apart */
+    CHECK(f.tip_calls == 2 + GZP_WPORT_UNSETTLED_MAX);
+    if (dt < 1000) fprintf(stderr, "scan_until took %ld ms, want at least 1000 (the backoff)\n", dt);
+    CHECK(dt >= 1000);   /* the waits alone; each read itself takes a while (1,200 addresses) */
+    CHECK(w.wide == 1 && ms.cleared == 0);
+    CHECK(coins_json_has(&w, "\"change_mark\":\"history_refused\""));
+    gzp_wport_close(&w);
+}
+
+/* P97-1: with no history call the read cannot settle: scan_until stops after
+ * the first read and says so (no_history), plans still refused. */
+static void test_no_history_stops_asking(void)
+{
+    static gzp_wport_t w;
+    mark_store ms;
+    fake_chain f;
+    gz_chain view;
+    memset(&ms, 0, sizeof ms);
+    ms.wide = 1;
+    open_marked(&w, &ms);
+    memset(&f, 0, sizeof f);
+    f.tip_before = f.tip_later = 110;
+    f.stop_w = &w;
+    f.stop_after = 6;
+    view.ctx = &f;
+    view.ops = &fk_ops_nohist;
+    CHECK(gzp_wport_scan_until(&w, &view, 1) == 1);
+    CHECK(f.tip_calls == 1 && w.wide == 1);
+    CHECK(coins_json_has(&w, "\"change_mark\":\"no_history\""));
+    gzp_wport_close(&w);
+}
+
+/* P97-4 (review B of PR 97): a server without the history route (404) is
+ * no_history too, not a lookup failure asked again for ever. */
+static void test_history_route_missing(void)
+{
+    static gzp_wport_t w;
+    mark_store ms;
+    fake_chain f;
+    gz_chain view;
+    memset(&ms, 0, sizeof ms);
+    ms.wide = 1;
+    open_marked(&w, &ms);
+    memset(&f, 0, sizeof f);
+    f.tip_before = f.tip_later = 110;
+    f.hist_unsupported = 1;
+    f.stop_w = &w;
+    f.stop_after = 6;
+    view.ctx = &f;
+    view.ops = &fk_ops;
+    CHECK(gzp_wport_scan_until(&w, &view, 1) == 1);
+    CHECK(f.tip_calls == 1 && w.wide == 1);
+    CHECK(coins_json_has(&w, "\"change_mark\":\"no_history\""));
+    gzp_wport_close(&w);
+}
+
+/* P97-1: a failed key derivation cannot settle either: one read, then stop. */
+static void test_failed_derivation_stops_asking(void)
+{
+    static gzp_wport_t w;
+    mark_store ms;
+    fake_chain f;
+    gz_chain view;
+    memset(&ms, 0, sizeof ms);
+    ms.wide = 1;
+    open_marked(&w, &ms);
+    w.wnet = (gzw_network)77;
+    memset(&f, 0, sizeof f);
+    f.tip_before = f.tip_later = 110;
+    f.stop_w = &w;
+    f.stop_after = 6;
+    view.ctx = &f;
+    view.ops = &fk_ops;
+    CHECK(gzp_wport_scan_until(&w, &view, 1) == 1);
+    CHECK(f.tip_calls == 1 && w.wide == 1 && ms.cleared == 0);
+    CHECK(coins_json_has(&w, "\"change_mark\":\"derivation_failed\""));
+    w.wnet = GZW_NET_SIGNET;
+    gzp_wport_close(&w);
+}
+
+/* P97-5 (review B of PR 97): change handed out near the end of what a scan
+ * reads (a journaled index of 4,076 or above) settles the read with a warning,
+ * too_many_addresses, rather than leaving it pending for good: the mark is
+ * kept, so nothing below it is handed out again. */
+static void test_mark_near_the_end_settles(void)
+{
+    static gzp_wport_t w;
+    mark_store ms;
+    fake_chain f;
+    gz_chain view;
+    memset(&ms, 0, sizeof ms);
+    ms.wide = 1;
+    ms.v = 4080;
+    open_marked(&w, &ms);
+    memset(&f, 0, sizeof f);
+    f.tip_before = f.tip_later = 110;
+    view.ctx = &f;
+    view.ops = &fk_ops;
+    CHECK(gzp_wport_scan_view(&w, &view) == 1);
+    CHECK(w.wide == 0 && ms.cleared == 1 && ms.v == 4080);
+    CHECK(coins_json_has(&w, "\"change_mark\":\"too_many_addresses\""));
+    gzp_wport_close(&w);
+}
+
 int main(void)
 {
     secp = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
@@ -1476,6 +1806,18 @@ int main(void)
     test_failed_derivation_keeps_wide();
     test_wide_pending_kept_and_plans_refused();
     test_not_opened_told();
+    test_spend_back_during_pending_read();
+    test_pending_read_asked_again();
+    test_journaled_spend_back_raises_mark();
+    test_history_zero_with_outputs();
+    test_can_plan_while_pending();
+    test_wide_gap_past_1000();
+    test_retry_backs_off();
+    test_refused_for_good_backs_off_and_stops();
+    test_no_history_stops_asking();
+    test_history_route_missing();
+    test_failed_derivation_stops_asking();
+    test_mark_near_the_end_settles();
     secp256k1_context_destroy(secp);
     printf("program_wport: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;

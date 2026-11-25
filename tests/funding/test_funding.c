@@ -442,6 +442,8 @@ static void test_abandon_replace(void)
         ft_t *u = ft_restart(t);
         CHECK(u->f.fac[0].used && u->f.fac[0].sb_len == x->sb_len && u->f.fac[0].sb_escalated == 2);
         CHECK(memcmp(u->f.fac[0].sb_txid, x->sb_txid, 32) == 0);
+        /* and the wallet is shown it, so its change raises the mark (B2-3, review B of PR 93) */
+        CHECK(u->w.noted == 1 && u->w.noted_tag == 0xee);
         free(u);
     }
     /* The spend-back buried: Dead, nothing more reported. */

@@ -441,8 +441,8 @@ static void test_script_history(test_state *T) {
   /* refused, unknown path, too large */
   fake_set(&x.fake, false, url, 400, "Invalid scripthash");
   CHECK_RESULT(gz_chain_script_history(&x.chain, script, script_len, &h), GZ_CHAIN_REJECTED);
-  fake_set(&x.fake, false, url, 404, "Not found");
-  CHECK_RESULT(gz_chain_script_history(&x.chain, script, script_len, &h), GZ_CHAIN_MALFORMED);
+  fake_set(&x.fake, false, url, 404, "Not found");   /* no such route: no history here (P97-4) */
+  CHECK_RESULT(gz_chain_script_history(&x.chain, script, script_len, &h), GZ_CHAIN_UNSUPPORTED);
   memset(huge, ' ', sizeof huge - 1);
   huge[sizeof huge - 1] = '\0';
   fake_set(&x.fake, false, url, 200, huge);
