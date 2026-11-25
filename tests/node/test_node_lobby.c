@@ -528,12 +528,22 @@ static void *TMEM[NN];          /* one engine memory per node, the scratch node 
 /* The secret behind w_pub's key at (epoch, index), so that a key the engine derives is the one the lobby
  * saved (BD5); SECRET_SKEW[n]: another seed or passphrase than at the first ready (a different key). */
 static int SECRET_SKEW[NN];
+/* Every secret the key port gave, per node: its epoch (review A of #98, M1). */
+static uint32_t SEC_EPOCH[NN][256];
+static int NSEC[NN];
+static int secrets_at(int n, int from, uint32_t epoch)
+{
+    int c = 0;
+    for (int k = from; k < NSEC[n] && k < 256; k++) c += SEC_EPOCH[n][k] == epoch;
+    return c;
+}
 static int w_secret(void *ctx, uint32_t epoch, uint32_t index, uint8_t sec[32])
 {
     tr_sha256_t h;
     char l[80];
     const char *pre = "gazpacho test key: ";
     int n = node_of(ctx);
+    if (NSEC[n] < 256) SEC_EPOCH[n][NSEC[n]++] = epoch;
     snprintf(l, sizeof l, "node %d epoch %u index %u%s", IDENT[n], (unsigned)epoch, (unsigned)index,
              SECRET_SKEW[n] ? " skewed" : "");
     tr_sha256_init(&h);
@@ -580,6 +590,7 @@ static void w_reset(void)
     NQ = 0;
     NSENT = 0;
     memset(NPUB, 0, sizeof NPUB);
+    memset(NSEC, 0, sizeof NSEC);
     memset(C, 0, sizeof C);
     memset(NT, 0, sizeof NT);
     memset(ALIVE, 0, sizeof ALIVE);
@@ -4503,8 +4514,21 @@ static void test_k1_stale_epoch(void)
     CHECK(scope_cmd(1, GZ_CMD_LOBBY_LEAVE, &t, 0) != 200);
     w_run(1000, 100);
     CHECK(sent_count(1, sent0, GZ_KIND_LEAVE) == 0);
-    /* joining again: a new slot, a new pair of the current epoch */
+    /* joining again: a new slot, a new pair of the current epoch; the old slot closes only now, as given up
+     * (state 6, reason stale epoch), and no longer counts as left out (review A of #98, L1 and L2) */
+    uint32_t skipped = N[1].n->np.skipped_slots;
     CHECK(member_join(1, &t) == 200);
+    {
+        const gz_record_t *r = last_rec(1, GZ_RECORD_SLOT_CLOSED);
+        gz_bytes_t b, v;
+        CHECK(r != NULL);
+        if (r) {
+            b.data = r->bytes.data; b.len = r->bytes.len;
+            CHECK(gz_rec_find(b, 4, &v) == 1 && v.len == 1 && v.data[0] == GZ_LOBBY_CANCELLED);
+            CHECK(gz_rec_find(b, 6, &v) == 1 && v.len == 2 && gz_get_u16(v.data) == 0x0bd2);   /* stale epoch */
+        }
+        CHECK(N[1].n->np.skipped_slots + 1 == skipped);
+    }
     w_run(4000, 100);
     s = slot(1, &t);
     CHECK(s && left_out(1, &t) == NULL && s->key_epoch == N[1].n->np.epoch && memcmp(s->lobby.m.ckey, oldc, 33) != 0);
@@ -4670,6 +4694,46 @@ static void test_k1_bd5_unready(void)
     w_free(2);
 }
 
+/* Review A of #98, M1 (BD2 at the signing resume): after a restore from the words, the signing engine gives
+ * no key of the old epoch for the stale seat's scope, and holds no round of it; nothing is derived under
+ * the old epoch. */
+static void test_k1_stale_keys(void)
+{
+    terms_t t, u;
+    uint8_t d[32];
+    secp256k1_keypair f, kc;
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node_engine(1, 1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    for (int n = 0; n <= 1; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 4, 3, 3160);
+    make_terms(&u, 4, 3, 3161);
+    CHECK(host_open(&t, 0) == 200 && member_join(1, &t) == 200);
+    CHECK(host_open(&u, 0) == 200 && member_join(1, &u) == 200);
+    w_run(3000, 100);
+    /* lobby u ends for the member (its leave): an ended lobby's keys are kept for its rounds */
+    CHECK(scope_cmd(1, GZ_CMD_LOBBY_LEAVE, &u, 0) == 200);
+    w_run(2000, 100);
+    CHECK(slot(1, &u) == NULL && gz_sg_keys(N[1].n, u.scope, NULL, NULL, &kc) == 1);
+    slot_t *s = slot(1, &t);
+    CHECK(s && member_ready(1, &t) == 1);
+    if (!s) { w_free(1); return; }
+    gz_terms_current_digest(t.current, t.cn, d);
+    uint32_t e0 = s->key_epoch;
+    CHECK(gz_sg_keys(N[1].n, t.scope, d, &f, &kc) == 1);             /* the control: the current epoch's */
+    N[1].restored = 1;
+    CHECK(w_restart(1) == GZ_OK);
+    N[1].restored = 0;
+    CHECK(N[1].n->np.epoch != e0 && left_out(1, &t) != NULL);
+    int sec0 = NSEC[1];
+    CHECK(gz_sg_keys(N[1].n, t.scope, d, &f, &kc) == 0 && gz_sg_keys(N[1].n, t.scope, NULL, NULL, &kc) == 0);
+    CHECK(gz_sg_keys(N[1].n, u.scope, NULL, NULL, &kc) == 0);         /* the ended lobby's entry: old epoch, none */
+    CHECK(secrets_at(1, sec0, e0) == 0);                              /* nothing derived under the old epoch */
+    CHECK(!gz_sign_holds_scope(N[1].n->sign, t.scope));
+    no_errors(1);
+    w_free(1);
+}
+
 int main(int argc, char **argv)
 {
     unsigned long events = argc > 1 ? strtoul(argv[1], NULL, 10) : 20000;
@@ -4736,5 +4800,6 @@ int main(int argc, char **argv)
     test_k1_bd5_mismatch();
     test_k1_host_factory_index();
     test_k1_bd5_unready();
+    test_k1_stale_keys();
     return check_done();
 }
