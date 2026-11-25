@@ -362,7 +362,7 @@ typedef struct {
     uint32_t unfinished_ticks;      /* member: an Unfinished creation round is Abandoned after this many more ticks (0: never),
                                      * or once this many ticks of tick_ms have passed on the keep clock since its exposure
                                      * record was saved, whichever comes first: a start does not begin the count again */
-    uint32_t funding_deadline_blocks; /* member: a Complete round is Abandoned once a tip reaches its ack tip plus this
+    uint32_t funding_deadline_blocks; /* member: a Complete round is Abandoned once a tip is past its ack tip plus this
                                      * (C11's funding deadline: a host that never funds does not keep it for good); 0: never */
     /* THE KEY HOOK (composite-node.md 2.5): this party's keypairs under
      * `scope`, the lobby the round belongs to. `factory` and `contribution`
@@ -481,7 +481,10 @@ typedef struct {
     gz_ports_t ports;
     uint64_t incarnation;
     /* The keep clock (the unfinished deadline): wall time while it is ahead, else the monotonic clock's
-     * progress; never back, and at a start never before the newest time the journal holds. */
+     * progress; never back, and at a start never before the newest time the journal holds. A wall clock set
+     * far ahead carries it ahead for good (setting the clock right does not bring it back): an Unfinished
+     * round then reaches its unfinished deadline early, and the lobby can be left sooner; nothing more is
+     * signed, and a funding buried later still makes the round Live. */
     uint64_t keep_now, keep_mono;
     int keep_mono_set;
     uint64_t session_counter;       /* session_id32s made in this incarnation (S4, section 8) */

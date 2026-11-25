@@ -2657,7 +2657,8 @@ static int unfinished_due(gz_sign_t *e, uint32_t ticks, const uint8_t round_id[3
 }
 
 /* C11's funding deadline for a member (review B of PR 81, B-1): a Complete round, in memory or not, whose
- * funding has not been resolved by the time a tip reaches its ack tip plus funding_deadline_blocks is
+ * funding has not been resolved once a tip is past its ack tip plus funding_deadline_blocks (C11: the
+ * deadline block itself may still bury it; B-6) is
  * Abandoned and saved so; a funding seen buried later still makes it Live (gz_sign_resolve). A few in a
  * step, so that their records fit one step's actions. */
 static void funding_deadline(gz_sign_t *e, uint32_t tip, emit_t *em)
@@ -2667,7 +2668,7 @@ static void funding_deadline(gz_sign_t *e, uint32_t tip, emit_t *em)
     for (int i = 0; i < GZ_SIGN_MAX_ROUNDS && ended < GZ_SIGN_MAX_ROUNDS && em->st == GZ_OK; i++) {
         gz_sign_round_t *r = &e->rounds[i];
         if (r->state != GZ_SIGN_ROUND_COMPLETE || !r->ack_tip ||
-            (uint64_t)tip < (uint64_t)r->ack_tip + e->cfg.funding_deadline_blocks) continue;
+            (uint64_t)tip <= (uint64_t)r->ack_tip + e->cfg.funding_deadline_blocks) continue;   /* RULE:FUNDING_DEADLINE_PAST */
         wipe_secrets(r);
         save_ended(e, r, GZ_SIGN_END_ABANDONED, 0, em);
         r->state = GZ_SIGN_ROUND_ABANDONED;                                          /* RULE:FUNDING_DEADLINE_HELD */
@@ -2676,7 +2677,7 @@ static void funding_deadline(gz_sign_t *e, uint32_t tip, emit_t *em)
     for (size_t i = 0; i < e->n_exposures && ended < GZ_SIGN_MAX_ROUNDS && em->st == GZ_OK; i++) {
         gz_sign_exposed_t *x = &e->exposed[i];
         if (x->state != GZ_SIGN_ROUND_COMPLETE || !x->ack_tip ||
-            (uint64_t)tip < (uint64_t)x->ack_tip + e->cfg.funding_deadline_blocks) continue;
+            (uint64_t)tip <= (uint64_t)x->ack_tip + e->cfg.funding_deadline_blocks) continue;   /* RULE:FUNDING_DEADLINE_PAST_EVICTED */
         save_ended_of(e, x->round_id, 0, x->why, NULL, 0, GZ_SIGN_END_ABANDONED, 0, em);
         x->state = GZ_SIGN_ROUND_ABANDONED;                                          /* RULE:FUNDING_DEADLINE_EVICTED */
         ended++;
