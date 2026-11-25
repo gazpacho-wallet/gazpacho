@@ -2,6 +2,7 @@
 #define _POSIX_C_SOURCE 200809L   /* nanosleep */
 #include "wport.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 
@@ -280,6 +281,38 @@ int gzp_wport_open(gzp_wport_t *w, const secp256k1_context *secp, const gzp_unlo
     }
     w->port.ctx = w;
     return 0;
+}
+
+void gzp_wport_coins(gzp_wport_t *w, gzp_wport_coins_t *out)
+{
+    pthread_mutex_lock(&w->mu);
+    *out = w->coin_list;
+    pthread_mutex_unlock(&w->mu);
+}
+
+int gzp_wport_coins_json(const gzp_wport_coins_t *c, char *buf, size_t cap)
+{
+    int n;
+    (void)c;
+    n = snprintf(buf, cap, "{\"state\":\"scanning\",\"reason\":null,\"params\":{},\"attempts\":0}");
+    return n < 0 || (size_t)n >= cap ? -1 : n;
+}
+
+int gzp_wport_coins_attention(const gzp_wport_coins_t *c)
+{
+    (void)c;
+    return 0;
+}
+
+const char *gzp_wport_funds_error(gz_fund_funds_t r)
+{
+    return r == GZ_FUND_FUNDS_OK ? NULL : r == GZ_FUND_FUNDS_SHORT ? "funds_short" : "no_wallet";
+}
+
+int gzp_wport_log_attempt(unsigned n)
+{
+    (void)n;
+    return 1;
 }
 
 int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
