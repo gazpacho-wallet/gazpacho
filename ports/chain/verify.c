@@ -21,7 +21,7 @@ static gz_chain_result check_confirmed(const gz_chain *c, gz_network network,
   const uint32_t height = out->status.height;
 
   /* 2. the id belongs to a real transaction */
-  r = must_exist(gz_chain_raw_tx(c, txid, txbuf, GZ_TX_MAX_BYTES, &tx_len));
+  r = must_exist(gz_chain_raw_tx(c, txid, txbuf, GZ_TX_CONSENSUS_MAX_BYTES, &tx_len));
   if (r != GZ_CHAIN_OK) return r;
   if (!gz_txid_from_raw(txbuf, tx_len, check) || memcmp(check, txid, GZ_HASH_LEN) != 0)
     return GZ_CHAIN_BAD_PROOF;
@@ -56,7 +56,7 @@ static gz_chain_result check_confirmed(const gz_chain *c, gz_network network,
   } else {
     gz_merkle_proof cb_proof;
     if (tx_is_coinbase) return GZ_CHAIN_BAD_PROOF; /* a coinbase anywhere but first */
-    r = must_exist(gz_chain_raw_tx(c, out->block.coinbase_txid, txbuf, GZ_TX_MAX_BYTES, &tx_len));
+    r = must_exist(gz_chain_raw_tx(c, out->block.coinbase_txid, txbuf, GZ_TX_CONSENSUS_MAX_BYTES, &tx_len));
     if (r != GZ_CHAIN_OK) return r;
     if (!gz_txid_from_raw(txbuf, tx_len, check) ||
         memcmp(check, out->block.coinbase_txid, GZ_HASH_LEN) != 0)
@@ -113,8 +113,10 @@ gz_chain_result gz_chain_confirm_tx(const gz_chain *c, gz_network network,
   out->status = status;
   if (status.state != GZ_TX_CONFIRMED) return GZ_CHAIN_OK;
 
-  /* fixed size: chosen by us, not by anything a server says */
-  uint8_t *txbuf = malloc(GZ_TX_MAX_BYTES);
+  /* fixed size: chosen by us, not by anything a server says. Room for any
+   * transaction a block can hold, the coinbase included: a size limit here
+   * could never clear (review of PR 72, P-2) */
+  uint8_t *txbuf = malloc(GZ_TX_CONSENSUS_MAX_BYTES);
   if (txbuf == NULL) {
     memset(out, 0, sizeof *out);
     return GZ_CHAIN_NO_MEMORY;

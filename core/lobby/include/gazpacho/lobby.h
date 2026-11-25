@@ -323,7 +323,13 @@ enum { GZ_SEAT_NONE = 0, GZ_SEAT_JOINED, GZ_SEAT_READY, GZ_SEAT_CHOSEN, GZ_SEAT_
 #define GZ_LOBBY_TIMER_DEADLINE 0x4c000001u
 #define GZ_LOBBY_TIMER_WINDOW   0x4c000002u
 #define GZ_LOBBY_TIMER_STATUS   0x4c000003u
-#define GZ_LOBBY_TIMER_RETRY    0x4c000004u   /* member: join again after a refusal for a limit */
+#define GZ_LOBBY_TIMER_RETRY    0x4c000004u   /* member: join again after a refusal for a limit, or
+                                                 * hello again when a hello got no answer */
+/* A member asks again when its hello got no answer on that connection: the
+ * host answers one hello a second per member key, across its connections
+ * (messages.md 6.1), so a reconnect within that second gets none. */
+#define GZ_LOBBY_HELLO_AGAIN_MS  1500
+#define GZ_LOBBY_HELLO_AGAIN_MAX 5
 /* 0x4c000005 was the host's idle timer: idle and unseated connections are
  * the node part's now (composite-node.md section 3). Not reused. */
 #define GZ_LOBBY_TIMER_BUDGET   0x4c000006u   /* host: the signing budget (terms.md 3) is spent, with no round in flight */
@@ -395,6 +401,9 @@ typedef struct {
      * A join that finds no room is refused like one to a full lobby. */
     int (*seat_room)(void *ctx, const uint8_t key[33]);
     void *seat_ctx;
+    /* The most tree transactions its signer signs (0: no limit): terms whose target needs more do not
+     * open (terms.md 7, gz_terms_policy_t.max_tree_nodes). */
+    uint32_t max_tree_nodes;
 } gz_lobby_host_config_t;
 
 typedef struct {
@@ -418,6 +427,10 @@ typedef struct {
      * that ended without a start, the next needs a seat event since (decision
      * 8), so that nothing loops. */
     uint64_t seat_epoch, failed_epoch; int check_failed;
+    /* Members blamed by a failed attempt (a refusal, silence, an abort), by contribution key, whatever
+     * they send or however they leave and join again: left out of the next check that starts, then
+     * free again, so a member one block behind once is not locked out (review A of PR 52, M1). */
+    struct { uint8_t key[33]; uint8_t left; } skip[GZ_LOBBY_MAX_SEATS];
     uint16_t n_seats; uint64_t next_seq, created;
     uint64_t create_credit_ms, credit_at_ms;   /* creations: a bucket of `target`, one a second */
     gz_lobby_seat_t seats[GZ_LOBBY_MAX_SEATS];
@@ -504,6 +517,7 @@ typedef struct {
     uint8_t address[GZ_LOBBY_MAX_ADDRESS]; uint8_t address_len;   /* "host:port", numeric */
     uint32_t key_epoch, key_index;   /* of the contribution key: CONNECT names them */
     int auto_join;
+    uint32_t max_tree_nodes;         /* as the host's: terms past it are refused before any seat */
 } gz_lobby_member_config_t;
 
 typedef struct {
@@ -545,6 +559,10 @@ typedef struct {
     int resends;                     /* state messages resent on lobby_status, this connection */
     int retries;                     /* joins again after a refusal for a limit, this connection */
     int sent_here;                   /* the join was already sent on this connection */
+    uint32_t max_tree_nodes;         /* the config's (M2) */
+    int heard_here;                  /* the host sent this lobby a message on this connection */
+    int hello_tries;                 /* hellos asked again on this connection, unanswered */
+    int retry_join;                  /* the retry timer is for a join refused for a limit */
 } gz_lobby_member_t;
 
 /* The crypto port signs with the contribution and factory keys `cfg` names.

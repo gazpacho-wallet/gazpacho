@@ -38,6 +38,7 @@ uint16_t gz_c_area(const gz_node_t *c, int eng)
 {
     (void)c;
     if (eng == ENG_NODE) return (uint16_t)GZ_AREA_NODE;
+    if (eng == ENG_SIGN) return (uint16_t)GZ_AREA_ROUND;
     if (eng >= ENG_SLOT0 && eng < ENG_N && c->slots[eng - ENG_SLOT0].kind == SLOT_KIND_LOBBY)
         return (uint16_t)GZ_AREA_LOBBY;
 #ifdef GZ_TEST_KINDS
@@ -59,6 +60,11 @@ static const gz_engine_ops_t *ops_of(const gz_node_t *c, int eng, void **inst)
     (void)c;
     (void)eng;
     *inst = NULL;
+    if (eng == ENG_SIGN) {
+        if (!c->sign_on) return NULL;
+        *inst = (void *)c;
+        return gz_sg_ops();
+    }
     if (eng >= ENG_SLOT0 && eng < ENG_N && c->slots[eng - ENG_SLOT0].kind == SLOT_KIND_LOBBY) {
         *inst = (void *)&((gz_node_t *)c)->slots[eng - ENG_SLOT0];
         return gz_ls_ops();
@@ -172,9 +178,12 @@ gz_status_t gz_c_bracket(gz_node_t *c, int eng, const gz_event_t *ev, gz_action_
     c->bracket_top = eng;
     c->bracket_from = out->count;
     c->n_deferred = 0;
+    c->sg_touched = 0;
     gz_status_t st = call(c, eng, OP_HANDLE, ev, 0, out, NULL);
-    /* After a lobby's step: its gates, its log line, its end (lobbyslot.c). */
+    /* After a lobby's step: its gates, its log line, its end (lobbyslot.c);
+     * after the signing engine's, the same for each lobby an outcome reached. */
     if (st == GZ_OK && eng >= ENG_SLOT0) st = gz_ls_after(c, eng - ENG_SLOT0, out);
+    if (st == GZ_OK && eng == ENG_SIGN) st = gz_sg_after(c, out);
     if (st != GZ_OK) {
         c->bracket_on = 0;
         return st;
@@ -192,8 +201,10 @@ gz_status_t gz_c_resume(gz_node_t *c, int eng, gz_action_list_t *out, int *more)
     c->bracket_top = eng;
     c->bracket_from = out->count;
     c->n_deferred = 0;
+    c->sg_touched = 0;
     gz_status_t st = call(c, eng, OP_RESUME, NULL, 0, out, more);
     if (st == GZ_OK && eng >= ENG_SLOT0) st = gz_ls_after(c, eng - ENG_SLOT0, out);
+    if (st == GZ_OK && eng == ENG_SIGN) st = gz_sg_after(c, out);
     if (st != GZ_OK) {
         c->bracket_on = 0;
         return st;
@@ -379,6 +390,11 @@ gz_status_t gz_c_postprocess(gz_node_t *c, size_t from, int merge_all, gz_action
             int keep = gz_watch_note(c, a, eng);
             if (keep < 0) return gz_c_bug(c, eng);
             if (!keep) {
+                drop_action(c, out, i);
+                continue;
+            }
+        } else if (a->kind == GZ_ACTION_UNWATCH) {
+            if (!gz_watch_unnote(c, a, eng)) {
                 drop_action(c, out, i);
                 continue;
             }

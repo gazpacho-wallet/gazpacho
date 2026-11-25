@@ -107,9 +107,11 @@ void gzp_usage(void)
         "  --network signet|testnet4     test networks only; mainnet is refused (default signet)\n"
         "  --listen ADDR:PORT            host: where members connect (default 127.0.0.1:9736)\n"
         "  --connect KEY@ADDR:PORT       member: the host's key (66 hex) and numeric address\n"
-        "  --interface-port PORT         the local interface's port (served once the API server is merged)\n"
+        "  --interface-port PORT         the local interface's port\n"
         "  --no-interface                no local interface\n"
-        "  --chain-url URL               an Esplora chain server (https); --no-chain for none\n"
+        "  --chain-url URL               an Esplora chain server (https); --no-chain for none. Up to 4,\n"
+        "                                compared with each other (servers of different operators)\n"
+        "  --chain-operator NAME         who runs the --chain-url just before (default: from its host name)\n"
         "  --chain-poll-ms MS            how often to ask for the chain tip (default 60000)\n"
         "  --name LABEL                  label for output lines (default: the role)\n"
         "  --check-chain                 check the chain server (read-only) and stop\n"
@@ -117,7 +119,8 @@ void gzp_usage(void)
         "  --reconnect-ms MS             member: first reconnect delay, doubling to 60 s (default 1000)\n"
         "  --max-per-address N           host: accepted connections per address (0: no cap)\n"
         "  --max-queue BYTES             bytes queued for sending per connection (default 4 MiB)\n"
-        "  --member-signing at-join|auto|when-unlocked   member: when it may sign (default at-join)\n");
+        "  --member-signing at-join|auto|when-unlocked   member: when it may sign (default at-join)\n"
+        "  --tip N                    the chain tip to judge rounds from until the chain reports one\n");
 #ifdef GZP_TEST_BUILD
     fprintf(stderr,
         "tests only (gazpacho-test):\n"
@@ -134,6 +137,9 @@ void gzp_usage(void)
         "  --test-oversize-send BYTES    pad every node send (too big is fatal)\n"
         "  --test-node-error-at K        treat the K-th delivered event as a node error\n"
         "  --test-node-error-always      ... in every incarnation, not only the first\n"
+        "  --test-chain-small            small chain worker queues (16 watches, 32 requests)\n"
+        "  --test-chain-watches N        a chain worker that holds N watches (fewer than the node may ask)\n"
+        "  --test-chain-backlog N        a chain backlog of N requests\n"
         "  --test-stop-at-restart        a SIGTERM to itself as an incarnation ends\n"
         "  --test-engines N              test engines in the node, 0 to 2 (default 1)\n"
         "  --test-dump-journal           print the journal's batches and records, then stop\n"
@@ -226,6 +232,9 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--test-cut-fail")) { o->test_cut_fail = 1; takes = 0; }
         else if (!strcmp(a, "--test-crash-after-counter")) { o->test_crash_after_counter = 1; takes = 0; }
         else if (!strcmp(a, "--test-node-error-always")) { o->test_node_error_always = 1; takes = 0; }
+        else if (!strcmp(a, "--test-chain-small")) { o->test_chain_small = 1; takes = 0; }
+        else if (!strcmp(a, "--test-chain-watches")) { ok = num(val, 1, 256, &v); o->test_chain_watches = (int)v; }
+        else if (!strcmp(a, "--test-chain-backlog")) { ok = num(val, 1, 1024, &v); o->test_chain_backlog = (int)v; }
         else if (!strcmp(a, "--test-stop-at-restart")) { o->test_stop_at_restart = 1; takes = 0; }
         else if (!strcmp(a, "--test-dump-journal")) { o->test_dump_journal = 1; takes = 0; }
         else if (!strcmp(a, "--test-commands")) { o->test_commands = 1; takes = 0; }
@@ -251,6 +260,12 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
             ok = o->n_chain_urls < GZP_MAX_CHAIN_URLS;
             if (ok) o->chain_urls[o->n_chain_urls++] = val;
         }
+        else if (!strcmp(a, "--chain-operator")) {
+            /* Names who runs the --chain-url just before it, for the
+             * comparing backend: servers of one operator count once. */
+            ok = o->n_chain_urls > 0 && !o->chain_operators[o->n_chain_urls - 1];
+            if (ok) o->chain_operators[o->n_chain_urls - 1] = val;
+        }
         else if (!strcmp(a, "--chain-poll-ms")) { ok = num(val, 100, 86400000, &v); o->chain_poll_ms = (uint32_t)v; }
         else if (!strcmp(a, "--handshake-ms")) { ok = num(val, 10, 600000, &v); o->handshake_ms = (int)v; }
         else if (!strcmp(a, "--recv-ms")) { ok = num(val, 10, 600000, &v); o->recv_ms = (int)v; }
@@ -267,7 +282,10 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
             else if (!strcmp(val, "when-unlocked")) o->member_signing = 2;
             else ok = 0;
         }
+        /* The tip to judge rounds from until the chain reports one (the builders' end height, may_ack). */
+        else if (!strcmp(a, "--tip")) { ok = num(val, 1, 499999999, &v); o->tip = (int)v; }
 #ifdef GZP_TEST_BUILD
+        else if (!strcmp(a, "--test-sign-tick-ms")) { ok = num(val, 1, 60000, &v); o->test_sign_tick_ms = (int)v; }
         else if (!strcmp(a, "--test-pings")) { ok = num(val, 0, 20000, &v); o->test_pings = (int)v; }
         else if (!strcmp(a, "--test-ping-ms")) { ok = num(val, 1, 600000, &v); o->test_ping_ms = (int)v; }
         else if (!strcmp(a, "--test-crash-at-ping")) { ok = num(val, 1, 1000000, &v); o->test_crash_at_ping = (int)v; }
@@ -351,10 +369,6 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
     }
     if (!o->no_chain && o->n_chain_urls == 0) {
         fprintf(stderr, "gazpacho: give --chain-url (an Esplora server for %s) or --no-chain\n", o->network);
-        return GZP_EXIT_USAGE;
-    }
-    if (o->n_chain_urls > 1) {
-        fprintf(stderr, "gazpacho: one --chain-url for now (the comparing backend is not wired yet)\n");
         return GZP_EXIT_USAGE;
     }
     if (o->no_interface && o->interface_port) {

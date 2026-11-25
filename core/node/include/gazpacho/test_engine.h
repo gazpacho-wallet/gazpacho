@@ -97,6 +97,8 @@
 #define GZ_TE_CONNECT     0x0005u
 #define GZ_TE_HANDOFF_A   0x0006u
 #define GZ_TE_HANDOFF_B   0x0007u
+#define GZ_TE_WATCH       0x0008u /* a watch asked for: kind, txid, vout, depth (41 bytes) */
+#define GZ_TE_UNWATCH     0x000au /* a watch released: kind, txid, vout (37 bytes) */
 #define GZ_TE_PING_HEADER 82u   /* clock 8, link 66, serial 8 */
 
 #define GZ_TE_CMD_CONNECT        0x7e01u
@@ -114,6 +116,7 @@
 #define GZ_TE_CMD_FLOOD          0x7e0du
 #define GZ_TE_CMD_TWO_SAVES      0x7e0eu
 #define GZ_TE_CMD_SEND_RESERVED  0x7e0fu
+#define GZ_TE_CMD_UNWATCH        0x7e10u /* 12 txid, 14 vout (u32), 16 is_tx (u8): release a watch */
 #define GZ_TE_CMD_SLOT_OPEN      0x7e80u
 #define GZ_TE_CMD_SLOT_CLOSE     0x7e81u
 #define GZ_TE_CMD_SLOT_SEAT      0x7e82u
