@@ -113,7 +113,9 @@ static gz_sg_err_t pair_of(const gz_signer_t *sg, const gzw_xprv *x, secp256k1_k
     if (ok) ok = secp256k1_keypair_pub(sg->cfg.secp, &p, kp);
     GZ_SG_DECLASSIFY(&p, sizeof p);
     if (ok) ok = secp256k1_ec_pubkey_serialize(sg->cfg.secp, pub, &len, &p, SECP256K1_EC_COMPRESSED) && len == 33;
-    if (ok) ok = secp256k1_keypair_xonly_pub(sg->cfg.secp, &xo, NULL, kp);
+    /* the x-only key from the declassified public key, never from the key
+     * pair, whose public half is still secret-marked under the ctime test */
+    if (ok) ok = secp256k1_xonly_pubkey_from_pubkey(sg->cfg.secp, &xo, NULL, &p);
     GZ_SG_DECLASSIFY(&xo, sizeof xo);
     if (ok && xonly) ok = secp256k1_xonly_pubkey_serialize(sg->cfg.secp, xonly, &xo);
     if (!ok) {

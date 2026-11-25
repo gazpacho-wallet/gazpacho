@@ -95,7 +95,9 @@ static int seckey_to_pubkey33(const secp256k1_context *ctx,
                               unsigned char out33[33]) {
     secp256k1_pubkey pub;
     size_t len = 33;
-    int ok = declassified(secp256k1_ec_pubkey_create(ctx, &pub, seckey)) &&
+    int ok = declassified(secp256k1_ec_pubkey_create(ctx, &pub, seckey));
+    GZW_DECLASSIFY(&pub, sizeof(pub));   /* a public key is public, however derived */
+    ok = ok &&
              secp256k1_ec_pubkey_serialize(ctx, out33, &len, &pub,
                                            SECP256K1_EC_COMPRESSED) &&
              len == 33;
