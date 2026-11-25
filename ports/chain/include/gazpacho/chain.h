@@ -385,7 +385,8 @@ gz_chain_result gz_chain_script_outputs(const gz_chain *c, const uint8_t *script
  * backend requires the confirmed count to be the same on every server
  * (GZ_CHAIN_LAG when the tips show a server behind, GZ_CHAIN_DISAGREE
  * otherwise) and answers the highest mempool count. Optional for a backend:
- * GZ_CHAIN_INVALID_ARG from one without it. */
+ * GZ_CHAIN_INVALID_ARG from one without it; GZ_CHAIN_UNSUPPORTED from a server
+ * without the route (Esplora: a 404). */
 gz_chain_result gz_chain_script_history(const gz_chain *c, const uint8_t *script, size_t script_len,
                                         gz_script_history *out);
 

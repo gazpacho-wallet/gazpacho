@@ -1152,6 +1152,8 @@ gz_status_t gz_fund_resume(void *e, gz_action_list_t *out, int *more)
                 size_t sn;
                 if (gz_fund_tx_strip(x->sb, x->sb_len, f->work, sizeof f->work, &sn))
                     f->cfg.wallet.note_tx(f->cfg.wallet.ctx, f->work, sn);
+                else if ((st = log_note(f, out, "funding-spend-back-not-noted", x->scope)) != GZ_OK)
+                    return st;   /* L2 of review A of PR 97: the wallet's mark is not raised by it */
             }
             if (x->state == GZ_FUND_ST_ABANDONED && x->sb_len && (st = broadcast(out, x->sb, x->sb_len)) != GZ_OK)
                 return st;

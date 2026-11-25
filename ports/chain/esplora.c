@@ -883,7 +883,9 @@ static gz_chain_result es_script_history(void *ctx, const uint8_t *script, size_
   snprintf(path, sizeof path, "/scripthash/%s", hex);
   gz_chain_result r = es_get(es, path, ES_CAP_HISTORY, &status, &len);
   if (r != GZ_CHAIN_OK) return r;
-  if (status != 200) return status == 404 ? GZ_CHAIN_MALFORMED : status_meaning(status);
+  /* a server that lists unspent outputs but has no stats route: no history
+   * here, said as such, not a malformed answer asked for ever (P97-4) */
+  if (status != 200) return status == 404 ? GZ_CHAIN_UNSUPPORTED : status_meaning(status);
   if (!gz_es_parse_script_stats(body_of(es), len, sh, out)) {
     memset(out, 0, sizeof *out);
     return GZ_CHAIN_MALFORMED;

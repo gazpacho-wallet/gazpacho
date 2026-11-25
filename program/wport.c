@@ -522,13 +522,16 @@ static void set_coins(gzp_wport_t *w, int state, const char *reason, int chain, 
 #define GZP_WPORT_REFUSALS 3
 
 /* A receive address with unspent outputs, in a wide read: 1 if its history
- * agrees that it was used (B2-1, review B of PR 93). */
-static int history_agrees(const gz_chain *view, const gzw_bip86_output *o, int *no_history)
+ * agrees that it was used (B2-1, review B of PR 93), 0 if it says never, -1
+ * if it could not be asked (*res says how). */
+static int history_agrees(const gz_chain *view, const gzw_bip86_output *o, int *no_history, gz_chain_result *res)
 {
     gz_script_history hs;
     gz_chain_result r = gz_chain_script_history(view, o->script_pubkey, sizeof o->script_pubkey, &hs);
-    if (r == GZ_CHAIN_INVALID_ARG) *no_history = 1;
-    return r == GZ_CHAIN_OK && (hs.confirmed_txs != 0 || hs.mempool_txs != 0);
+    *res = r;
+    if (r == GZ_CHAIN_INVALID_ARG || r == GZ_CHAIN_UNSUPPORTED) *no_history = 1;
+    if (r != GZ_CHAIN_OK) return -1;   /* not asked: a failure, not a disagreement (L1, review A of PR 97) */
+    return hs.confirmed_txs != 0 || hs.mempool_txs != 0;
 }
 
 int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
@@ -541,6 +544,7 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
     size_t nf = 0;
     uint32_t next_change = 0;
     int failed = 0, truncated = 0, unsettled = 0, end_reached = 0, no_history = 0, wide;
+    int refused_out = 0, disagrees = 0, too_many = 0;   /* why a wide read did not settle (P97-1) */
     const char *left_out = NULL, *left_error = NULL;   /* the first address left out, and why */
     int left_chain = -1, left_index = -1;
     unsigned attempt;
@@ -600,6 +604,7 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
                     if (j + 1 > next_change) next_change = j + 1;
                     unused = 0;
                     unsettled = 1;
+                    refused_out = 1;
                     if (!left_out) {
                         left_out = "address_refused";
                         left_error = result_name(hr);
@@ -608,7 +613,7 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
                     }
                     gzp_log("wallet-coins left-out chain=1 index=%u error=%s (history)", (unsigned)j, result_name(hr));
                     continue;
-                } else if (hr == GZ_CHAIN_INVALID_ARG) {
+                } else if (hr == GZ_CHAIN_INVALID_ARG || hr == GZ_CHAIN_UNSUPPORTED) {
                     unsettled = 1;   /* a view with no history: the wide read cannot be settled */
                     no_history = 1;
                 } else {
@@ -634,12 +639,20 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
                     unused++;
                     continue;   /* never used, and nothing there */
                 }
-                if (never || (wide && change == 0 && n > 0 && !history_agrees(view, &o, &no_history))) {
+                gz_chain_result ares = GZ_CHAIN_OK;
+                int agrees = !never && wide && change == 0 && n > 0 ? history_agrees(view, &o, &no_history, &ares) : 1;
+                if (never || agrees <= 0) {
                     /* the history says never used, the unspent outputs say
                      * otherwise: a server that lies or lags; the address is
                      * used, the read not settled (B2-1, review B of PR 93) */
-                    gzp_log("wallet-coins history-disagrees chain=%u index=%u (outputs found; the read is not settled)",
-                            (unsigned)change, (unsigned)j);
+                    if (agrees < 0) {
+                        gzp_log("wallet-coins history-lookup-failed chain=%u index=%u error=%s (the read is not settled)",
+                                (unsigned)change, (unsigned)j, result_name(ares));
+                    } else {
+                        gzp_log("wallet-coins history-disagrees chain=%u index=%u (outputs found; the read is not "
+                                "settled)", (unsigned)change, (unsigned)j);
+                        disagrees = 1;
+                    }
                     unsettled = 1;
                     if (change == 1) {
                         if (j + 1 > next_change) next_change = j + 1;
@@ -718,9 +731,12 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
         OPENSSL_cleanse(found, sizeof found);
         return -1;
     }
-    if (failed || end_reached) unsettled = 1;   /* L2 of review A; the end of what a scan reads */
+    if (failed) unsettled = 1;   /* L2 of review A of PR 93 */
+    /* change at the end of what a scan reads (or a mark from the journal that
+     * far): settled with a warning, too_many_addresses, rather than pending for
+     * good; the mark is kept, so nothing below it is handed out again (P97-5) */
+    too_many = end_reached || w->mark + w->gap > GZP_WPORT_CHANGE_MAX;
     if (!left_out && w->mark + w->gap > GZP_WPORT_CHANGE_MAX) {
-        unsettled = 1;
         left_out = "too_many_addresses";   /* change handed out past what a scan reads (M-3) */
         left_error = NULL;
         left_chain = 1;
@@ -734,15 +750,26 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
          * settled (H-1, M-3 of review B of PR 93; L2 of review A) */
         uint32_t m = w->next_change > w->mark ? w->next_change : w->mark;
         if (unsettled) {
-            /* a server with no history call says so, not "reading" for ever
-             * (review A of PR 93, round 2) */
-            if (no_history) w->coin_list.change_mark = "no_history";
+            /* the cause, in status (P97-1; review A of PR 93, round 2): a
+             * derivation that failed or a server with no history cannot settle
+             * with this view, so it is not asked again this run */
+            const char *cause = failed       ? "derivation_failed"
+                                : no_history ? "no_history"
+                                : refused_out ? "history_refused"
+                                : disagrees  ? "history_disagrees"
+                                             : "reading";
+            w->coin_list.change_mark = cause;
+            w->wide_final = failed || no_history;
             if (gzp_wport_log_attempt(attempt))
-                gzp_log("wallet-change-mark wide read not settled: still pending, plans refused (attempt=%u)", attempt);
+                gzp_log("wallet-change-mark wide read not settled cause=%s: still pending, plans refused (attempt=%u)",
+                        cause, attempt);
         } else if (w->marks.save(w->marks.ctx, m, 0) == 0) {
             w->mark = m;
             w->wide = 0;
-            w->coin_list.change_mark = "kept";
+            w->coin_list.change_mark = too_many ? "too_many_addresses" : "kept";
+            if (too_many)
+                gzp_log("wallet-change-mark change is handed out to the end of what a scan reads (%u addresses): "
+                        "coins past it are not listed", (unsigned)GZP_WPORT_CHANGE_MAX);
             gzp_log("wallet-change-mark wide read done mark=%u", (unsigned)m);
         } else {
             gzp_log("wallet-change-mark-not-kept after the wide scan mark=%u", (unsigned)m);
@@ -764,28 +791,47 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
 
 uint32_t gzp_wport_retry_ms(uint32_t base, unsigned n)
 {
-    (void)n;
-    return base;   /* step 1: no backoff */
+    uint64_t ms = base;
+    while (n-- > 0 && ms < GZP_WPORT_RETRY_CAP_MS) ms *= 2;
+    return ms > GZP_WPORT_RETRY_CAP_MS ? GZP_WPORT_RETRY_CAP_MS : (uint32_t)ms;
 }
 
 int gzp_wport_scan_until(gzp_wport_t *w, const gz_chain *view, uint32_t wait_ms)
 {
+    unsigned unsettled = 0;
     for (unsigned tries = 1;; tries++) {
         int r = gzp_wport_scan_view(w, view);
-        int pending;
+        int pending, final;
+        const char *cause;
+        uint32_t ms = wait_ms;
         if (r < 0) return r;
         pthread_mutex_lock(&w->mu);
         pending = w->wide;
+        final = w->wide_final;
+        cause = w->coin_list.change_mark;
         pthread_mutex_unlock(&w->mu);
-        /* published; a wide read not settled is asked again (B2-2, review B of PR 93) */
         if (r == 1 && !pending) return 1;
-        /* no coin list without the tip and every address: every lobby would be
-         * refused, so say so and ask again (review B of PR 83, L-2; review of PR 85) */
-        if (gzp_wport_log_attempt(tries))
+        if (r == 1) {
+            /* published, the wide read not settled: asked again later and later,
+             * and not at all for a cause asking cannot cure, nor after
+             * GZP_WPORT_UNSETTLED_MAX reads; plans stay refused (M1 of review A,
+             * P97-1 of review B of PR 97) */
+            if (final || ++unsettled >= GZP_WPORT_UNSETTLED_MAX) {
+                gzp_log("wallet-change-mark wide read stopped cause=%s reads=%u: asked again at the next start "
+                        "(plans stay refused)", cause ? cause : "unknown", unsettled + (final ? 1 : 0));
+                return 1;
+            }
+            ms = gzp_wport_retry_ms(wait_ms, unsettled - 1);
+            gzp_log("wallet-change-mark wide read not settled cause=%s: asked again in %u ms", cause ? cause : "unknown",
+                    (unsigned)ms);
+        } else if (gzp_wport_log_attempt(tries)) {
+            /* no coin list without the tip and every address: every lobby would be
+             * refused, so say so and ask again (review B of PR 83, L-2; review of PR 85) */
             gzp_log("wallet-coins retry attempt=%u retry_ms=%u (funding waits for the coin list; logged at the "
                     "first and every 10th attempt)", tries, (unsigned)wait_ms);
-        for (uint32_t t = 0; t < wait_ms && !w->stop; t += 100) {
-            struct timespec ts = {0, (long)(wait_ms - t < 100 ? wait_ms - t : 100) * 1000000L};
+        }
+        for (uint32_t t = 0; t < ms && !w->stop; t += 100) {
+            struct timespec ts = {0, (long)(ms - t < 100 ? ms - t : 100) * 1000000L};
             nanosleep(&ts, NULL);
         }
         if (w->stop) return -1;
