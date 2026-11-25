@@ -282,3 +282,5 @@ sg-tip-not-to-signing	core/node/composite.c	if (st == GZ_OK && c->sign_on && !c-
 sg-no-funding-deadline	core/node/signslot.c	sc.funding_deadline_blocks = fc.funding_deadline_blocks;	sc.funding_deadline_blocks = 0;
 ls-alloc-ceiling-host	core/node/lobbyslot.c	    if (c->np.highest_index >= GZ_LS_KEY_INDEX_MAX) return np_command_result(out, cmd, 503, "no_key");	    if (c->np.highest_index > GZ_LS_KEY_INDEX_MAX) return np_command_result(out, cmd, 503, "no_key");	1
 ls-alloc-ceiling-member	core/node/lobbyslot.c	    if (c->np.highest_index >= GZ_LS_KEY_INDEX_MAX) return np_command_result(out, cmd, 503, "no_key");	    if (c->np.highest_index > GZ_LS_KEY_INDEX_MAX) return np_command_result(out, cmd, 503, "no_key");	2
+# A deliberate survivor, on this branch only, to show the node-mutants job goes red on one: it changes a comment, which no test can see. The next commit removes it.
+ci-demo-survivor	core/node/route.c	/* Routing a received message (composite-node.md section 4; layer 1 of 13).	/* Routing a received message (composite-node.md section 4, layer 1 of 13).
