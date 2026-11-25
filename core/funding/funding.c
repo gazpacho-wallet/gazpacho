@@ -461,15 +461,19 @@ static int plan_ok(gz_fund_factory_t *x, const gz_outpoint_t *must)
     /* Exactly two outputs: the factory's and the wallet's change, which H16's
      * child spends; nothing unknown (review A of PR 56, M2). */
     if (!found || info.n_out != 2) return 0;
+    /* the change, output 1, is the wallet's P2TR (review of PR 80, L-1) */
+    if (!gz_tx_output(x->tx, x->tx_len, &info, 1, &amt, &scr, &slen) || slen != 34 || scr[0] != 0x51 ||
+        scr[1] != 0x20)
+        return 0;
     for (size_t i = 0; i < info.n_in; i++) {
         const uint8_t *op;
         size_t sl;
         uint32_t seq;
         const gz_fund_prevout_t *p = &x->prev[i];
         if (!gz_tx_input(x->tx, x->tx_len, &info, i, &op, &sl, &seq) || sl != 0) return 0;
-        if (p->script_len < 4 || p->script_len > GZ_FUND_MAX_SCRIPT || p->script[1] != p->script_len - 2u ||
-            (p->script[0] != 0x00 && (p->script[0] < 0x51 || p->script[0] > 0x60)) ||
-            (p->script[0] == 0x00 && p->script_len != 22 && p->script_len != 34))
+        /* key-path P2TR only, OP_1 <32>: what the fee bound counts (review of
+         * PR 80, L-1) and what the wallet spends */
+        if (p->script_len != 34 || p->script[0] != 0x51 || p->script[1] != 0x20)
             return 0;
         if (p->amount == 0 || p->amount > UINT64_C(2100000000000000)) return 0;
         if (i < GZ_FUND_WATCH_INPUTS) memcpy(x->ins[i], op, 36);
