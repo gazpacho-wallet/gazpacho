@@ -40,8 +40,9 @@ runs:
         # Checked before anything reaches GITHUB_ENV or a command line.
         case "$BUILD_TYPE_OVERRIDE" in ""|Debug|Release|RelWithDebInfo|MinSizeRel) ;;
           *) echo "::error::build-type must be empty, Debug, Release, RelWithDebInfo or MinSizeRel"; exit 1 ;; esac
-        printf '%s' "$BUILD_DIR" | grep -Eq '^[A-Za-z0-9._/-]+$' || { echo "::error::bad build-dir"; exit 1; }
-        printf '%s' "$TARGETS" | grep -Eq '^[A-Za-z0-9._ -]*$' || { echo "::error::bad targets"; exit 1; }
+        re_dir='^[A-Za-z0-9._/-]+$'; re_targets='^[A-Za-z0-9._ -]*$'
+        [[ "$BUILD_DIR" =~ $re_dir ]] || { echo "::error::bad build-dir"; exit 1; }
+        [[ "$TARGETS" =~ $re_targets ]] || { echo "::error::bad targets"; exit 1; }
         . "$ACTION_PATH/configs.sh"
         gz_config "$CONFIG"
         # The merge queue builds with no cache at all (review of #96, M-2):
