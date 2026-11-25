@@ -145,7 +145,7 @@
           gz.app.refreshStatus(false);
           gz.app.go("/host/lobby/" + lobby.id);
         }, function (e) {
-          if (e.code !== "node_busy" && e.code !== "view_pending" && e.code !== "unreachable" && e.code !== "node_stopped" && e.code !== "cancelled") delete openRid[snap.preview.draft_digest];
+          if (e.code !== "node_busy" && e.code !== "view_pending" && e.code !== "request_in_progress" && e.code !== "unreachable" && e.code !== "node_stopped" && e.code !== "cancelled") delete openRid[snap.preview.draft_digest];
           u.add(msg, ui.error(e));
           if (e.code === "draft_changed" || e.code === "confirm_mismatch") preview();
         });

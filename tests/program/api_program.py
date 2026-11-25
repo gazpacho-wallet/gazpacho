@@ -482,12 +482,32 @@ def main():
                     "draft_digest": (pv3 or {}).get("draft_digest"),
                     "confirm_funding_sat": (pv3 or {}).get("funding_at_target_sat"), "passphrase": PASS}
             t0 = time.time()
-            st, e = v.call("POST", "/host/lobbies", body)
+            # a retry while the first call waits for its view (review B of #55, L-1): told to
+            # try again at once, never given the first's answer nor held for good
+            got = {}
+
+            def first():
+                got["a"] = v.call("POST", "/host/lobbies", body)
+            th = threading.Thread(target=first)
+            th.start()
+            time.sleep(0.6)
+            st2, e2 = v.call("POST", "/host/lobbies", body)
+            check(st2 == 409 and e2 and e2.get("code") == "request_in_progress" and
+                  (e2.get("params") or {}).get("request_id") == "OpenViewNeverComes01" and time.time() - t0 < 1.5,
+                  "a retry while it waits: 409 request_in_progress at once", (st2, e2))
+            th.join(10)
+            st, e = got.get("a", (0, None))
             check(st == 503 and e and e.get("code") == "view_pending" and
                   (e.get("params") or {}).get("request_id") == "OpenViewNeverComes01" and time.time() - t0 >= 1.5,
                   "the object never reaches the view: 503 view_pending, with the request id", (st, e))
             check(v.wait_line(r"command-result id=OpenViewNeverComes01 status=20[01]") is not None,
                   "the core took the open (its result was 2xx)", v.lines[-8:])
+            # many such waits leave no held call behind: the table is never full (no 429)
+            codes = []
+            for k in range(3):
+                st3, e3 = v.call("POST", "/host/lobbies", body)
+                codes.append((st3, (e3 or {}).get("code")))
+            check(all(c == (503, "view_pending") for c in codes), "a replay that waits again: view_pending each time, never 429", codes)
         finally:
             v.stop()
         check(not any(PASS in l for l in v.lines), "the third program: the passphrase is in no output line")

@@ -119,6 +119,8 @@ static int ls_may_answer(void *ctx, const uint8_t scope[32])
     }
 }
 
+static int ls_funds_ok(void *ctx);   /* the host lobby's funds hook, below */
+
 #ifdef GZ_TEST_KINDS
 static gz_status_t ss_begin(void *ctx, const gz_lobby_handoff_t *h, gz_action_list_t *out);
 static gz_status_t ss_cancel(void *ctx, const uint8_t scope[32], uint16_t reason, gz_action_list_t *out);
@@ -229,6 +231,7 @@ int gz_ls_init(gz_node_t *c, int i)
         hc.listed = s->listed;
         hc.seat_room = ls_seat_room;
         hc.paused = ls_paused;
+        hc.funds_ok = ls_funds_ok;
         hc.seat_ctx = s;
         return gz_lobby_host_init(&s->lobby.h, &c->ports, &cr, &sg, &hc) == GZ_OK;
     }
@@ -1074,6 +1077,18 @@ gz_status_t gz_ls_after(gz_node_t *c, int i, gz_action_list_t *out)
     /* The per-lobby gate (AT_JOIN) closes when the check it was opened for
      * has had its last attempt: the lobby left Signing for Funding, Open or
      * its end, or the member was not chosen (12.2). */
+    /* A join ready's factory key (#52, L-4): once the terms are here and are the
+     * ones joined for. Other values open nothing; the person readies again. */
+    if (st == GZ_OK && !s->host && s->gate_derive && s->gate_open && s->gate_have && s->lobby.m.have_terms) {
+        const gz_lobby_member_t *m = &s->lobby.m;
+        uint8_t fresh[32];
+        if (memcmp(m->frozen ? m->frozen_digest : m->current_digest, s->gate_digest, 32) == 0) {
+            s->gate_derive = 0;
+            if (c->cfg.keys.secret && c->cfg.keys.secret(c->cfg.keys.ctx, s->key_epoch, s->key_index + 1, fresh) == 1)
+                memcpy(s->gate_secret, fresh, 32);
+            gz_ls_wipe32(fresh);
+        }
+    }
     /* ... and when the seat ends (14.3 rule 1): left, refused, removed or the lobby
      * cancelled. The signing permission and the scoped secret behind it do not outlive
      * the seat (review of #79), unless an answered check is still running (rule 4). */
@@ -1468,46 +1483,60 @@ static int ls_init_next(gz_node_t *c, int i)
     return 0;
 }
 
-/* Local-api.md 15.2's funds check for a host's open or early start of slot
- * `self`, whose set-aside is `own` (#80, gz_fund_funds_short). 1 and the
- * answer given when refused, 0 to go on.
+/* Local-api.md 15.2's funds check for slot `self` of a host, whose set-aside
+ * is `own` (#80, gz_fund_funds_short), at the funding engine's own rate
+ * (gz_fund_config_default; review B of #55, L-2). 0 enough, 1 short, 2 the
+ * wallet cannot tell, 3 no wallet port; *need and *have from the dry run.
  *
  * Interim rule for several hosted lobbies (#80's L-4): one dry run over the
  * sum of this lobby's set-aside and, for every other hosted lobby not yet
- * funded (Open to Signing), its set-aside plus a fee bound at the largest
- * input count and a change's dust. That counts more than separate
- * fundings need, so it refuses sooner, never later (funding.md; a
- * multi-amount can_plan is the follow-up). */
-static int funds_refused(gz_node_t *c, int self, uint64_t own, gz_bytes_t cmd, gz_action_list_t *out, gz_status_t *st)
+ * live (Open to Funding), its set-aside plus a fee bound at the largest input
+ * count and a change's dust, each counted once. That counts more than
+ * separate fundings need, so it refuses sooner, never later. A Funding lobby
+ * is counted too: its plan's holds live in the wallet port's memory and a
+ * restart can lose them (review B of #55, L-3); until the funding engine's
+ * holds are known here (integration), counting it is the safe side. A
+ * multi-amount can_plan that knows the holds is the follow-up (funding.md). */
+static int funds_ask(gz_node_t *c, int self, uint64_t own, uint64_t *need, uint64_t *have)
 {
     gz_fund_config_t fc;
-    uint64_t amount = own, need = 0, have = 0, per;
-    char p[96];
-    size_t at = 0;
-    *st = GZ_OK;
-    if (!c->cfg.funds.can_plan) {
-        *st = np_command_result(out, cmd, 409, "no_wallet");
-        return 1;
-    }
-    memset(&fc, 0, sizeof fc);
-    fc.host = 1;
-    fc.feerate = c->cfg.funds.feerate ? c->cfg.funds.feerate : 100;
-    fc.wallet.ctx = c->cfg.funds.ctx;
-    fc.wallet.can_plan = c->cfg.funds.can_plan;
+    uint64_t amount = own, per;
+    const gz_wallet_port_t *wp = c->cfg.wallet;
+    *need = *have = 0;
+    if (!wp || !wp->can_plan) return 3;
+    gz_fund_config_default(&fc, 1);
+    fc.wallet = *wp;
     per = gz_fund_funding_fee_bound(&fc, GZ_FUND_MAX_INPUTS);
     for (int j = 0; j < GZ_NODE_MAX_SLOTS; j++) {
         slot_t *o = &c->slots[j];
         uint64_t add;
         if (j == self || o->state != SLOT_OPEN || o->kind != SLOT_KIND_LOBBY || !o->host) continue;
-        if (o->lobby.h.state < GZ_LOBBY_OPEN || o->lobby.h.state > GZ_LOBBY_SIGNING) continue;
+        if (o->lobby.h.state < GZ_LOBBY_OPEN || o->lobby.h.state > GZ_LOBBY_FUNDING) continue;
         add = gz_ls_set_aside(o);
         add = per == UINT64_MAX || add > UINT64_MAX - per - GZ_FUND_CHANGE_DUST ? UINT64_MAX : add + per + GZ_FUND_CHANGE_DUST;
         amount = add == UINT64_MAX || amount > UINT64_MAX - add ? UINT64_MAX : amount + add;
     }
-    switch (gz_fund_funds_short(&fc, amount, &need, &have)) {
+    switch (gz_fund_funds_short(&fc, amount, need, have)) {
     case GZ_FUND_FUNDS_OK:
         return 0;
     case GZ_FUND_FUNDS_SHORT:
+        return 1;
+    default:                                    /* a port that cannot tell: never enough */
+        return 2;
+    }
+}
+
+/* The same for the person's open or early start: 1 and the answer given when
+ * refused, 0 to go on. */
+static int funds_refused(gz_node_t *c, int self, uint64_t own, gz_bytes_t cmd, gz_action_list_t *out, gz_status_t *st)
+{
+    uint64_t need, have;
+    char p[96];
+    size_t at = 0;
+    int r = funds_ask(c, self, own, &need, &have);
+    *st = GZ_OK;
+    if (r == 0) return 0;
+    if (r == 1) {
         p[0] = 0;
         put_s(p, sizeof p, &at, "{\"need_sat\":");
         put_u(p, sizeof p, &at, need);
@@ -1515,11 +1544,50 @@ static int funds_refused(gz_node_t *c, int self, uint64_t own, gz_bytes_t cmd, g
         put_u(p, sizeof p, &at, have);
         put_s(p, sizeof p, &at, "}");
         *st = np_command_result_p(out, cmd, 409, "funds_short", p);
-        return 1;
-    default:                                    /* a port that cannot tell: never enough */
-        *st = np_command_result(out, cmd, 409, "coins_unknown");
-        return 1;
+    } else {
+        *st = np_command_result(out, cmd, 409, r == 2 ? "coins_unknown" : "no_wallet");
     }
+    return 1;
+}
+
+/* The host lobby's funds hook (gz_lobby_host_config_t.funds_ok): the automatic
+ * start, by the start rule (review B of #55, M-1). Short, or not known: the
+ * lobby waits Open and its attention item host_funds_short is up (11.4). */
+static int ls_funds_ok(void *ctx)
+{
+    slot_t *s = ctx;
+    gz_node_t *c = s->node;
+    int self = (int)(s - c->slots);
+    int r = funds_ask(c, self, gz_ls_set_aside(s), &s->funds_need, &s->funds_have);
+    s->funds_blocked = r != 0;
+    return r == 0;
+}
+
+static gz_status_t funds_recheck_inline(gz_node_t *c, int eng, gz_action_list_t *out)
+{
+    slot_t *s = &c->slots[eng - ENG_SLOT0];
+    return gz_lobby_host_pause_changed(&s->lobby.h, out);    /* the start rule, applied again */
+}
+
+/* A tip: a host lobby whose automatic start waits for funds is asked again. */
+gz_status_t gz_ls_funds_recheck(gz_node_t *c, gz_action_list_t *out)
+{
+    gz_status_t st = GZ_OK;
+    int any = 0;
+    for (int i = 0; i < GZ_NODE_MAX_SLOTS; i++)
+        any |= c->slots[i].state == SLOT_OPEN && c->slots[i].kind == SLOT_KIND_LOBBY && c->slots[i].host &&
+               c->slots[i].funds_blocked;
+    if (!any) return GZ_OK;
+    if ((st = gz_c_node_bracket_begin(c, out)) != GZ_OK) return st;   /* the tip's own bracket */
+    for (int i = 0; i < GZ_NODE_MAX_SLOTS && st == GZ_OK; i++) {
+        slot_t *s = &c->slots[i];
+        if (s->state != SLOT_OPEN || s->kind != SLOT_KIND_LOBBY || !s->host || !s->funds_blocked) continue;
+        st = gz_c_slot_inline(c, ENG_SLOT0 + i, funds_recheck_inline, out);
+        if (st == GZ_OK) st = gz_ls_after(c, i, out);
+    }
+    if (st == GZ_OK) return gz_c_node_bracket_end(c, out);
+    c->bracket_on = 0;
+    return st;
 }
 
 static gz_status_t cmd_open(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
@@ -1561,6 +1629,12 @@ static gz_status_t cmd_open(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
     if (gz_route_slot_by_scope(c, s->scope) >= 0 || ended_find(c, s->scope) >= 0) {
         memset(s, 0, sizeof *s);
         return np_command_result(out, cmd, 409, "lobby_exists");
+    }
+    /* Terms with no funding for some member count give a set-aside of 0: never
+     * "enough" by asking for nothing (review A of #55, L2). */
+    if (gz_fund_set_aside_sat(&s->lobby.h.terms) == 0) {
+        memset(s, 0, sizeof *s);
+        return np_command_result(out, cmd, 400, "bad_terms");
     }
     if (funds_refused(c, i, gz_fund_set_aside_sat(&s->lobby.h.terms), cmd, out, &st)) {
         memset(s, 0, sizeof *s);              /* nothing kept: no key, no slot */
@@ -1647,25 +1721,21 @@ static gz_status_t cmd_join(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
      * command, as for a ready with field 14; the gate is open from the join,
      * so the lobby readies by itself once its terms fit (W12). */
     if (c->cfg.member_signing == GZ_MEMBER_SIGNING_AT_JOIN && arg(cmd, 24, 1, &v) && v.data[0] == 1) {
-        /* With the signing engine the lobby's factory key is derived now, as a
-         * ready's is (#52), once the slot's pair is chosen: the gate opened
-         * from the join can then sign, for that digest alone. */
-        if (c->sign_on) {
-            uint8_t fresh[32];
-            if (!c->cfg.keys.secret || c->cfg.keys.secret(c->cfg.keys.ctx, s->key_epoch, s->key_index + 1, fresh) != 1) {
-                gz_ls_wipe32(fresh);
-                memset(s, 0, sizeof *s);
-                return np_command_result(out, cmd, 503, "no_key");
-            }
-            memcpy(s->gate_secret, fresh, 32);
-            gz_ls_wipe32(fresh);
-        }
+        /* With the signing engine the lobby's factory key is derived as a
+         * ready's is (#52), but only once the lobby's terms are here and are
+         * the ones joined for (gz_ls_after; review B of #55, L-4): never held
+         * before the terms check, for that digest alone. */
+        s->gate_derive = c->sign_on;
         s->gate_open = 1;
         s->gate_flight = 0;
         s->gate_have = 1;                      /* bound to the values the person saw (26, checked above) */
         memcpy(s->gate_digest, seen.data, 32);
     }
-    if ((st = slot_begin(c, i, cond, out)) != GZ_OK) return st;
+    if ((st = slot_begin(c, i, cond, out)) != GZ_OK) {
+        gz_ls_wipe32(s->gate_secret);         /* nothing of the gate outlives a failed join (L-4) */
+        s->gate_have = 0;
+        return st;
+    }
     return np_command_result_o(out, cmd, 200, NULL, NULL, s->view.local_id);
 }
 

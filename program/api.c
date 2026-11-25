@@ -369,6 +369,15 @@ int gzp_api_send_command(gzp_api_t *a, const gz_api_call *c, uint16_t code, cons
         gz_api_err_set(err, "missing_field", "/request_id", NULL);
         return 400;
     }
+    /* One held call per request id (review B of #55, L-1): a retry while the
+     * first is held (or waits for its view) would otherwise take the first's
+     * answer and leave its own held for good; it is told to try again, and
+     * that try is answered from the replay table. */
+    for (i = 0; i < GZP_API_HELD; i++)
+        if (a->held[i].used && !strcmp(a->held[i].request_id, c->request_id)) {
+            gz_api_err_set(err, "request_in_progress", NULL, "{\"request_id\":\"%s\"}", c->request_id);
+            return 409;
+        }
     for (i = 0; i < GZP_API_HELD; i++)
         if (!a->held[i].used) { slot = i; break; }
     if (slot < 0) {
@@ -390,6 +399,8 @@ int gzp_api_send_command(gzp_api_t *a, const gz_api_call *c, uint16_t code, cons
     memcpy(a->held[slot].request_id, c->request_id, n + 1);
     a->held[slot].handle = c->handle;
     a->held[slot].call = c->id;
+    a->held[slot].waiting = 0;
+    a->held[slot].held_since = gzp_mono_ms();
     if (!rc || a->command(a->command_ctx, buf, at) != 0) {
         a->held[slot].used = 0;
         free(buf);
@@ -437,7 +448,7 @@ static void command_result(gzp_api_t *a, const uint8_t *bytes, size_t len)
     if (gz_rec_find(all, GZ_RESULT_REC_STATUS, &f) != 1 || f.len != 2) return;
     st = gz_get_u16(f.data);
     for (i = 0; i < GZP_API_HELD; i++) {
-        if (!a->held[i].used || strcmp(a->held[i].request_id, rid) != 0) continue;
+        if (!a->held[i].used || a->held[i].waiting || strcmp(a->held[i].request_id, rid) != 0) continue;
         a->held[i].used = 0;
         {
             /* The object acted on (result field 6) and the core's params
@@ -613,8 +624,8 @@ size_t gzp_api_pollfds(gzp_api_t *a, struct pollfd *fds, size_t cap, int *timeou
     n = gz_api_server_pollfds(a->srv, fds, cap, timeout_ms);
     /* The loop wakes when a waiting answer's 2 s are up (gzp_api_dispatch). */
     for (int i = 0; i < GZP_API_HELD; i++)
-        if (a->held[i].used && a->held[i].waiting) {
-            uint64_t due = a->held[i].waiting_since + 2000;
+        if (a->held[i].used) {
+            uint64_t due = a->held[i].waiting ? a->held[i].waiting_since + 2000 : a->held[i].held_since + GZP_API_HELD_MS;
             int t = due > now ? (int)(due - now) : 0;
             if (*timeout_ms < 0 || t < *timeout_ms) *timeout_ms = t;
         }
@@ -628,6 +639,19 @@ void gzp_api_dispatch(gzp_api_t *a, const struct pollfd *fds, size_t n)
      * "undefined"), but 503 view_pending with the request id. The action was
      * taken; a retry with that id is answered from the replay table, with the
      * object as the view then holds it (local-api.md 7.4). */
+    /* Any held call the core has not answered in GZP_API_HELD_MS: 503 node_busy
+     * with its request id (the core may still act on it: a retry with that id
+     * is the replay), so that no lost answer keeps its place for good and the
+     * table never fills to 429 (review B of #55, L-1). */
+    for (int i = 0; a->srv && i < GZP_API_HELD; i++)
+        if (a->held[i].used && !a->held[i].waiting && gzp_mono_ms() - a->held[i].held_since >= GZP_API_HELD_MS) {
+            gz_api_error e;
+            memset(&e, 0, sizeof e);
+            gz_api_err_set(&e, "node_busy", NULL, "{\"request_id\":\"%s\"}", a->held[i].request_id);
+            e.code = "node_busy";
+            a->held[i].used = 0;
+            gz_api_call_done(a->srv, a->held[i].handle, 503, NULL, &e);
+        }
     for (int i = 0; a->srv && i < GZP_API_HELD; i++)
         if (a->held[i].used && a->held[i].waiting && gzp_mono_ms() - a->held[i].waiting_since >= 2000) {
             gz_api_error e;
