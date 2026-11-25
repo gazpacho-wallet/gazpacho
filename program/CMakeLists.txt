@@ -85,7 +85,7 @@ if(GZ_MEMCHECK)
     # triages every report by function and line in every build (integration
     # B10: a Release build had no lines, and nothing could be triaged).
     add_executable(ct_keys ${CMAKE_SOURCE_DIR}/tests/program/ct_keys.c ${CMAKE_CURRENT_SOURCE_DIR}/keys.c
-                   ${CMAKE_SOURCE_DIR}/wallet/src/address.c ${CMAKE_SOURCE_DIR}/wallet/src/bip32.c
+                   ${CMAKE_SOURCE_DIR}/wallet/src/address.c ${CMAKE_SOURCE_DIR}/tests/program/ct_bip32.c
                    ${CMAKE_SOURCE_DIR}/wallet/src/phrase.c ${CMAKE_SOURCE_DIR}/wallet/src/taproot.c)
     target_include_directories(ct_keys PRIVATE ${GZP_VALGRIND_INCLUDE} ${CMAKE_CURRENT_SOURCE_DIR}
                                ${CMAKE_SOURCE_DIR}/wallet/include ${CMAKE_SOURCE_DIR}/core/superscalar/src)
