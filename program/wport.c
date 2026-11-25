@@ -886,6 +886,12 @@ uint32_t gzp_wport_retry_ms(uint32_t base, unsigned n)
     return ms > GZP_WPORT_RETRY_CAP_MS ? GZP_WPORT_RETRY_CAP_MS : (uint32_t)ms;
 }
 
+uint32_t gzp_wport_failed_retry_ms(uint32_t base, unsigned n, int wide)
+{
+    (void)wide;
+    return gzp_wport_retry_ms(base, n);   /* step 1: one cap */
+}
+
 int gzp_wport_scan_until(gzp_wport_t *w, const gz_chain *view, uint32_t wait_ms)
 {
     unsigned unsettled = 0, failed_in_row = 0;

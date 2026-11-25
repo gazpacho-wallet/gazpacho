@@ -42,6 +42,7 @@
 #define GZP_WPORT_PLANS 8
 #define GZP_WPORT_TIP_RETRY_MS 15000   /* a tip that could not be read is asked again */
 #define GZP_WPORT_RETRY_CAP_MS 600000  /* a wide read not settled is asked again at most this far apart */
+#define GZP_WPORT_RETRY_CAP_PLAIN_MS 120000 /* a scan that published nothing, with no wide read pending */
 #define GZP_WPORT_UNSETTLED_MAX 10     /* and this many times, then not until the next start */
 #define GZP_WPORT_SLOW_RETRY_MS 3600000 /* (R2-3: then, for a cause that can clear, once an hour) */
 #define GZP_WPORT_GAP_MAX 256          /* the most addresses of one chain a scan reads */
@@ -71,6 +72,7 @@ typedef struct {
     const char *error;        /* the chain port's answer for it (unreachable, malformed, ...), or NULL */
     unsigned attempts;        /* scans made so far */
     const char *change_mark;  /* kept, reading (a wide read pending) or not_opened; NULL: not shown */
+    const char *refused;      /* why the last plan or spend-back was refused by the change chain, or NULL */
 } gzp_wport_coins_t;
 
 typedef struct {
@@ -143,6 +145,9 @@ int gzp_wport_scan_until(gzp_wport_t *w, const gz_chain *view, uint32_t wait_ms)
 /* How long after the n-th wide read in a row that did not settle (from 0)
  * the next is asked: `base` doubled n times, at most GZP_WPORT_RETRY_CAP_MS. */
 uint32_t gzp_wport_retry_ms(uint32_t base, unsigned n);
+/* After the n-th scan in a row that published nothing: the same doubling,
+   capped lower when no wide read is pending (L-4, review B of PR 101). */
+uint32_t gzp_wport_failed_retry_ms(uint32_t base, unsigned n, int wide);
 /* The coin list's state, under the mutex. */
 void gzp_wport_coins(gzp_wport_t *w, gzp_wport_coins_t *out);
 /* It as the JSON of status.coins (local-api.md 11.2): the length written, or -1. */

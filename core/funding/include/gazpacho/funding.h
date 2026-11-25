@@ -188,6 +188,10 @@ typedef struct {
      * after a restart (P97-3, review B of PR 97). The same answer as adopt. */
     int (*adopt_plan)(void *ctx, const uint8_t *tx, size_t tx_len, const gz_fund_prevout_t *prev, size_t n_prev,
                       const uint8_t script[34], uint64_t amount);
+    /* Optional (may be NULL): the factory of this plan has ended (live,
+     * dead or failed); the wallet frees what it holds for it (M-1, review B
+     * of PR 101). A plan it does not hold is ignored. */
+    void (*forget)(void *ctx, const uint8_t *tx, size_t tx_len);
     void *ctx;
 } gz_wallet_port_t;
 
