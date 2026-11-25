@@ -1762,6 +1762,66 @@ static void test_route_held(void)
     w_free(3);
 }
 
+/* Slice 1 blocker C1 (local-api.md, leave: too_late): once a partial signature of the member's has left,
+ * the person's leave is refused while that round is not resolved, so that the lobby, and with it the
+ * round's ack, is not given up; the slot stays open. The signing engine's memory is set by hand: a round
+ * of the lobby with partial signatures out, in each unresolved state; then an exposure whose round left
+ * memory unresolved (its lobby is not known: refused for every lobby, fail closed). With none of these
+ * the leave goes through. */
+static void test_leave_partials_out(void)
+{
+    terms_t t;
+    static const uint8_t held[] = {GZ_SIGN_ROUND_ACTIVE, GZ_SIGN_ROUND_UNFINISHED, GZ_SIGN_ROUND_COMPLETE};
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node_engine(1, 1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node(2, 2, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node(3, 3, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    for (int n = 0; n <= 3; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 4, 4, 3000);
+    CHECK(host_open(&t, 0) == 200);
+    for (int n = 1; n <= 3; n++) CHECK(member_join(n, &t) == 200);
+    w_run(4000, 100);
+    gz_node_t *c = N[1].n;
+    slot_t *s = slot(1, &t);
+    CHECK(s && c->sign_on && c->sign);
+    if (!s || !c->sign) { w_free(3); return; }
+    gz_sign_round_t *r = &c->sign->rounds[GZ_SIGN_MAX_ROUNDS - 1];
+    CHECK(r->state == GZ_SIGN_ROUND_FREE);
+    for (size_t k = 0; k < sizeof held; k++) {
+        size_t mark = N[1].n_log;
+        memset(r, 0, sizeof *r);
+        r->state = held[k];
+        r->ever_partial = 1;
+        r->id[0] = 0xc1;
+        memcpy(r->def.outer_digest, t.scope, 32);
+        CHECK(scope_cmd(1, GZ_CMD_LOBBY_LEAVE, &t, 0) == 409 && said(1, mark, "too_late"));
+        CHECK(slot(1, &t) == s && !s->lobby.m.ended && !s->lobby.m.left);
+    }
+    memset(r, 0, sizeof *r);
+    /* an exposure whose round left memory, Unfinished: its lobby is not known here */
+    size_t n0 = c->sign->n_exposures;
+    CHECK(n0 < GZ_SIGN_MAX_EXPOSURES);
+    if (n0 < GZ_SIGN_MAX_EXPOSURES) {
+        size_t mark = N[1].n_log;
+        memset(&c->sign->exposures[n0], 0, sizeof c->sign->exposures[n0]);
+        memset(&c->sign->exposed[n0], 0, sizeof c->sign->exposed[n0]);
+        c->sign->exposed[n0].round_id[0] = 0xc2;
+        c->sign->exposed[n0].state = GZ_SIGN_ROUND_UNFINISHED;
+        c->sign->n_exposures = n0 + 1;
+        CHECK(scope_cmd(1, GZ_CMD_LOBBY_LEAVE, &t, 0) == 409 && said(1, mark, "too_late"));
+        CHECK(slot(1, &t) == s && !s->lobby.m.ended);
+        memset(&c->sign->exposed[n0], 0, sizeof c->sign->exposed[n0]);
+        c->sign->n_exposures = n0;
+    }
+    /* nothing out: the leave goes through */
+    CHECK(scope_cmd(1, GZ_CMD_LOBBY_LEAVE, &t, 0) == 200);
+    w_run(1000, 100);
+    CHECK(slot(1, &t) == NULL || s->lobby.m.left);
+    no_errors(3);
+    w_free(3);
+}
+
 int main(int argc, char **argv)
 {
     unsigned long events = argc > 1 ? strtoul(argv[1], NULL, 10) : 20000;
@@ -1776,6 +1836,7 @@ int main(int argc, char **argv)
     test_tree_cap();
     test_may_ack_depth();
     test_route_held();
+    test_leave_partials_out();
     test_index();
     test_seat_capacity();
     test_left_out();
