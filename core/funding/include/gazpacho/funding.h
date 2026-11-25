@@ -178,6 +178,10 @@ typedef struct {
     int (*spend_back)(void *ctx, const uint8_t txid[32], uint32_t index, uint64_t fee,
                       uint8_t *out, size_t cap, size_t *out_len);
     int (*can_plan)(void *ctx, uint64_t amount, uint64_t feerate, uint64_t *have_sat, size_t *n_coins);
+    /* Optional (may be NULL), at a resume: a transaction from the journal
+     * the wallet made and the engine will send again, a spend-back, without
+     * witnesses. The wallet notes the change it pays (its change mark). */
+    void (*note_tx)(void *ctx, const uint8_t *tx, size_t tx_len);
     void *ctx;
 } gz_wallet_port_t;
 
