@@ -729,18 +729,62 @@ static void move_after(gz_node_t *c, gz_action_list_t *out, size_t to)
     c->owner[to + 1 - c->base] = o;
 }
 
-/* Inside the command's bracket, before it ends: if the command saved
- * anything, its request id goes right after the first save (one batch,
- * local-api.md 7.4), with the status and error of the result notice it gave. */
+/* A 2xx result notice the command gave without the object it acted on
+ * gets it (field 6), as a replay's has: the program answers a call with that
+ * object as its view holds it (W12; review of #79). The notice is written
+ * again in field order and put in the old one's place. */
+static gz_status_t name_object(gz_node_t *c, const char *object, size_t from, gz_action_list_t *out)
+{
+    gz_bytes_t f, b;
+    size_t at = 0, k;
+    uint8_t *buf = c->api.res;
+    gz_status_t st = GZ_OK;
+    static const uint64_t order[] = {GZ_RESULT_REC_REQUEST_ID, GZ_RESULT_REC_STATUS, GZ_RESULT_REC_ERROR,
+                                     GZ_RESULT_REC_OBJECT, GZ_RESULT_REC_PARAMS};
+    for (k = out->count; k > from; k--) {
+        const gz_action_t *a = &out->slots[k - 1];
+        if (a->kind == GZ_ACTION_NOTIFY && a->u.notify.code == GZ_NOTIFY_COMMAND_RESULT) break;
+    }
+    if (k == from) return GZ_OK;
+    k--;
+    b = out->slots[k].u.notify.bytes;
+    if (gz_rec_find(b, GZ_RESULT_REC_OBJECT, &f) == 1 || gz_rec_find(b, GZ_RESULT_REC_STATUS, &f) != 1 || f.len != 2 ||
+        gz_get_u16(f.data) < 200 || gz_get_u16(f.data) >= 300)
+        return GZ_OK;
+    for (size_t j = 0; j < sizeof order / sizeof order[0] && st == GZ_OK; j++) {
+        if (order[j] == GZ_RESULT_REC_OBJECT) st = gz_rec_put(buf, sizeof c->api.res, &at, order[j], (const uint8_t *)object, slen(object));
+        else if (gz_rec_find(b, order[j], &f) == 1) st = gz_rec_put(buf, sizeof c->api.res, &at, order[j], f.data, f.len);
+    }
+    if (st != GZ_OK) return gz_c_bug(c, ENG_NODE);
+    gz_action_t a = {.kind = GZ_ACTION_NOTIFY};
+    a.u.notify.code = GZ_NOTIFY_COMMAND_RESULT;
+    a.u.notify.bytes.data = buf;
+    a.u.notify.bytes.len = at;
+    if ((st = gz_action_list_add(out, &a)) != GZ_OK) return st;   /* copied into the list's block */
+    out->slots[k].u.notify.bytes = out->slots[out->count - 1].u.notify.bytes;
+    out->count--;                                                 /* the copy's slot, not its bytes */
+    return GZ_OK;
+}
+
+/* Inside the command's bracket, before it ends: the result notice names the
+ * object acted on; and if the command saved anything, its request id goes
+ * right after the first save (one batch, local-api.md 7.4), with the status
+ * and error of the result notice it gave. */
 gz_status_t gz_api_after(gz_node_t *c, gz_bytes_t cmd, size_t from, gz_action_list_t *out)
 {
-    gz_bytes_t rid, method, path, digest, sb, eb = {NULL, 0};
-    size_t first = out->count, at = 0, i;
+    gz_bytes_t rid, method, path, digest, sb, eb = {NULL, 0}, scope;
+    size_t first, at = 0, i;
     uint16_t status = 0;
     uint8_t *rec = c->api.rec, v[8];
     const char *object = "";
     gz_status_t st;
     api_req_t *r;
+    /* The object acted on: the lobby the command names, or the one it opened. */
+    if (c->api.opened) object = c->slots[c->api.opened - 1].view.local_id;
+    else if (arg(cmd, 12, 32, &scope) && gz_api_local_id(c, scope.data)) object = gz_api_local_id(c, scope.data);
+    c->api.opened = 0;
+    if (object[0] && (st = name_object(c, object, from, out)) != GZ_OK) return st;
+    first = out->count;
     if (request_parts(cmd, &rid, &method, &path, &digest) != 1) return GZ_OK;
     for (i = from; i < out->count; i++) {
         const gz_action_t *a = &out->slots[i];
@@ -753,11 +797,6 @@ gz_status_t gz_api_after(gz_node_t *c, gz_bytes_t cmd, size_t from, gz_action_li
         }
     }
     if (first == out->count || !status) return GZ_OK; /* nothing saved: no id (7.4) */
-    /* The object acted on: the lobby the command names, or the one it opened. */
-    gz_bytes_t scope;
-    if (c->api.opened) object = c->slots[c->api.opened - 1].view.local_id;
-    else if (arg(cmd, 12, 32, &scope) && gz_api_local_id(c, scope.data)) object = gz_api_local_id(c, scope.data);
-    c->api.opened = 0;
     gz_put_u16(v, status);
     st = gz_rec_put(rec, sizeof c->api.rec, &at, 2, rid.data, rid.len);
     if (st == GZ_OK) st = gz_rec_put(rec, sizeof c->api.rec, &at, 4, method.data, method.len);

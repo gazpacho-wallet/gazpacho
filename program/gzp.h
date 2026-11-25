@@ -84,6 +84,7 @@ typedef struct {
     int test_crash_after_save;     /* exit once the K-th batch is durable, before the rest of its list */
     int test_crash_before_confirm; /* exit just before the K-th confirmation reaches the runner */
     int test_exit_after_send;      /* exit once the first test ping has been handed to the transport */
+    int test_drop_view;            /* view objects of this kind never reach the API (0: none) */
     int test_max_conns;            /* the transport's max_conns (0: the default, GZ_NODE_MAX_CONNS) */
     unsigned test_crash_after_record; /* exit once a batch holding a record of this type is durable */
     int test_sign_outcome;         /* the signing stand-in's outcome: 1 funding, 2 retry, 3 failed, 4 unfinished */

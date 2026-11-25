@@ -340,6 +340,17 @@ def main():
               seen.get("signatures_checked") is False and seen.get("fingerprint") is None and
               "joining_fee_sat" in seen.get("ranges", {}),
               "the preview's as_members_see_it: the draft's terms, unsigned", seen)
+        # opening it answers the hosted lobby as the view holds it (15.2), though the core
+        # gives its result before the view object: the answer waits for that object
+        draft = {"name": "x", "target": 3, "minimum": 3}
+        st, op = p.call("POST", "/host/lobbies", {"request_id": "OpenFromProgramApi01", "draft": draft,
+                                                 "draft_digest": (pv or {}).get("draft_digest"),
+                                                 "confirm_funding_sat": (pv or {}).get("funding_at_target_sat"),
+                                                 "passphrase": PASS})
+        check(200 <= st < 300 and op and str(op.get("id", "")).startswith("lob_") and op.get("stage") == "open",
+              "open: the hosted lobby itself, with its id and stage", (st, op))
+        st, hl = p.call("GET", "/host/lobbies/" + str((op or {}).get("id")))
+        check(st == 200 and hl and hl.get("id") == (op or {}).get("id"), "the opened lobby reads back", (st, hl))
         host = NOBODY_KEY + "@127.0.0.1:%d" % free_port()
         st, e = p.call("POST", "/discovery/query", {"host": host})
         check(st == 409 and e and e.get("code") == "not_a_member",
@@ -367,6 +378,28 @@ def main():
             found = sorted({w for t in mflat for w in set(fixed) if " %s " % w in t})
             check(not found, "the member: no word of the 24 in its output or any answer but create's", found)
         shutil.rmtree(m.dir, ignore_errors=True)
+
+        # view_pending (7.4): a third program whose hosted-lobby views never reach the API
+        # (--test-drop-view 3). Its open is taken by the core, but the object never comes:
+        # 503 view_pending with the request id, never a 2xx without the object.
+        v = Prog(exe_t, extra=["--test-drop-view", "3"], dump=False)
+        try:
+            check(set_up(v), "a host whose hosted-lobby views are dropped, set up", v.lines[-5:])
+            st, pv3 = v.call("POST", "/host/preview", {"name": "x", "target": 3, "minimum": 3})
+            body = {"request_id": "OpenViewNeverComes01", "draft": {"name": "x", "target": 3, "minimum": 3},
+                    "draft_digest": (pv3 or {}).get("draft_digest"),
+                    "confirm_funding_sat": (pv3 or {}).get("funding_at_target_sat"), "passphrase": PASS}
+            t0 = time.time()
+            st, e = v.call("POST", "/host/lobbies", body)
+            check(st == 503 and e and e.get("code") == "view_pending" and
+                  (e.get("params") or {}).get("request_id") == "OpenViewNeverComes01" and time.time() - t0 >= 1.5,
+                  "the object never reaches the view: 503 view_pending, with the request id", (st, e))
+            check(v.wait_line(r"command-result id=OpenViewNeverComes01 status=20[01]") is not None,
+                  "the core took the open (its result was 2xx)", v.lines[-8:])
+        finally:
+            v.stop()
+        check(not any(PASS in l for l in v.lines), "the third program: the passphrase is in no output line")
+        shutil.rmtree(v.dir, ignore_errors=True)
 
         # 5. a wrong passphrase: when to try again, and how many in a row
         time.sleep(1.2)

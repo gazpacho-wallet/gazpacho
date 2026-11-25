@@ -459,6 +459,11 @@ static void execute(void *ctx, const gz_action_t *a)
         timer_cancel(ex, a->u.cancel_timer.timer_id);
         break;
     case GZ_ACTION_NOTIFY:
+#ifdef GZP_TEST_BUILD
+        if (ex->opt->test_drop_view && (a->u.notify.code >> 16) == 1 &&
+            (a->u.notify.code & 0xffffu) == (uint32_t)ex->opt->test_drop_view)
+            break;                                    /* --test-drop-view: as if never emitted */
+#endif
         ex->notify.emit(ex->notify.ctx, a->u.notify.code, a->u.notify.bytes.data, a->u.notify.bytes.len);
 #ifdef GZP_TEST_BUILD
         show_notify(a->u.notify.code, a->u.notify.bytes);

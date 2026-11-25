@@ -25,6 +25,7 @@
 
 #include "gazpacho/api.h"
 #include "gazpacho/command.h"
+#include "gazpacho/view.h"
 #include "datadir.h"
 #include "gzp.h"
 #include "pchain.h"
@@ -49,6 +50,12 @@ typedef struct gzp_api {
         char request_id[GZ_CMD_MAX_REQUEST_ID + 1];
         uint64_t handle;
         int call;                     /* GZ_API_C_*: how its answer is written (api_calls.c) */
+        /* The core's result came before the object it names reached the view
+         * (the node emits a bracket's views after its result): the answer
+         * waits for that object, or for the end of the node's batch. */
+        int waiting, status;
+        uint64_t waiting_since;       /* the monotonic clock, ms */
+        char object[GZ_LOCAL_ID_MAX + 1], params[700];
     } held[GZP_API_HELD];
     /* What the program knows of the node for the calls (W12): the member
      * signing in force (gz_node_member_signing, from the executor), and a

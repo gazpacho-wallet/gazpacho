@@ -2509,6 +2509,9 @@ static void test_api_replay_detail(void)
     h_arg_t a[3] = {{12, t.outer, t.on}, {14, t.current, t.cn}, {16, &l, 1}};
     CHECK(w_req(0, GZ_CMD_LOBBY_OPEN, "ReplayDetail000001", "/api/v1/host/lobbies", 1, a, 3) == 200);
     snprintf(id, sizeof id, "%s", lid(0, &t));
+    /* The first answer names the object it opened, as a replay does (review of #79: the
+     * program answers a call with that object; without it the answer was empty). */
+    CHECK(id[0] && res_text(0, GZ_RESULT_REC_OBJECT, q, sizeof q) && !strcmp(q, id));
     nb = N[0].n_batches;
     /* Another path, or another method, with the same id and digest: 409, with the first call named. */
     CHECK(w_req(0, GZ_CMD_LOBBY_OPEN, "ReplayDetail000001", "/api/v1/host/lobbiez", 1, a, 3) == 409 && N[0].n_batches == nb);
@@ -2547,6 +2550,7 @@ static void test_api_replay_detail(void)
     CHECK(res_text(0, GZ_RESULT_REC_PARAMS, q, sizeof q) && !strcmp(q, "{\"replayed\":true}"));
     /* The ready count follows the values version (rv-host-ready-any-version). */
     CHECK(member_join(1, &t) == 200);
+    CHECK(res_text(1, GZ_RESULT_REC_OBJECT, q, sizeof q) && !strcmp(q, lid(1, &t)));   /* a join names its lobby */
     w_run(2000, 100);
     CHECK(host_ready(&t) == 1);
     {
