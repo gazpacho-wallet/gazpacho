@@ -43,7 +43,8 @@ typedef enum {
     GZ_ACTION_WATCH_OUTPOINT, /* report when an outpoint is spent, and by which transaction */
     GZ_ACTION_CONNECT,      /* keep a connection to a host, with one of our keys */
     GZ_ACTION_DISCONNECT,   /* flush, close a link and stop keeping it */
-    GZ_ACTION_SET_SEATED    /* host: a member's key holds a seat, or no longer does */
+    GZ_ACTION_SET_SEATED,   /* host: a member's key holds a seat, or no longer does */
+    GZ_ACTION_UNWATCH       /* stop a WATCH_TX or WATCH_OUTPOINT: nothing is reported for it again */
 } gz_action_kind_t;
 
 /* WATCHES. A watch asks the chain view to report, through GZ_EVENT_CHAIN
@@ -54,9 +55,53 @@ typedef enum {
  * changes nothing anyone else sees, so it does not wait for earlier saves.
  * Broadcasting a transaction does not watch it.
  *
- * A watch cannot be dropped, and setting it again changes only its depth:
- * there is no "unwatch". An engine must ignore reports it no longer needs,
- * and must not treat a report as meaning the watch is still wanted.
+ * SYNCED (step P4.5; review B of PR 56, H-1). Once the chain view has asked
+ * its servers about a watch it was given (set, or set again), for the tip
+ * it last reported, it reports GZ_CHAIN_WATCH_SYNCED for that watch, after
+ * any TX_CONFIRMED or OUTPOINT_SPENT that the answer gave. So a watch that
+ * has had its SYNCED and no other report is, at that tip, not in the best
+ * chain or not spent. A WATCH the composite drops as already set gets no
+ * SYNCED of its own: the first one's reaches every engine that asks. While
+ * the servers cannot be asked, no SYNCED comes: an engine that decides on
+ * the absence of a fact (the funding engine's deadline after a start) waits
+ * for it, and no count of tips stands in for it.
+ *
+ * The same holds at every tip, not only after a start (integration B12): a
+ * new tip comes before the reports it brings. So, once the chain view has
+ * answered every watch it holds for a tip it reported, it reports
+ * GZ_CHAIN_TIP_SYNCED with that tip's `height`, once per tip, after those
+ * reports. An engine that decides at a tip on the absence of a fact waits
+ * for the TIP_SYNCED of that tip; a later NEW_TIP (a new block, or another
+ * block at the same height after a reorganisation) closes it again.
+ * NEW_TIP and TIP_SYNCED carry the tip block's hash: a TIP_SYNCED is for that
+ * block, and one for a block replaced at the same height is not this tip's.
+ *
+ * A watch the chain view can never answer (a confirmation deeper than it
+ * follows) must not hold back every tip: it reports GZ_CHAIN_WATCH_FAILED for
+ * that watch once, which is its answer, and asks no more about it until it is
+ * set again; TIP_SYNCED then counts it as answered. An engine treats what it
+ * waited for from that watch as unknowable and fails closed, for that
+ * factory only (review B of PR 56, second confirmation, G-1). Only a
+ * depth fails a watch: a confirmation more than the chain view follows can
+ * only get deeper. An answer that is put off (a confirmation still being
+ * linked to the checked chain, a spender gone between two questions, an
+ * answer too large to fetch) may come later: after a few passes put off, the
+ * chain view reports GZ_CHAIN_WATCH_PENDING for that watch once, and
+ * TIP_SYNCED stops waiting for it, so one creation chosen by a counterparty
+ * cannot hold back every other. Its WATCH_SYNCED follows its answer when it
+ * comes. An engine that decides on the absence of a fact makes that factory
+ * alone wait meanwhile (review B of PR 56, third confirmation).
+ *
+ * UNWATCH drops a watch (step P4.5): `is_tx` 1 names the transaction watch
+ * of `what.txid`, 0 the outpoint watch of `what`. The chain view forgets it,
+ * and frees its place, so a program that runs for long does not fill up. A
+ * report already on its way may still arrive: an engine must ignore reports
+ * it no longer needs, and must not treat a report as meaning the watch is
+ * still wanted. Dropping a watch that is not set is not an error. UNWATCH is
+ * not outward and does not wait for earlier saves. The composite issues it
+ * only when no engine asks for the watch any more (composite-node.md 7.2).
+ * A watch dropped is not set again at the next start: every engine sets at
+ * start only the watches it still needs (node.h rule 4).
  *
  * Every txid here and in event.h is in the byte order the chain hashes it,
  * as gz_outpoint_t says (types.h): not reversed for display. Servers that
@@ -121,12 +166,11 @@ typedef enum {
 #define GZ_CONNECT_MAX_ADDRESS 64u
 /* A kind no engine may SEND and no peer's message carries to an engine. The
  * composite refuses it from an engine (GZ_ERR_BUG) and the program never puts
- * it on the wire. An engine not yet on links marks with it a SEND that still
- * holds a whole message: the signing engine does until P4.3 (signing.h,
- * GZ_SIGN_SEND_WHOLE; composite-node.md, task T-P43-1). The lobby did until
- * P4.2; its bridge is deleted (task T-P42-1). tools/check-send-whole.sh fails
- * if the lobby's bridge comes back, and if a program links the signing
- * engine while its bridge exists. The number stays reserved. */
+ * it on the wire. Engines not yet on links once marked with it a SEND that
+ * still held a whole message; both bridges are deleted, the lobby's in P4.2
+ * and the signing engine's in P4.3 (composite-node.md, tasks T-P42-1 and
+ * T-P43-1), and tools/check-send-whole.sh fails if either comes back. The
+ * number stays reserved. */
 #define GZ_SEND_KIND_RESERVED 0xffffu
 
 /* One stored record: an opaque byte string with a type tag. */
@@ -158,6 +202,7 @@ typedef struct {
         struct { gz_bytes_t tx; } broadcast;
         struct { uint8_t txid[32]; uint32_t depth; } watch_tx;      /* WATCH_TX; txid in hashing order */
         struct { gz_outpoint_t outpoint; uint32_t depth; } watch_outpoint; /* WATCH_OUTPOINT */
+        struct { int is_tx; gz_outpoint_t what; } unwatch;          /* UNWATCH; what.vout unused for a txid */
         /* SET_TIMER: setting an identifier that is already set replaces it. */
         struct { uint64_t timer_id; uint64_t delay_ms; } set_timer;
         struct { uint64_t timer_id; } cancel_timer;                /* CANCEL_TIMER */
@@ -204,7 +249,7 @@ void gz_action_list_reset(gz_action_list_t *list);
  * discarded as soon as this returns.
  * Returns GZ_OK; GZ_ERR_ARGUMENT for an unknown or retired kind
  * (WATCH_SCRIPT), a byte string with a length but no data, a transaction or
- * outpoint watch of depth 0, a SEND of kind 0 or 2 or with records over
+ * outpoint watch of depth 0, an UNWATCH whose `is_tx` is not 0 or 1, a SEND of kind 0 or 2 or with records over
  * GZ_SEND_MAX_RECORDS, a CONNECT whose address fails gz_connect_address_ok
  * (below), a DISCONNECT whose `why` is not a GZ_DISCONNECT_*
  * value, or a SET_SEATED whose `seated` is not 0 or 1; GZ_ERR_NO_SPACE if a

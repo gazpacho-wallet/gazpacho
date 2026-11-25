@@ -102,12 +102,14 @@ int LLVMFuzzerTestOneInput(const uint8_t *d, size_t n)
     msgs = d + at; msgs_len = n - at;
     /* a fresh engine */
     memset(&c, 0, sizeof c);
+    static w_hctx_t hc;
     c.host = party == 0; c.ctx = w_ctx();
-    w_secret("test/factory", party, c.factory_secret);
-    w_secret("test/contribution", party, c.contribution_secret);
+    hc.b = &g_builder; hc.g = party;
+    c.keys = w_key_hook; c.hook_ctx = &hc;
     c.build = w_build; c.retry = w_retry; c.build_ctx = &g_builder;
-    c.tick_ms = 1; c.resend_ticks = 2; c.deadline_ticks = 6; c.status_ticks = 2; c.max_attempts = 3; c.unfinished_ticks = 4;
-    if (d[1] & 1u) w_hooks(&g_builder, &c);
+    g_builder.max_attempts = 3;
+    c.tick_ms = 1; c.resend_ticks = 2; c.deadline_ticks = 6; c.status_ticks = 2; c.unfinished_ticks = 4;
+    if (d[1] & 1u) w_hooks(&hc, &c);
     g_fr = 0x9e3779b97f4a7c15ull ^ n;
     REQUIRE(gz_sign_init(&g_eng, &c, &ports, 2) == GZ_OK);
     gz_action_list_init(&list, g_slots, 512, g_bytes, sizeof g_bytes);
@@ -120,7 +122,9 @@ int LLVMFuzzerTestOneInput(const uint8_t *d, size_t n)
         for (size_t k = 0; k < list.count; k++) {
             const gz_action_t *a = &list.slots[k];
             gz_sign_msg_t m;
-            if (a->kind != GZ_ACTION_SEND || !gz_sign_decode(a->u.send.records.data, a->u.send.records.len, &m)) continue;
+            static uint8_t env[GZ_SIGN_MAX_MSG];
+            size_t elen = a->kind == GZ_ACTION_SEND ? w_send_env(a, env, sizeof env) : 0;
+            if (!elen || !gz_sign_decode(env, elen, &m)) continue;
             if (m.kind == GZ_SIGN_MSG_NONCES) {               /* S1: saved first, in this list */
                 int saved = 0;
                 for (size_t q = 0; q < k && !saved; q++) {
@@ -140,7 +144,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *d, size_t n)
                     size_t pl;
                     const uint8_t *pm;
                     if (g_store.recs[r].type != GZ_SIGN_REC_EXPOSURE || !(pm = field(&g_store.recs[r], 14, &pl))) continue;
-                    found = pl == a->u.send.records.len && memcmp(pm, a->u.send.records.data, pl) == 0;
+                    found = pl == elen && memcmp(pm, env, pl) == 0;
                 }
                 REQUIRE(found);
             }
@@ -161,8 +165,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *d, size_t n)
             else if (msgs[at] == 0x02 && msgs_len - at >= 4) {
                 size_t len = (size_t)msgs[at + 2] | (size_t)msgs[at + 3] << 8;
                 if (msgs_len - at - 4 < len) break;
-                ev.kind = GZ_EVENT_MESSAGE_RECEIVED; gz_sign_link_set_peer(&ev.u.message.link, msgs[at + 1] % W_MAX_NODES);
-                ev.u.message.records.data = msgs + at + 4; ev.u.message.records.len = len;
+                /* an envelope, from party msgs[at + 1] on its link to this party */
+                if (!w_msg_event(&g_builder, msgs[at + 1] % W_MAX_NODES, party, msgs + at + 4, len, &ev)) { at += 4 + len; continue; }
                 at += 4 + len;
             } else break;
             gz_action_list_init(&list, g_slots, 512, g_bytes, sizeof g_bytes);

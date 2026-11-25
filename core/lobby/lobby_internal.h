@@ -88,6 +88,9 @@ void gz_la_tree_crypto(const gz_lobby_crypto_t *c, gz_tree_crypto_t *out);
  * rules (digest written) and the current values against them. 1 if valid. */
 int gz_la_decode_terms(const uint8_t *outer, size_t olen, const uint8_t *cur, size_t clen,
                        gz_terms_outer_t *o, uint8_t od[32], gz_terms_current_t *c, uint8_t cd[32]);
+/* The same with the open's cap on the tree (M2): only where terms first open, never at a restore. */
+int gz_la_decode_terms_cap(const uint8_t *outer, size_t olen, const uint8_t *cur, size_t clen, uint32_t max_tree_nodes,
+                           gz_terms_outer_t *o, uint8_t od[32], gz_terms_current_t *c, uint8_t cd[32]);
 /* The build parameters for `members` members (signers - 1), from gz_tree_params. */
 void gz_la_shape(const gz_terms_outer_t *o, uint16_t members, gz_lobby_handoff_t *ho);
 /* The records of a lobby_status into an envelope buffer of
