@@ -49,6 +49,12 @@
 #define GZP_KEYS_MAX_SCOPES 8     /* GZ_NODE_MAX_SLOTS */
 #define GZP_KEYS_INDEX_LIMIT 0x80000000u
 #define GZP_KEYS_MAX_SLOTS 32     /* member slots the key port knows (open and closing) */
+/* The pairs the core tries when a new slot's pair has an invalid child (#55:
+ * LS_KEY_TRIES, the skip of contract-v2.md 13). An armed join answers only a
+ * pair the core can choose: the first after the highest index, or one of the
+ * next GZP_KEYS_JOIN_TRIES - 1 (review of PR 53, L1). tests/program/
+ * join_window.py holds the two equal. */
+#define GZP_KEYS_JOIN_TRIES 8u
 
 /* Where the seed comes from: the storage layer while it is unlocked, or the
  * stand-in seed file until storage lands (keys.md 9). seed() fills out with
@@ -211,7 +217,8 @@ int gzp_keys_scoped_at(gzp_keys_t *k, uint32_t epoch, uint32_t index, uint8_t se
  * cannot know the pair in advance. While a join is armed (only for the one
  * command's delivery), gzp_keys_scoped_at answers ONE request for a factory
  * key it holds no scope for, at (current epoch, f), if the pair (f - 1, f) is
- * fresh: f - 1 above every key_index seen under this epoch. It opens the
+ * fresh: f - 1 above every key_index seen under this epoch, and within the
+ * core's window (GZP_KEYS_JOIN_TRIES). It opens the
  * armed scope with that pair and disarms. The slot_opened record that the
  * join then saves must name the same pair, or the scope is wiped
  * (gzp_keys_note_slot). disarm: 1 if the armed join was used. */

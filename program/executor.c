@@ -529,10 +529,72 @@ static void submit(gzp_exec_t *ex)
     else if (st != GZ_OK) fail(ex, st == GZ_ERR_REFUSED ? "runner-refused-list" : status_name(st));
 }
 
+/* LOBBY_JOIN's unlock record (#79: given with the passphrase under AT_JOIN,
+ * the gate is open from the join; local-api.md 14.3). */
+#define GZP_JOIN_REC_UNLOCK 24
+
+/* A ready (record 14 = 1) or a join (record 24 = 1, #79) given with the
+ * passphrase, on a member under AT_JOIN. The passphrase was checked before
+ * the command came here (the local API checks it), so the key port opens
+ * that lobby's scope now, before the node gets the command (node.h,
+ * LOBBY_READY; keys.md 7, integration W4): for a ready, the slot's pair; for
+ * a join, whose pair the node allocates inside the command, the join is
+ * armed for one fresh factory key (gzp_keys_arm_join). Either way the scope
+ * lives for that one command only: the node keeps the gate's secret itself
+ * (gate_secret), so afterwards the key port holds no factory key. It runs in deliver() for every
+ * USER_COMMAND, the local API's and the test command line's alike (review of
+ * PR 53, H1). Returns 1 (ready) or 2 (join) with the scope, or 0. Without it the node's gate would
+ * open on the flag alone with no key behind it (audit M4): it fails safe,
+ * signing nothing. */
+static int keys_command_gate(gzp_exec_t *ex, const uint8_t *tlv, size_t len, uint8_t sc[32])
+{
+    gz_bytes_t all, scope, flag, cv;
+    uint16_t code;
+    gzp_keys_err_t e;
+    unsigned field;
+    int ok;
+    all.data = tlv;
+    all.len = len;
+    /* The command's own records (command.h: 0 to 8) come first; its arguments from 12. */
+    if (gz_rec_find(all, GZ_CMD_REC_COMMAND, &cv) != 1 || cv.len != 2) return 0;
+    code = gz_get_u16(cv.data);
+    field = code == GZ_CMD_LOBBY_READY ? 14u : code == GZ_CMD_LOBBY_JOIN ? GZP_JOIN_REC_UNLOCK : 0u;
+    if (!field || !ex->keys->scoped_only || gz_rec_find(all, 12, &scope) != 1 || scope.len != 32 ||
+        gz_rec_find(all, field, &flag) != 1 || flag.len != 1 || flag.data[0] != 1)
+        return 0;
+    memcpy(sc, scope.data, 32);
+    if (code == GZ_CMD_LOBBY_JOIN) {
+        gzp_keys_arm_join(ex->keys, sc);
+        gzp_log("key-join-armed scope=%02x%02x%02x%02x", sc[0], sc[1], sc[2], sc[3]);
+        return 2;
+    }
+    ok = gzp_keys_open_ready(ex->keys, sc, &e);
+    gzp_log("key-scope-open scope=%02x%02x%02x%02x ok=%d held=%zu", sc[0], sc[1], sc[2], sc[3], ok,
+            gzp_keys_scopes_held(ex->keys));
+    return ok;
+}
+
+/* The scope a command opened lives for that command only: disarm and forget
+ * once the node has handled it and its actions have been carried out, on
+ * every path out, a node error included. */
+static void keys_command_done(gzp_exec_t *ex, int gate, const uint8_t sc[32])
+{
+    int used;
+    if (!gate) return;
+    used = gate == 2 ? gzp_keys_disarm_join(ex->keys) : 1;
+    gzp_keys_forget(ex->keys, sc);
+    gzp_log("key-scope-closed scope=%02x%02x%02x%02x %s used=%d held=%zu", sc[0], sc[1], sc[2], sc[3],
+            gate == 2 ? "join" : "ready", used, gzp_keys_scopes_held(ex->keys));
+}
+
 static void deliver(gzp_exec_t *ex, const gz_event_t *ev)
 {
     gz_status_t st;
+    uint8_t gscope[32] = {0};
+    int gate = 0;
     if (ex->fatal) return; /* nothing reaches a node after its incarnation's fatal error */
+    if (ev->kind == GZ_EVENT_USER_COMMAND)
+        gate = keys_command_gate(ex, ev->u.user.bytes.data, ev->u.user.bytes.len, gscope);
     gz_action_list_reset(&ex->list);
     st = gz_node_handle(ex->node, ev, &ex->list);
     ex->delivered++;
@@ -542,15 +604,29 @@ static void deliver(gzp_exec_t *ex, const gz_event_t *ev)
         gz_action_list_reset(&ex->list);
         st = GZ_ERR_NO_SPACE; /* as if the node had refused the event */
     }
+    /* Tests: a node error right after the node has handled one command (and
+     * taken its key), so the incarnation restarts from storage with that
+     * command's scope still open until keys_command_done (review of PR 53). */
+    if (ex->number == 1 && ex->opt->test_node_error_on_command && ev->kind == GZ_EVENT_USER_COMMAND) {
+        gz_bytes_t all, cv;
+        all = ev->u.user.bytes;
+        if (gz_rec_find(all, GZ_CMD_REC_COMMAND, &cv) == 1 && cv.len == 2 &&
+            gz_get_u16(cv.data) == (uint16_t)ex->opt->test_node_error_on_command) {
+            gz_action_list_reset(&ex->list);
+            st = GZ_ERR_NO_SPACE;
+        }
+    }
 #endif
     if (st != GZ_OK) {
         /* Fatal for the whole node (node.h, ERRORS): the list is as it was,
          * the node is poisoned and never called again; start from storage. */
         gzp_log("node-error engine=0x%04x status=%s", (unsigned)gz_node_error_area(ex->node), status_name(st));
         fail(ex, "node-error");
+        keys_command_done(ex, gate, gscope);
         return;
     }
     submit(ex);
+    keys_command_done(ex, gate, gscope);
 }
 
 /* Confirm the oldest durable batch not yet confirmed. 1 if there was one. */
@@ -712,54 +788,13 @@ static int api_command(void *ctx, const uint8_t *tlv, size_t len)
 
 /* A USER_COMMAND: request_id, command code, then the arguments (already a
  * TLV stream of records 10 and up). */
-/* LOBBY_JOIN's unlock record (#79: given with the passphrase under AT_JOIN,
- * the gate is open from the join; local-api.md 14.3). */
-#define GZP_JOIN_REC_UNLOCK 24
-
-/* A ready (record 14 = 1) or a join (record 24 = 1, #79) given with the
- * passphrase, on a member under AT_JOIN. The passphrase was checked before
- * the command came here (the local API checks it), so the key port opens
- * that lobby's scope now, before the node gets the command (node.h,
- * LOBBY_READY; keys.md 7, integration W4): for a ready, the slot's pair; for
- * a join, whose pair the node allocates inside the command, the join is
- * armed for one fresh factory key (gzp_keys_arm_join). Either way the scope
- * lives for that one command only: the node keeps the gate's secret itself
- * (gate_secret), so afterwards the key port holds no factory key. Returns 1
- * (ready) or 2 (join) with the scope, or 0. Without it the node's gate would
- * open on the flag alone with no key behind it (audit M4): it fails safe,
- * signing nothing. */
-static int keys_command_gate(gzp_exec_t *ex, uint16_t code, const uint8_t *args, size_t len, uint8_t sc[32])
-{
-    gz_bytes_t all, scope, flag;
-    gzp_keys_err_t e;
-    unsigned field = code == GZ_CMD_LOBBY_READY ? 14u : code == GZ_CMD_LOBBY_JOIN ? GZP_JOIN_REC_UNLOCK : 0u;
-    int ok;
-    all.data = args;
-    all.len = len;
-    if (!field || !ex->keys->scoped_only || gz_rec_find(all, 12, &scope) != 1 || scope.len != 32 ||
-        gz_rec_find(all, field, &flag) != 1 || flag.len != 1 || flag.data[0] != 1)
-        return 0;
-    memcpy(sc, scope.data, 32);
-    if (code == GZ_CMD_LOBBY_JOIN) {
-        gzp_keys_arm_join(ex->keys, sc);
-        gzp_log("key-join-armed scope=%02x%02x%02x%02x", sc[0], sc[1], sc[2], sc[3]);
-        return 2;
-    }
-    ok = gzp_keys_open_ready(ex->keys, sc, &e);
-    gzp_log("key-scope-open scope=%02x%02x%02x%02x ok=%d held=%zu", sc[0], sc[1], sc[2], sc[3], ok,
-            gzp_keys_scopes_held(ex->keys));
-    return ok;
-}
-
 static void deliver_command(gzp_exec_t *ex, uint16_t code, const uint8_t *args, size_t args_len)
 {
-    uint8_t *buf = malloc(args_len + 64), c2[2], gscope[32];
-    int gate;
+    uint8_t *buf = malloc(args_len + 64), c2[2];
     char rid[32];
     size_t at = 0;
     gz_event_t ev;
     if (!buf) abort();
-    gate = keys_command_gate(ex, code, args, args_len, gscope);
     snprintf(rid, sizeof rid, "p-%llu-%llu", (unsigned long long)ex->incarnation,
              (unsigned long long)++ex->next_request);
     gz_put_u16(c2, code);
@@ -776,12 +811,6 @@ static void deliver_command(gzp_exec_t *ex, uint16_t code, const uint8_t *args, 
     gzp_log("command id=%s code=0x%04x", rid, (unsigned)code);
     deliver(ex, &ev);
     drain(ex);
-    if (gate) {
-        int used = gate == 2 ? gzp_keys_disarm_join(ex->keys) : 1;
-        gzp_keys_forget(ex->keys, gscope);
-        gzp_log("key-scope-closed scope=%02x%02x%02x%02x %s used=%d held=%zu", gscope[0], gscope[1], gscope[2],
-                gscope[3], gate == 2 ? "join" : "ready", used, gzp_keys_scopes_held(ex->keys));
-    }
     free(buf);
 }
 
@@ -932,7 +961,8 @@ static void keys_from_storage(gzp_exec_t *ex, int restored)
     gzp_keys_forget_all(ex->keys);
     gzp_keys_set_epoch(ex->keys, epoch);
     gzp_keys_freeze(ex->keys, restored);
-    gzp_log("keys epoch=%08x frozen=%d", (unsigned)ex->keys->epoch, ex->keys->frozen);
+    gzp_log("keys epoch=%08x frozen=%d held=%zu", (unsigned)ex->keys->epoch, ex->keys->frozen,
+            gzp_keys_scopes_held(ex->keys));
 }
 
 /* node.h's stepped start. Between steps, storage confirmations (and only

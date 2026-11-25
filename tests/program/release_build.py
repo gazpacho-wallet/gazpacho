@@ -29,6 +29,8 @@ IN_TEST = ("gzp_testping", "gzp_standin_fail_at", "gzp_standin_put_restore", "gz
 TEST_STRINGS = (b"--test-pings", b"--test-timer-ms", b"--test-start-delay-ms", b"--test-node-error-at",
                 b"tests only (gazpacho-test)", b"test-timer fired", b"payload=%s", b"ping-payload",
                 b"test-key-secret epoch=")  # P8: the key port's position check, gazpacho-test only
+# In both builds: the key port's command gate runs on every USER_COMMAND (review of PR 53, H1).
+BOTH_STRINGS = (b"key-scope-open scope=", b"key-join-armed scope=", b"key-scope-closed scope=")
 
 
 def symbols(path):
@@ -62,6 +64,8 @@ def main():
                           "payload format %s" % leaked)
         unseen = [n.decode() for n in TEST_STRINGS if n not in tstb]
         check(not unseen, "the check would see them: the test build has each (missing %s)" % unseen)
+        absent = [n.decode() for n in BOTH_STRINGS if n not in relb or n not in tstb]
+        check(not absent, "the key port's command gate is in both builds (missing %s)" % absent)
         code, out = run(rel, "--data-dir", os.path.join(work, "x"), "--role", "host", "--no-chain",
                         "--test-pings", "1")
         check(code == 2 and "only in the test build" in out and not os.path.exists(os.path.join(work, "x")),

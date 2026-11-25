@@ -423,6 +423,7 @@ int gzp_keys_scoped_at(gzp_keys_t *k, uint32_t epoch, uint32_t index, uint8_t se
     }
     /* An armed join: one factory key of a fresh pair (keys.h). */
     if (k->join_armed == 1 && index >= 2 && index - 1 > k->highest_index &&
+        index - 1 <= k->highest_index + 1 + 2u * (GZP_KEYS_JOIN_TRIES - 1) &&
         gzp_keys_scope_open(k, k->join_scope, zero, epoch, index - 1, NULL)) {
         k->join_armed = 2;
         return gzp_keys_scoped_at(k, epoch, index, sec);

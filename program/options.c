@@ -137,6 +137,7 @@ void gzp_usage(void)
         "  --test-oversize-send BYTES    pad every node send (too big is fatal)\n"
         "  --test-node-error-at K        treat the K-th delivered event as a node error\n"
         "  --test-node-error-always      ... in every incarnation, not only the first\n"
+        "  --test-node-error-on-command C a node error once the node has handled command C (hex)\n"
         "  --test-chain-small            small chain worker queues (16 watches, 32 requests)\n"
         "  --test-chain-watches N        a chain worker that holds N watches (fewer than the node may ask)\n"
         "  --test-chain-backlog N        a chain backlog of N requests\n"
@@ -309,6 +310,12 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         }
         else if (!strcmp(a, "--test-oversize-send")) { ok = num(val, 1, 2000000, &v); o->test_oversize_send = (int)v; }
         else if (!strcmp(a, "--test-node-error-at")) { ok = num(val, 1, 1000000, &v); o->test_node_error_at = (int)v; }
+        else if (!strcmp(a, "--test-node-error-on-command")) {
+            char *end = NULL;
+            unsigned long c = val ? strtoul(val, &end, 16) : 0;
+            ok = val && end && !*end && c >= 1 && c <= 0xffff;
+            o->test_node_error_on_command = (int)c;
+        }
         else if (!strcmp(a, "--test-engines")) { ok = num(val, 0, 2, &v); o->test_engines = (int)v; }
         else if (!strcmp(a, "--test-max-conns")) { ok = num(val, 1, 64, &v); o->test_max_conns = (int)v; }
         else if (!strcmp(a, "--test-drop-kind")) { ok = num(val, 1, 65535, &v); o->test_drop_kind = (int)v; }

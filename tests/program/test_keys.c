@@ -269,6 +269,16 @@ static void join_gate(const secp256k1_context *secp)
     CHECK(gzp_keys_note_slot(&k, 1, a, 0, 5) && gzp_keys_scopes_held(&k) == 1);
     gzp_keys_arm_join(&k, b);
     gzp_keys_note_index(&k, 6);
+    /* L1: only a pair the core can choose: 7, or up to 7 pairs further (21, 22) after skips; not 23. */
+    CHECK(!gzp_keys_scoped_at(&k, 0, 24, got) && gzp_keys_scopes_held(&k) == 1);
+    CHECK(gzp_keys_scoped_at(&k, 0, 8, got) && gzp_keys_scopes_held(&k) == 2);
+    CHECK(gzp_keys_disarm_join(&k) == 1);
+    gzp_keys_forget(&k, b);
+    gzp_keys_arm_join(&k, b);
+    CHECK(gzp_keys_scoped_at(&k, 0, 22, got) && gzp_keys_lobby_raw(&k, 0, 22, want, NULL, &e) && !memcmp(got, want, 32));
+    CHECK(gzp_keys_disarm_join(&k) == 1);
+    gzp_keys_forget(&k, b);
+    gzp_keys_arm_join(&k, b);
     CHECK(gzp_keys_scoped_at(&k, 0, 8, got) && gzp_keys_scopes_held(&k) == 2);
     CHECK(gzp_keys_disarm_join(&k) == 1);
     CHECK(gzp_keys_note_slot(&k, 2, b, 0, 9) && gzp_keys_scopes_held(&k) == 1 && !gzp_keys_scoped_at(&k, 0, 8, got));

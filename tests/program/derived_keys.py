@@ -30,6 +30,10 @@ with tools/keys_ref.py, which shares no code with the program.
      the passphrase flag; the key port opens that lobby's scope before the
      node gets the ready (one scope held), and wipes it when the seat ends
      (none held).
+  9. A node error while a ready with the passphrase is being handled
+     (--test-node-error-on-command 0103): the scope it opened is wiped on that
+     path, the incarnation restarts from storage holding no scope, and the
+     key port gives the slot's factory key to no one (review of PR 53).
   6. One set of words as host and as member (keys.md 3, K2): a member made
      from the host's own words joins the host's lobby with two others; every
      seat is accepted and the lobby reaches Funding on the host and on that
@@ -281,8 +285,38 @@ def main():
         check(aj.wait_for(r"key-join-armed scope=%s" % e8.tag, timeout=10) is not None and
               aj.wait_for(r"key-scope-closed scope=%s join used=0 held=0" % e8.tag, timeout=10) is not None,
               "8: the join is armed for its own command only; unasked, it opens and holds nothing")
-        bad = [(p.name, ln) for p in procs for ln in p.lines if "node-error" in ln or " fatal" in ln]
-        check(not bad, "no node-error or fatal line in any process %r" % bad[:2])
+        # 9. A restart inside a command with an open scope ----------------------
+        e9 = L.Terms(w6.hkey, 606)
+        w6.open(h6, e9)
+        check(h6.wait_for(r"slot-opened scope=%s .*role=host" % e9.tag, timeout=10) is not None, "9: a lobby")
+        rj = w6.member("rj", "--test-node-error-on-command", "0103")
+        procs.append(rj)
+        check(L.started(rj), "9: an AT_JOIN member starts")
+        w6.join(rj, e9)
+        check(rj.wait_for(r"lobby scope=%s role=member .*joined=1" % e9.tag, timeout=20) is not None, "9: it joins")
+        so9 = rj.find(r"slot-opened scope=%s .*role=member index=(\d+)" % e9.tag)[1]
+        i9 = int(so9.group(1)) if so9 else -1
+        mk = rj.mark()
+        rj.send(L.cmd(L.READY, (12, e9.scope), (14, b"\x01"), (16, L.th("gazpacho/terms/current", e9.current))))
+        err = rj.index_of(r"node-error ", timeout=10, start=mk)
+        closed = rj.index_of(r"key-scope-closed scope=%s ready used=\d+ held=0" % e9.tag, timeout=10, start=mk)
+        check(rj.find(r"key-scope-open scope=%s ok=1 held=1" % e9.tag, mk)[0] is not None and err is not None and
+              closed is not None and closed > err,
+              "9: the ready opened its scope, the node failed on it, and the scope was wiped on that path")
+        check(rj.wait_for(r"keys epoch=00000000 frozen=0 held=0", timeout=20, start=closed or mk) is not None and
+              rj.wait_for(r"ready incarnation=", timeout=20, start=closed or mk) is not None,
+              "9: the incarnation restarted from storage, holding no scope")
+        mk = rj.mark()
+        rj.send("key-secret 0 %d" % (i9 + 1))
+        got9 = rj.wait_for(r"test-key-secret epoch=0 index=%d ok=(\d)" % (i9 + 1), timeout=10, start=mk)
+        check(i9 > 0 and got9 is not None and got9.group(1) == "0",
+              "9: after the restart the slot's factory key is given to no one")
+        check(rj.count(r"lobby scope=%s role=member .*ready=1" % e9.tag) == 0, "9: and the failed ready counted for nothing")
+        # Step 9's member fails once on purpose (--test-node-error-on-command); every other process never.
+        bad = [(p.name, ln) for p in procs if p is not rj for ln in p.lines if "node-error" in ln or " fatal" in ln]
+        check(not bad, "no node-error or fatal line in any other process %r" % bad[:2])
+        check(rj.count(r"node-error engine=") == 1 and rj.count(r"fatal why=node-error ") == 1,
+              "9: exactly the one induced node error in step 9's member")
         for p in procs:
             p.stop()
     finally:

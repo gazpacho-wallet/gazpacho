@@ -186,6 +186,7 @@ if(Python3_Interpreter_FOUND)
   set_tests_properties(program_lobby PROPERTIES TIMEOUT 900)
   # P8: the vectors header is what tools/keys_ref.py computes; T13 and T2
   # step 3, keys derived from the seed end to end (docs/notes/keys.md 10).
+  add_test(NAME program_keys_join_window COMMAND ${GZP_PY} ${GZP_T}/join_window.py ${CMAKE_SOURCE_DIR})
   add_test(NAME program_keys_vectors
     COMMAND ${GZP_PY} ${CMAKE_SOURCE_DIR}/tools/keys-vectors.py --check ${GZP_T}/keys_vectors.h)
   add_test(NAME program_derived_keys

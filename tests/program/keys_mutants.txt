@@ -87,9 +87,9 @@ exec-slots-not-read-back	program/executor.c	            keys_note_record(ex, &sb
 main-payout-check	program/main.c	memcmp(spk, first->script_pubkey, sizeof spk) != 0	0
 net-key-fn-ignored	program/net.c	ok = n->key_fn && n->key_fn(n->key_ctx, epoch, index, s, NULL) == 1;	ok = n->key_fn != NULL; memset(s, 1, 32);
 exec-secret-scoped	program/executor.c	if (ex->keys->scoped_only) return gzp_keys_at_join_secret(	if (0) return gzp_keys_at_join_secret(
-exec-ready-gate-never	program/executor.c	    gate = keys_command_gate(ex, code, args, args_len, gscope);\n	    gate = 0;\n
+exec-ready-gate-never	program/executor.c	    if (ev->kind == GZ_EVENT_USER_COMMAND)\n        gate = keys_command_gate(	    if (0)\n        gate = keys_command_gate(
 exec-ready-flag-ignored	program/executor.c	gz_rec_find(all, field, &flag) != 1 || flag.len != 1 || flag.data[0] != 1)	gz_rec_find(all, field, &flag) != 1 || flag.len != 1)
-exec-scope-kept	program/executor.c	        gzp_keys_forget(ex->keys, gscope);\n	
+exec-scope-kept	program/executor.c	    gzp_keys_forget(ex->keys, sc);\n	
 exec-join-field	program/executor.c	code == GZ_CMD_LOBBY_JOIN ? GZP_JOIN_REC_UNLOCK : 0u	code == GZ_CMD_LOBBY_JOIN ? 14u : 0u
 exec-join-not-armed	program/executor.c	        gzp_keys_arm_join(ex->keys, sc);\n	
 exec-note-index	program/executor.c	        gzp_keys_note_index(ex->keys, gz_get_u32(v.data));\n	
@@ -103,19 +103,28 @@ at-join-factory-by-slot	program/keys.c	k->slots[i].index == index)\n            
 at-join-no-contribution	program/keys.c	            return gzp_keys_lobby(k, epoch, index, sec, NULL, NULL);	            return 0;
 at-join-raw	program/keys.c	return gzp_keys_lobby(k, epoch, index, sec, NULL, NULL);	return gzp_keys_lobby_raw(k, epoch, index, sec, NULL, NULL);
 disarm-used	program/keys.c	used = k->join_armed == 2;	used = k->join_armed != 0;
+exec-done-on-error-missing	program/executor.c	        fail(ex, "node-error");\n        keys_command_done(ex, gate, gscope);\n	        fail(ex, "node-error");\n
+exec-done-missing	program/executor.c	    submit(ex);\n    keys_command_done(ex, gate, gscope);\n	    submit(ex);\n
+exec-gate-code	program/executor.c	    code = gz_get_u16(cv.data);\n	    code = GZ_CMD_LOBBY_READY;\n
+join-window	program/keys.c	        index - 1 <= k->highest_index + 1 + 2u * (GZP_KEYS_JOIN_TRIES - 1) &&\n	
+join-window-wide	program/keys.c	index - 1 <= k->highest_index + 1 + 2u * (GZP_KEYS_JOIN_TRIES - 1) &&	index - 1 <= k->highest_index + 1 + 2u * GZP_KEYS_JOIN_TRIES &&
 #
-# Triage, 2026-11-24, on the tree merged with #52 (104 mutants):
+# Triage, 2026-11-25, after the review of PR 53 (109 mutants):
 #   equivalent: raw-no-zero-fail, host-no-zero-fail (the outputs are zeroed on
 #     entry, and keypair_out writes them only on success); pub-wipe (the wiped
 #     value is a public key); scope-index-range (the factory step then refuses
 #     index + 1 = 2^31 with the same BAD_ARGUMENT); scope-raw (the factory key
 #     is derived next under the same policy, so the pair fails together).
 #   equivalent since scopes are one-shot: exec-forget (port_forget's wipe: no
-#     scope outlives the command that opened it) and exec-forget-all (no scope
-#     is held at a start, for the same reason).
+#     scope outlives the command that opened it; kept as defence in depth) and
+#     exec-forget-all (no scope is held at a start). T13 step 9 shows it: a node
+#     error inside a ready with an open scope wipes the scope on that path, and
+#     the restarted incarnation holds none (exec-done-on-error-missing is killed).
 #   self-check: main-payout-check (the payout script from the public route
 #     against the wallet output from the private route; both routes are
 #     covered by the vectors and by the embit cross-check).
-#   not reachable before #79: exec-join-not-armed and exec-note-index (the
-#     node asks for no key at a join until #79's record 24). #79's
-#     test_join_unlocked must kill both.
+#   not reachable on main: exec-join-not-armed and exec-note-index. They are
+#     executor mutants, so only a program test kills them: T13 step 8 with
+#     #79's node, which asks for the join's factory key; step 8 must then
+#     assert used=1 and the member ready. #79's node test (test_node_lobby)
+#     does not run the executor.
