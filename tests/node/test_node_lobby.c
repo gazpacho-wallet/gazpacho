@@ -1581,7 +1581,10 @@ static void test_left_out(void)
 /* slot_opened with an even field this program does not know (a newer
  * program requires it), or a key index whose pair would wrap: damage, so the
  * start refuses it. An odd unknown field is skipped (review B of PR 44, L3,
- * L4). */
+ * L4). A key index above 0xfffffff0, which allocation never reaches, is
+ * refused too, as a second defence after the sealed journal: near the top
+ * the contribution index would meet the program's reserved indexes and the
+ * factory index wrap (cases 4 and 5; 0xfffffff0 itself still loads, case 6). */
 static void test_node_record_fields(void)
 {
     lt_key_t hk;
@@ -1589,7 +1592,8 @@ static void test_node_record_fields(void)
     whost(&hk);
     w_reset();
     make_terms(&t, 3, 3, 700);
-    for (int k = 0; k < 4; k++) {
+    static const uint32_t index_of[7] = {1, 0xffffffffu, 1, 1, 0xfffffffeu, 0xfffffff1u, 0xfffffff0u};
+    for (int k = 0; k < 7; k++) {
         h_t *x = &N[SCRATCH];
         uint8_t rec[300], v[4];
         size_t at = 0;
@@ -1604,7 +1608,7 @@ static void test_node_record_fields(void)
         gz_rec_put(rec, sizeof rec, &at, 10, (const uint8_t *)ADDR, sizeof ADDR - 1);
         gz_put_u32(v, 0);
         gz_rec_put(rec, sizeof rec, &at, 12, v, 4);
-        gz_put_u32(v, k == 1 ? 0xffffffffu : 1);
+        gz_put_u32(v, index_of[k]);
         gz_rec_put(rec, sizeof rec, &at, 14, v, 4);
         v[0] = 1;
         gz_rec_put(rec, sizeof rec, &at, 22, v, 1);
@@ -1614,8 +1618,12 @@ static void test_node_record_fields(void)
         x->incarnation = 1;
         h_new_node(x);
         st = w_start(SCRATCH);
-        CHECK(k == 1 || k == 2 ? st == GZ_ERR_CORRUPT : st == GZ_OK);
-        if (k == 0 || k == 3) CHECK(gz_route_slot_by_scope(x->n, t.scope) >= 0);
+        if (k == 1 || k == 2 || k == 4 || k == 5) {
+            CHECK(st == GZ_ERR_CORRUPT);   /* the start refuses: no slot is loaded */
+        } else {
+            CHECK(st == GZ_OK);
+            CHECK(gz_route_slot_by_scope(x->n, t.scope) >= 0);
+        }
         ALIVE[SCRATCH] = 0;
         NT[SCRATCH] = 0;
         for (int i = 0; i < 64; i++)
