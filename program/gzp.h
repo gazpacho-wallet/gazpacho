@@ -80,6 +80,7 @@ typedef struct {
     int test_stop_at_restart;      /* SIGTERM to itself as an incarnation ends (a stop during a restart) */
     int test_engines;              /* test engines in the node, 0 to 2 (default 1) */
     int test_dump_journal;         /* print the journal and stop */
+    int test_lock_after_drop;      /* lock once after the first dropped message, then unlock again */
     int test_drop_kind;            /* drop received messages of this kind (0: none) */
     int test_commands;             /* read test commands from standard input */
     int test_big_reply;            /* pad every test reply with this many bytes */

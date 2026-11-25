@@ -28,6 +28,8 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <openssl/crypto.h>
+
 #include <fcntl.h>
 
 #include "gazpacho/command.h"
@@ -938,6 +940,13 @@ static int turn(gzp_exec_t *ex, struct pollfd *fds, size_t cap, uint64_t until_m
     /* A lock stops the node (unlock.h; local-api.md 4.7): this incarnation ends. */
     if (ex->api && gzp_api_lock_pending(ex->api)) return GZP_RUN_LOCKED;
 #ifdef GZP_TEST_BUILD
+    if (ex->opt->test_lock_after_drop && ex->net->test_drops > 0 && !ex->test_locked_once) {
+        ex->test_locked_once = 1;
+        gzp_log("test-lock after-drop");
+        return GZP_RUN_LOCKED;
+    }
+#endif
+#ifdef GZP_TEST_BUILD
     if (fds[1].revents && !ex->fatal) read_commands(ex);
 #endif
     if (until_ms) return ex->fatal ? GZP_RUN_RESTART : -1;
@@ -1051,6 +1060,25 @@ int gzp_exec_wait_unlocked(gzp_exec_t *ex)
     free(fds);
     if (rc == GZP_RUN_RESTART) gzp_log("node-starting-unlocked");
     return rc;
+}
+
+int gzp_exec_test_memory_zero(const gzp_exec_t *ex, int *node_zero, int *sign_zero)
+{
+    const unsigned char *p;
+    unsigned char acc = 0;
+    size_t i;
+    *node_zero = *sign_zero = 1;
+    if (ex->node) {
+        p = (const unsigned char *)ex->node;
+        for (i = 0, acc = 0; i < gz_node_size(); i++) acc |= p[i];
+        *node_zero = acc == 0;
+    }
+    if (ex->sign_mem) {
+        p = (const unsigned char *)ex->sign_mem;
+        for (i = 0, acc = 0; i < gz_node_sign_size(); i++) acc |= p[i];
+        *sign_zero = acc == 0;
+    }
+    return 0;
 }
 
 void gzp_exec_close_storage(gzp_exec_t *ex)
@@ -1285,5 +1313,11 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
         rc = GZP_RUN_POISONED;
     }
     if (rc != GZP_RUN_STOP) gzp_exec_close_storage(ex);
+    /* The node's memory holds AT_JOIN gate secrets (from the seed) and the
+     * signing engine's any round's secret nonces and keypairs: wiped when the
+     * incarnation ends, on a lock, a restart or a stop (review A of PR 54,
+     * M-2). The next start rebuilds both from the journal. */
+    if (ex->node) OPENSSL_cleanse(ex->node, gz_node_size());
+    if (ex->sign_mem) OPENSSL_cleanse(ex->sign_mem, gz_node_sign_size());
     return rc;
 }

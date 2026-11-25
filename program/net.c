@@ -461,6 +461,7 @@ static void handle(gzp_net_t *n, const gz_peer_event_t *ev, uint64_t now)
             break;
         }
         if (n->drop_kind && ev->kind == n->drop_kind) {
+            n->test_drops++;
             gzp_log("test-drop kind=%u peer=%016llx", (unsigned)ev->kind, (unsigned long long)c->peer_id);
             break;
         }

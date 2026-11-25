@@ -151,6 +151,7 @@ typedef struct {
     size_t queued_total; /* bytes plus GZP_QUEUE_OVERHEAD per entry */
     /* tests: a kind dropped on receipt (--test-drop-kind), 0 for none */
     unsigned drop_kind;
+    unsigned test_drops;           /* messages dropped by drop_kind (tests) */
     /* counters */
     uint64_t dropped_unconnected, closed_while_starting;
     uint64_t connect_failed;   /* CONNECTs and connection attempts that could not be carried out */

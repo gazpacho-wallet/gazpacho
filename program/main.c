@@ -762,6 +762,19 @@ int main(int argc, char **argv)
              * lock, as MSK and the seed do (review A's confirmation of PR 54, M-1). */
             gzp_net_forget_key(&net);
             gzp_log("transport-key wiped zero=%d peers=%d", gzp_net_key_is_zero(&net), net.peers != NULL);
+#ifdef GZP_TEST_BUILD
+            if (opt.test_lock_after_drop) {
+                int nz, sz;
+                gzp_wallet_lock(wallet);
+                gzp_exec_test_memory_zero(&ex, &nz, &sz);
+                gzp_log("locked-memory node-zero=%d sign-zero=%d", nz, sz);
+                net.drop_kind = 0;
+                if (wait_unlocked(&opt) != 0) {
+                    rc = GZP_EXIT_LOCKED_OUT;
+                    break;
+                }
+            } else
+#endif
             if (gzp_exec_wait_unlocked(&ex) == GZP_RUN_STOP) {
                 rc = 0;
                 stopped = 1;
