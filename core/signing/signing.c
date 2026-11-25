@@ -882,10 +882,16 @@ static int make_nonce(gz_sign_t *e, gz_sign_round_t *r, int i)
     w.n = 0;
     put(&w, r->id, 32); put8(&w, it->tier); put32(&w, (uint32_t)i);
     tagged("gazpacho/nonce-extra", pre, w.n, NULL, 0, extra);
-    ok = secp256k1_keypair_sec(e->cfg.ctx, e->work_sk, &e->work_fkp) &&
-         secp256k1_musig_nonce_gen(e->cfg.ctx, &r->secnonce[i], &pub, sid, e->work_sk, &e->work_fpk, r->digest[i],
-                                   &r->cache[i], extra);
+    /* Each result is declassified before anything branches on it: an `&&`
+     * between the two calls is a branch on the first one's secret-dependent
+     * result, which only an optimised build folds away (the Debug ctime job). */
+    ok = secp256k1_keypair_sec(e->cfg.ctx, e->work_sk, &e->work_fkp);
     GZ_SIGN_DECLASSIFY(&ok, sizeof ok);                    /* success depends only on the key's validity */
+    if (ok) {
+        ok = secp256k1_musig_nonce_gen(e->cfg.ctx, &r->secnonce[i], &pub, sid, e->work_sk, &e->work_fpk,
+                                       r->digest[i], &r->cache[i], extra);
+        GZ_SIGN_DECLASSIFY(&ok, sizeof ok);                /* likewise */
+    }
     ok = ok && secp256k1_musig_pubnonce_serialize(e->cfg.ctx, r->nonce[i][s], &pub);
     wipe(rnd, sizeof e->work_rnd); wipe(sid, sizeof e->work_sid); wipe(pre, sizeof e->work_pre);   /* RULE:WIPE_NONCE_INPUTS */
     wipe(e->work_sk, sizeof e->work_sk);
