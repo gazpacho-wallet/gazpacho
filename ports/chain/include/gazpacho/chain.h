@@ -371,9 +371,12 @@ gz_chain_result gz_chain_outspend(const gz_chain *c, const uint8_t txid[GZ_HASH_
 
 /* The serialized transaction, written to buf[0..*len). OK only if the bytes
  * parse as a transaction whose txid is `txid`, so inputs, outputs and
- * locktime cannot be forged. The txid does not cover witness data: a single
- * server can alter or strip witnesses undetected (the comparing backend
- * compares every byte). GZ_CHAIN_TOO_LARGE if it does not fit in `cap`;
+ * locktime cannot be forged. The txid does not cover witness data, and
+ * witness bytes are never authenticated, by one server or by the comparing
+ * backend: two servers may hand over different witnesses for one txid. A
+ * caller that reads a witness (a preimage, a signature) must verify it
+ * against the spent output's script itself, or must not use it.
+ * GZ_CHAIN_TOO_LARGE if it does not fit in `cap`;
  * GZ_CHAIN_NOT_FOUND if the server does not have it. */
 gz_chain_result gz_chain_raw_tx(const gz_chain *c, const uint8_t txid[GZ_HASH_LEN], uint8_t *buf,
                                 size_t cap, size_t *len);

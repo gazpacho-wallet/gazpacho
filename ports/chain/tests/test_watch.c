@@ -986,6 +986,31 @@ static unsigned log_count(fx *f, const char *needle) {
   return n;
 }
 
+/* C-2: a host gives each of a member's servers its own witness for
+ * the funding (the same txid). The member's watch on a funding input sees
+ * the funding as its spender; the servers' bytes differ only in the
+ * witness, which is the same transaction: the spend is told at once, the
+ * watch is synced, the tip too, and the sources stay ok. */
+static void test_witness_split(test_state *T) {
+  fx f;
+  const char *s;
+  fx_open(&f);
+  f.cfg.report_synced = true;
+  fx_start(&f);
+  CHECK(gz_watch_outpoint(f.e, f.net.world.q, 0, 3, 0) == GZ_CHAINW_OK);   /* T spends Q:0 */
+  both(&f, SIM_A, SIM_H0 + 3);
+  pool(&f, SIM_T, true);
+  f.net.view[1].alt_witness[SIM_T] = true;
+  s = go(&f);
+  CHECK(strstr(s, "tip 1003") != NULL && strstr(s, "spent Q:0 by T") != NULL && strstr(s, "synced Q:0") != NULL &&
+        strstr(s, "tip-synced 1003") != NULL && strstr(s, "sources") == NULL);
+  /* and once mined, in a5, with the other witness still served: proved */
+  both(&f, SIM_A, SIM_H0 + 7);
+  s = go(&f);
+  CHECK(strstr(s, "spent Q:0 by T n=3 at a5 buried") != NULL && strstr(s, "sources") == NULL);
+  fx_close(&f);
+}
+
 /* Answers put off (review B of PR 56, third confirmation). A deep but
  * linkable confirmation, or an answer too large to fetch, is not the watch's
  * answer and not a failure: after GZ_CHAINW_DEFER_PASSES passes put off the
@@ -1845,6 +1870,7 @@ int main(void) {
   RUN(test_watch_set);
   RUN(test_synced);
   RUN(test_watch_failed);
+  RUN(test_witness_split);
   RUN(test_watch_deferred);
   RUN(test_proof_once);
   RUN(test_proof_kept_across_reorg);
