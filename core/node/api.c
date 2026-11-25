@@ -379,7 +379,7 @@ gz_status_t gz_api_load(gz_node_t *c, const gz_record_t *rec)
         if (!only_fields(b, 0x1eu) || gz_rec_find(b, 2, &v) != 1 || v.len > COND_MAX || !arg(b, 4, 4, &w))
             return GZ_ERR_CORRUPT;
         if (!gz_ls_cond_decode(v.data, v.len, &c->api.cond)) return GZ_ERR_CORRUPT;
-        memcpy(c->api.cond_bytes, v.data, v.len);
+        if (v.len) memcpy(c->api.cond_bytes, v.data, v.len); /* none saved: no bytes, and v.data may be NULL */
         c->api.cond_len = v.len;
         c->api.cond_version = gz_get_u32(w.data);
         /* The last tightening (8): absent in an older record, which counts every
@@ -887,7 +887,7 @@ static gz_status_t cmd_conditions(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t
     c->owner[out->count - 1 - c->base] = (int8_t)ENG_NODE;
     c->api.have_cond = 1;
     c->api.cond = nc;
-    memcpy(c->api.cond_bytes, v.data, v.len);
+    if (v.len) memcpy(c->api.cond_bytes, v.data, v.len);
     c->api.cond_len = v.len;
     c->api.cond_version++;
     c->api.cond_tightened = tightened;
