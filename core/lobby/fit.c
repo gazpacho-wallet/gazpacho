@@ -82,7 +82,14 @@ void gz_la_tree_crypto(const gz_lobby_crypto_t *c, gz_tree_crypto_t *out)
 int gz_la_decode_terms(const uint8_t *outer, size_t olen, const uint8_t *cur, size_t clen,
                        gz_terms_outer_t *o, uint8_t od[32], gz_terms_current_t *c, uint8_t cd[32])
 {
+    return gz_la_decode_terms_cap(outer, olen, cur, clen, 0, o, od, c, cd);
+}
+
+int gz_la_decode_terms_cap(const uint8_t *outer, size_t olen, const uint8_t *cur, size_t clen, uint32_t max_tree_nodes,
+                           gz_terms_outer_t *o, uint8_t od[32], gz_terms_current_t *c, uint8_t cd[32])
+{
     if (!outer || !cur || gz_terms_decode_outer(outer, olen, gz_lobby_policy(), o) != GZ_TERMS_OK) return 0;
+    if (max_tree_nodes && gz_terms_check_tree_size(o, max_tree_nodes) != GZ_TERMS_OK) return 0;   /* M2 */
     gz_terms_outer_digest(outer, olen, od);
     if (gz_terms_decode_current(cur, clen, o, c) != GZ_TERMS_OK || memcmp(c->outer_digest, od, 32) != 0) return 0;
     gz_terms_current_digest(cur, clen, cd);

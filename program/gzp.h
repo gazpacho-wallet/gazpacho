@@ -88,6 +88,8 @@ typedef struct {
     unsigned test_crash_after_record; /* exit once a batch holding a record of this type is durable */
     int test_sign_outcome;         /* the signing stand-in's outcome: 1 funding, 2 retry, 3 failed, 4 unfinished */
     int test_sign_delay_ms;        /* ... reported this long after the hand-off */
+    int test_sign_tick_ms;         /* the signing engine's tick (0: its own, 1 s) */
+    int tip;                       /* --tip: the tip to start from until the chain reports one (0: none) */
     /* a setting, both builds */
     int member_signing;            /* 0 at-join (the default), 1 auto, 2 when-unlocked (composite-node.md 12.2) */
 } gzp_options_t;
