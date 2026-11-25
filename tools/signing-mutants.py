@@ -23,7 +23,8 @@ RULES = {
     "S2_KNOWN_ROUND": ("if (r) {", "if (0) {"),
     "S2_ONE_NONCE": ("if (s < 0 || r->secnonce_serial[i] || (r->have_nonce[i] >> s & 1u)) return 0;", "if (s < 0) return 0;"),
     "S2_ONE_PARTIAL": ("if (s < 0 || !r->secnonce_serial[i] || (r->have_psig[i] >> s & 1u)) return 0;", "if (s < 0) return 0;"),
-    "S3_RESEND_SAVED": ("emit_send(em, host, r->nonces_msg, r->nonces_len);", "{}"),
+    "S2_PARTIAL_NEEDS_SECRET": ("if (s < 0 || !r->secnonce_serial[i] ||", "if (s < 0 ||"),   # review B, L5
+    "S3_RESEND_SAVED": ("send_host(em, r, r->nonces_msg, r->nonces_len);", "{}"),
     "S4_FRESH_ID": ("gz_sign_sha256_write(&s, host_random, 32);", "(void)host_random;"),
     "HOST_RANDOM_MIX": ("hw.n = 32; put64(&hw, e->incarnation); put64(&hw, e->attempt_counter++);", "hw.n = 32;"),
     "RESTART_ANSWERS_ABORT": ("member_fail(e, r, GZ_SIGN_WHY_RESTARTED, &em);", "member_begin_tier(e, r, r->tier, &em);"),
@@ -40,7 +41,9 @@ RULES = {
     "C10_UNRESOLVED": ("return GZ_SIGN_WHY_BUSY;", "{}"),
     "C7_OTHER_TREE": ("!same(e->exposures[i].tree_digest, r->def.tree_digest, 32)) return GZ_SIGN_WHY_OTHER_TREE;", "0) return GZ_SIGN_WHY_OTHER_TREE;"),
     "EXPOSURE_FIRST": ("save_exposure(e, r, t, em);", "if (0) save_exposure(e, r, t, em);"),
-    "MAY_ACK": ("if (e->cfg.may_ack && !e->cfg.may_ack(e->cfg.hook_ctx, r, &tip)) {", "if (0) {"),
+    "MAY_ACK": ("if (!may) {", "if (0) {"),
+    # review B of PR 52, L4: no tip is not yet, never a no
+    "ACK_WAITS_FOR_TIP": ("if (may < 0) return;", "{}"),
     "OLD_EPOCH_REFUSED": ("return refuse_id(e, id);", "return 1;"),
     "UNFINISHED_ABANDONED": ("r->state = GZ_SIGN_ROUND_ABANDONED;", "r->state = GZ_SIGN_ROUND_UNFINISHED;"),
     "PER_ITEM_ANSWER": ("wr32(q, (uint32_t)i); q += 4;", "wr32(q, 0u); q += 4;"),
@@ -63,7 +66,6 @@ RULES = {
     "FAIL_ON_ERROR": ("e->failed = 1;", "(void)0;"),
     # review A: F7 (C1: the root needs everyone), F4 (who a member's abort blames)
     "C1_ROOT_ALL": ("if (it->n_signers != d->n_participants) return GZ_SIGN_WHY_INVALID_ROUND;", ""),
-    "BLAME_SECOND_RESTART": ("if (same(e->restarted[k], key, 33)) return bit(j);", "if (same(e->restarted[k], key, 33)) return 0;"),
     "BLAME_FALSE_SUPERSEDED": ("return bit(j);", "return 0;"),
     # review A: F1 (the C7 set follows the save), F2 (room, never dropped), F3 (rounds that left memory)
     "C7_AFTER_SAVE": ("if (em->st == GZ_OK && !add_exposure(", "if (!add_exposure("),
@@ -71,16 +73,16 @@ RULES = {
     "EXPOSURE_NOT_DROPPED": ("{ e->exposures_lost = 1; return 0; }", "return 0;"),
     "KEEP_EVICTED": ("{ e->exposed[i].state = state; e->exposed[i].why = r->why; e->exposed[i].ticks = 0; }", "{ (void)state; }"),
     "C10_EVICTED": ("if (s == GZ_SIGN_ROUND_UNFINISHED || s == GZ_SIGN_ROUND_COMPLETE || s == GZ_SIGN_ROUND_ACTIVE)", "if (s && 0)"),
-    "DECODE_FIRST": ("if (!b || !gz_sign_decode(b, len, &m))", "if (!b || (gz_sign_decode(b, len, &m), 0))"),
+    "DECODE_FIRST": ("if (!len || !gz_sign_decode(b, len, &m))", "if (!len || (gz_sign_decode(b, len, &m), 0))"),
     "WIPE_NONCE_INPUTS": ("wipe(rnd, sizeof e->work_rnd); ", ""),
-    "RESOLVE_EVICTED": ("if (!(r = find(e, round_id)) && !(x = evicted(e, round_id))) return GZ_ERR_ARGUMENT;", "if (!(r = find(e, round_id))) return GZ_ERR_ARGUMENT;"),
+    "RESOLVE_EVICTED": ("if (!(r = find(e, round_id)) && !(x = evicted(e, round_id)))", "if (!(r = find(e, round_id)))"),
     # review B: B6 (C6: children before parents), B5 (a start leaves a superseded round Unfinished)
     "C6_CHILDREN_FIRST": ("if (it->tier > d->items[j].tier) return GZ_SIGN_WHY_INVALID_ROUND;", ""),
     "REPLAY_SUPERSEDES": ("{ o->state = GZ_SIGN_ROUND_UNFINISHED; o->why = GZ_SIGN_WHY_SUPERSEDED; }", "{ }"),
     # review B: B3 and B4 (blame), B9 (resends)
     "EXCUSE_ONLY_RELEASED": ("may_have_released(o, o->why) &&", ""),
     "BLAME_EARLY_DEADLINE": ("if (reason == 4) return bit(j);", "if (reason == 4) return 0;"),
-    "NONCE_MARGIN": ("if (!e->cfg.host) t += GZ_SIGN_NONCE_MARGIN_TICKS;", ""),
+    "NONCE_MARGIN": ("if (!e->cfg.host) t += e->cfg.deadline_ticks;", ""),
     "NONCE_DUE_FROM_PROPOSAL": ("(psigs ? e->cfg.deadline_ticks : r->nonce_ticks)", "e->cfg.deadline_ticks"),
     "ANSWER_RATE": ("if (r->status_tick[j] &&", "if (0 &&"),
     # review B: B1 (what is saved is read back), B10 (a filter hit at a start), B5 (rounds that left memory,
@@ -92,6 +94,43 @@ RULES = {
     "DEAD_LEAVES_C7": ("if (state == GZ_SIGN_ROUND_DEAD) drop_exposure(e, round_id);", ""),
     "FAILED_START_WIPES": ("return fail_engine(e, em.st); }", "return em.st; }"),
     "REPLAY_REVIVES": ("if (!e->cfg.host && r->state == GZ_SIGN_ROUND_UNFINISHED) r->state = GZ_SIGN_ROUND_ACTIVE;", ""),
+    # P4.3 (notes/p4-3-signing-changes.md): keys through the hook, outcomes, the check and its attempts,
+    # links, the budget, results kept, the hand-off's begin/cancel/left
+    "WIPE_KEYS": ("wipe(&e->work_fkp, sizeof e->work_fkp);", ""),
+    "KEYS_FOR_PROPOSAL": ("!take_keys(e, m->scope, e->prop.p.terms_digest, 1)) {", "0) {"),
+    "KEYS_STILL_ROUNDS": ("{ drop_keys(e); return 0; }", "{ }"),
+    # each half of the comparison alone (test_keys_still_rounds: the factory key, the contribution key)
+    "KEYS_SAME_CONTRIBUTION": ("if (!same(e->work_ckey, r->def.participants[r->me].contribution_key, 33) ||", "if (0 ||"),
+    "KEYS_SAME_FACTORY": ("(factory && !same(e->work_fkey, r->def.participants[r->me].factory_key, 33))", "(factory && 0)"),
+    "IGNORE_UNACCEPTED": ("if (why == GZ_SIGN_WHY_IGNORE) {", "if (0) {"),
+    "ATTEMPT_REQUIRED": ("if (!pr->has_attempt || !pr->check_id) return GZ_SIGN_WHY_INVALID_ROUND;", ""),
+    "PROPOSAL_LINK": ("return GZ_SIGN_WHY_INVALID_ROUND;", "{}"),
+    "MEMBER_LINK": ("if (!r || !is_link_of(r, 0, link) || !same(m->scope, r->def.outer_digest, 32)) return;", "if (!r) return;"),
+    "HOST_LINK": ("if (is_link_of(r, q, link)) j = q;", "if (q == 1) j = q;"),
+    "MEMBER_REPORTS": ("if (why != GZ_SIGN_WHY_SUPERSEDED) report(", "if (0) report("),
+    "MEMBER_REPORTS_FUNDING": ("report(e, GZ_SIGN_OUTCOME_FUNDING, r, 1, em);", "(void)0;"),
+    "REPORT_ONCE": ("if (r->reported) return;", ""),
+    "SUPERSEDE_OWN_CHECK": ("o->attempt < r->attempt;", "1;"),
+    "BEGIN_FINISHED_IGNORED": ("(same(o->check_id, b->check_id, 32) && o->attempt == b->attempt) ||", "0 ||"),
+    "ONE_ACTIVE_PER_SCOPE": ("(o->state == GZ_SIGN_ROUND_ACTIVE && same(o->def.outer_digest, b->scope, 32))) {", "0) {"),
+    "NONCES_DUE_ONE_TICK": ("b->p->nonces_due_ms < e->cfg.tick_ms ||", ""),
+    "BEGIN_REFUSAL_OUTCOME": ("report_of(e, GZ_SIGN_OUTCOME_FAILED, b->scope, b->check_id, b->attempt, NULL, 0, &em);", "(void)0;"),
+    "BUDGET_FAILS": ("if (r->budget_end_ms && now_ms >= r->budget_end_ms) {", "if (0 && now_ms) {"),
+    "FAIL_SAVE_REPORT_ABORTS": ("else if (outcome) host_retry(e, r, released, em);", "else if (0 && outcome) host_retry(e, r, released, em);"),
+    "EARLY_NONCES": ("early = !count_items(r, j, t);", "early = !count_items(r, j, t) && 0;"),
+    "BLAME_RESTART_WITHOUT_NONCES": ("if (!holds_nonces_of(r, j)) return bit(j);", "if (0 && !holds_nonces_of(r, j)) return bit(j);"),
+    "EXCUSE_RESTART_ONCE": ("if (excused_before(e, r, j)) return bit(j);", "if (0 && excused_before(e, r, j)) return bit(j);"),
+    # audit e2e, H1: C7 for rounds in their nonce step, and again at signing (signing-round.md 6 step 5)
+    "C7_NONCE_STEP": ("return GZ_SIGN_WHY_OTHER_TREE;", "continue;"),
+    "C7_AT_SIGNING": ("member_fail(e, r, GZ_SIGN_WHY_OTHER_TREE, em); return;", ";"),
+    "EXCUSE_KEPT": ("if (o->used && o->released &&", "if (0 &&"),
+    "KEEP_HOST_RESULTS": (")) keep_round(e, best);", ") && 0) keep_round(e, best);"),
+    "EXPOSURE_PER_ROUND": (" && same(e->exposed[i].round_id, round_id, 32)) break;", ") break;"),
+    "RESUME_LOADED_ONLY": (" || r->seq > e->resume_seq) continue;", ") continue;"),
+    "CANCEL_FAILS_ROUND": ("host_fail_as(e, r, 0, GZ_SIGN_WHY_CANCELLED, 0, &em);", "(void)0;"),
+    "CANCEL_WIPES": ("wipe_secrets(&e->rounds[i]);", ""),
+    "LEFT_ONLY_WHILE_OWING": ("if (!(owes >> j & 1u)) return GZ_OK;", "(void)owes;"),
+
 }
 
 
@@ -156,14 +195,14 @@ def run_variant(build, rel, text, args, timeout):
     orig = open(path).read()
     try:
         open(path, "w").write(text)
-        b = subprocess.run(["cmake", "--build", build, "--target", "test_signing", "test_signing_wb", "test_round_msg", "test_bip341", "test_bip327"],
+        b = subprocess.run(["cmake", "--build", build, "--target", "test_signing", "test_signing_wb", "test_round_msg", "test_bip341", "test_bip327", "test_c7_audit"],
                            capture_output=True, timeout=600)
         if b.returncode != 0:
             return "no-compile", ""
         try:
             env = dict(os.environ, GZ_STOP_ON_FAIL="1")
             # the standards' vectors and the white-box guards first (seconds), then the whole suite
-            for exe, a in (("test_bip341", []), ("test_bip327", []), ("test_round_msg", []), ("test_signing_wb", []), ("test_signing", args)):
+            for exe, a in (("test_bip341", []), ("test_bip327", []), ("test_round_msg", []), ("test_signing_wb", []), ("test_signing", args), ("test_c7_audit", [])):
                 t = subprocess.run([os.path.join(build, exe)] + a, capture_output=True, timeout=timeout, env=env)
                 if t.returncode != 0:
                     fails = sorted(set(re.findall(r"FAIL \S+/(\w+\.[ch]:\d+)", t.stdout.decode(errors="replace"))))

@@ -2,6 +2,18 @@
 
 Specification draft 3, 2026-11-12. Draft 3 folds in `spec/storage-encryption.md` draft 3: from the first build every file is encrypted (owner decision 13), so the header, the entry framing, the limits and the guard file below are storage's, and a mark file holds the journal's high-water mark. The write, sync, mark and confirm rules, the order rules, the torn-tail rule and the restore rules are unchanged. Draft 2 corrected draft 1 after the third, joint review of the five Slice 1 specifications (`docs/reviews/spec-review-3.md`), which found its torn-tail rule and its restore section wrong. Neither draft 2 nor draft 3 has itself been reviewed. The file-based journal that slice 1 needs (`docs/SLICES.md`: "A file-based journal"). It implements the storage side of the runner contract in `core/gazpacho/include/gazpacho/runner.h`. Items marked **(open)** are listed at the end. Draft 1's "(prov.)" marks are gone: `safety-rule.md` and `signing-round.md` draft 4 settle them.
 
+## Changes, 2026-11-17: BD, the seat's factory key
+
+**Naming.** BD is the binding decision of 2026-11-17, and BD1 to BD6 are its rules. The binding check called them K1 and K1-1 to K1-6; they were renamed so as not to clash with K1 of `docs/DECISIONS-WITHOUT-OWNER.md` (the chain lag limits) or with the journal's vectors J1 to J6.
+
+**Not itself reviewed.** Follows `messages.md` 6.4 as amended for BD (`docs/notes/k1-join-binding-check.md`). One record type is assigned; the host's `seat` record loses `bind_by_factory`. No format of section 2 to 8 changes.
+
+| Change | Where |
+|---|---|
+| **Record type number assigned**: `seat_key` (`0x0001001c`, member), the seat's factory public key with its epoch and index, and the `bind_by_contribution` of its first `ready`, saved before that `ready` is sent and never replaced (BD3). `0x0001001a` is reserved for tests | 9, 9.1 |
+| Review of 2026-11-18 (H1, L3): `seat_key` gains field 10, the first `bind_by_contribution`; `0x0001001a` stays reserved for tests | 9.1 |
+| `seat` (host): the factory key and `bind_by_contribution` come from the seat's first `ready` (the host keeps the first `bind_by_contribution` it saved), and are absent while the seat has only joined. `bind_by_factory` removed. Seat records are kept for the lobby's whole life (BD1) | 9 |
+
 ## Changes after the code review of the journal (PR 29, review A)
 
 Corrections found by reviewing the code against this text. No new draft number: the formats are unchanged; the start and failure rules are stated as they must be on Linux.
@@ -290,7 +302,7 @@ Every Lobby record is a TLV stream whose **field 2 is the lobby's scope** (32 by
 |---|---|---|---|---|
 | `0x00010002` | `lobby_opened` | Host | Outer record, its signature; current values version 1, its signature | The first `terms_offer` |
 | `0x00010004` | `terms_version` | Host | A new current record and signature | The `terms_offer` carrying it |
-| `0x00010006` | `seat` | Host | Contribution key, factory key, both bindings, seat state, the seat's latest signed `ready` bytes | The `lobby_status` that confirms the change. Saved only when the seat's state changes, within the limits of `messages.md` section 6 (review 3, F13) |
+| `0x00010006` | `seat` | Host | Contribution key; factory key and `bind_by_contribution` from the seat's first `ready` (absent while the seat has only joined); seat state; the seat's latest signed `ready` bytes. Kept for the lobby's whole life, also after the seat left or was removed (`messages.md` 6.4, BD1) | The `lobby_status` that confirms the change. Saved only when the seat's state changes, within the limits of `messages.md` section 6 (review 3, F13) |
 | `0x00010008` | `freeze` | Both | `check_id`, version, current digest, the signed `ready_check` bytes | Host: the first `ready_check`. Member: its `ready` answering it |
 | `0x0001000a` | `lobby_ended` | Both | Final state, reason, the signed `cancel` bytes if any. Member: state 0 when no cancel ended it: its own leave, or (field `how`) its removal by the host, its join refused as invalid, or the host's terms refused before any seat | Nothing; for history, for the host's answer to a late `hello` (the node part reads it), and so that a restarted member does not join again |
 | `0x0001000c` | `terms_received` | Member | Host address and key; outer record and signature; a current record and signature | `join` (the first, with the outer record), and `ready` for a version (that version). A version the member does not ready for is not saved (`terms.md` section 7) |
@@ -320,7 +332,9 @@ Every Lobby record is a TLV stream whose **field 2 is the lobby's scope** (32 by
 | `0x00030004` | `funding_signed` | Host | The signed funding transaction | Its broadcast; rebroadcast from it after a restart |
 | `0x00030006` | `funding_status` | Both | Txid, state (broadcast, seen, confirmed at height h with n confirmations, buried, reorganised away, input spent elsewhere), height; for the member also the height at which it sent its ack (the start of the funding deadline) | Telling the user; C11's "live" decision is taken from it |
 
-The host keeps the per-member results until the factory's funding output is spent or the creation is dead (`messages.md` 7.6, `safety-rule.md` H12).
+The host keeps the per-member results while a member can still need them: until the creation is live, dead, or past the members' deadlines and a grace after a failed lobby (`messages.md` 7.6, `safety-rule.md` H12 as rewritten in P4.5).
+
+`funding_status` is written by the **funding engine only** (on both roles; the signing engine no longer writes it). **The member's first `funding_status`**, saved in its outcome batch with `round_completed`, is the anchored batch that starts its watches: it carries the funding transaction and every input C11 and C4(d) need, so the funding engine reads its own area only. A status is saved at each decision (acked, awaiting confirmation, broadcast, live, abandoned with the spend-back, dead, failed, live late), not at each confirmation; the chain facts are reported again by the watches at every start. Fields (TLV, every type even; open point 3 settled for this area): `funding_plan` 2 scope, 4 check, 6 attempt (`u16`), 8 mode (`u8`), 10 fee rate (`u64`, sat/kvB), 12 the unsigned transaction, 14 the spent outputs (per input: amount `u64`, script length `u8`, script), 16 the factory output's index (`u32`), 18 the tip when it was planned (`u32`, when known), 20 released (`u8`, H11); `funding_signed` 2 scope, 4 txid, 6 the signed transaction; `funding_status` 2 scope, 4 txid, 6 state (`u8`: 1 acked, 2 awaiting confirmation, 3 broadcast, 4 live, 5 abandoned, 6 dead, 7 failed, 8 live late), 8 tip (`u32`), 10 deadline (`u32`), the member's first write 12 to 30 (funding transaction, vout, amount, script, ack tip, end height, own depth, whole tree, exit constants, funding deadline), a host's abandoned status 32 to 38 (the spend-back, its fee, its level, its input). `docs/notes/funding.md` 3 has the table.
 
 ### 9.1 Records numbered now for the exit engine and the local API
 
@@ -374,6 +388,7 @@ Numbered after cross-spec review 1, under the same rules: `u32`, the high 16 bit
 | Type | Record | Contents | Saved before | Release |
 |---|---|---|---|---|
 | `0x00010018` | `lobby_state` | Host: the lobby's state after a signing attempt, `u8`: 1 Open (a retry without the named seats), 4 Funding, 5 Active; Funding or Active may follow `lobby_ended` (a creation the signing engine completed stands). Member: its round's outcome: 1 a retry, then the spent start's `check_id` (32; the start is spent, and the member's answer too if it is to that check: an answer to a later check stands), or 4 Funding, 5 Active (the `u8` alone) | Host: the `lobby_status` that shows it. Member: anything that shows it; a restart then never hands the finished check to the signing engine again | S1 |
+| `0x0001001c` | `seat_key` | Member: the seat's factory public key (33), the key epoch (`u32`) and the key index (`u32`) it was derived at (the pair's second index, `messages.md` 2). Fields: 2 scope, 4 factory key, 6 epoch, 8 index, 10 `bind_by_contribution` (64), the signature sent in the first `ready`. Every later `ready` of the seat sends field 10's bytes; neither the seed nor the contribution key's fresh signature is needed for it (`messages.md` 6.4, BD3). Type `0x0001001a` is skipped on purpose: it is reserved for tests, which use it as "not a lobby record" (`tests/lobby/test_lobby_v2.c`, `tests/lobby/fuzz_lobby.c`) | The seat's first `ready`: in the same batch as its `ready_sent`, or an earlier one, confirmed before that `ready` is sent (`messages.md` 6.4, BD3). Never replaced; at signing the derived key is compared with it (`signing-round.md` section 2, BD5) | S1 |
 
 ## 10. What is never stored
 

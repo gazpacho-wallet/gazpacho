@@ -514,7 +514,7 @@ static void test_funding(const secp256k1_context *ctx) {
     CHECK(gzw_bip32_master(ctx, seed, 64, &other, NULL));
     memset(factory + 2, 0xfa, 32);
 
-    gzt_funding_request req = {GZT_NET_SIGNET, 0, factory, 34, 150000, 3, {{100}, {1000}}, NULL, 0};
+    gzt_funding_request req = {GZT_NET_SIGNET, 0, factory, 34, 150000, 3, {{100}, {1000}}, NULL, 0, 0, {0}, 0, 0};
     make_coin(ctx, &master, &coins[0], 0, 0, 100000);
     make_coin(ctx, &master, &coins[1], 0, 1, 80000);
     make_coin(ctx, &master, &coins[2], 1, 0, 1000);
@@ -1061,7 +1061,7 @@ static void test_null_arguments(const secp256k1_context *ctx) {
     uint8_t any_key[32] = {1};
     CHECK(gzw_taproot_tweak_seckey(ctx, any_key, &kp, NULL));
     gzt_fee_policy fp = {{100}, {1000}};
-    gzt_funding_request req = {GZT_NET_SIGNET, 0, s, 34, 1000, 0, fp, NULL, 0};
+    gzt_funding_request req = {GZT_NET_SIGNET, 0, s, 34, 1000, 0, fp, NULL, 0, 0, {0}, 0, 0};
 
     CHECK(gzt_network_from_name(NULL, &net) == GZT_ERR_ARG);
     CHECK(gzt_network_from_name("signet", NULL) == GZT_ERR_ARG);
