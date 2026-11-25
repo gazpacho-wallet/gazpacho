@@ -3,16 +3,23 @@ on:
   push:
     branches: [main]
   pull_request:
-    # labeled: adding full-ci (heavy tier) or signer-boundary-growth runs the
-    # checks again with the label; any other label also starts a new run.
-    types: [opened, synchronize, reopened, labeled]
   # The merge queue: every required check runs on the queue's merge commit,
   # heavy tier included.
   merge_group:
-  # Nightly, heavy tier: main here, and the job nightly-dispatch starts the
-  # same full run on the other long-lived branches.
+  # Nightly, heavy tier, on main; nightly.yml starts the same full run on the
+  # other long-lived branches.
   schedule:
     - cron: "23 2 * * *"
+  # Called by ci-label.yml when full-ci or signer-boundary-growth is added
+  # to a pull request: the checks run again with the label in the event.
+  # Its checks are named "label / <job>", so they never stand in for, or
+  # hide, the required checks of the pull request's own run.
+  workflow_call:
+    inputs:
+      tier:
+        description: "unused (the pull request's labels decide)"
+        type: string
+        default: fast
   workflow_dispatch:
     inputs:
       tier:
@@ -29,9 +36,10 @@ permissions:
 # A newer push to the same pull request cancels the run it makes stale. A
 # merge queue run has a ref of its own (gh-readonly-queue/...) and is never
 # cancelled here. The event is part of the group, so a nightly or dispatched
-# run never waits behind, or replaces, a push's run of the same branch.
+# run never waits behind, or replaces, a push's run of the same branch; and a
+# label's run (ci-label.yml) never cancels the pull request's own run.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  group: ci-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}-${{ github.event.action == 'labeled' && 'label' || 'run' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Every third-party action is pinned to a full commit SHA; the comment names
@@ -355,14 +363,17 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     # Heavy tier (docs/notes/ci.md, "Tiers"): the merge queue, main, the
-    # nightly run, a dispatch with tier=full, and pull requests labelled
-    # full-ci. Skipped by this if on other pull requests, which GitHub reports
-    # as a pass; the merge queue then runs it for real.
+    # nightly run, a dispatch with tier=full, pull requests labelled full-ci,
+    # and every pull request into integration-slice1 or composite-p6a (which
+    # have no merge queue). Skipped by this if on other pull requests, which
+    # GitHub reports as a pass; the merge queue then runs it for real.
     if: >-
       github.event_name == 'merge_group' || github.event_name == 'push' ||
       github.event_name == 'schedule' ||
       (github.event_name == 'workflow_dispatch' && inputs.tier != 'fast') ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci')
+      contains(github.event.pull_request.labels.*.name, 'full-ci') ||
+      (github.event_name == 'pull_request' &&
+       contains(fromJSON('["integration-slice1", "composite-p6a"]'), github.base_ref))
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -400,7 +411,9 @@ jobs:
       github.event_name == 'merge_group' || github.event_name == 'push' ||
       github.event_name == 'schedule' ||
       (github.event_name == 'workflow_dispatch' && inputs.tier != 'fast') ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci')
+      contains(github.event.pull_request.labels.*.name, 'full-ci') ||
+      (github.event_name == 'pull_request' &&
+       contains(fromJSON('["integration-slice1", "composite-p6a"]'), github.base_ref))
     strategy:
       fail-fast: false
       matrix:
@@ -452,7 +465,9 @@ jobs:
       github.event_name == 'merge_group' || github.event_name == 'push' ||
       github.event_name == 'schedule' ||
       (github.event_name == 'workflow_dispatch' && inputs.tier != 'fast') ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci')
+      contains(github.event.pull_request.labels.*.name, 'full-ci') ||
+      (github.event_name == 'pull_request' &&
+       contains(fromJSON('["integration-slice1", "composite-p6a"]'), github.base_ref))
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -487,7 +502,9 @@ jobs:
       always() && (github.event_name == 'merge_group' || github.event_name == 'push' ||
       github.event_name == 'schedule' ||
       (github.event_name == 'workflow_dispatch' && inputs.tier != 'fast') ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci'))
+      contains(github.event.pull_request.labels.*.name, 'full-ci') ||
+      (github.event_name == 'pull_request' &&
+       contains(fromJSON('["integration-slice1", "composite-p6a"]'), github.base_ref)))
     timeout-minutes: 5
     steps:
       - name: All three shards passed
@@ -507,7 +524,9 @@ jobs:
       github.event_name == 'merge_group' || github.event_name == 'push' ||
       github.event_name == 'schedule' ||
       (github.event_name == 'workflow_dispatch' && inputs.tier != 'fast') ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci')
+      contains(github.event.pull_request.labels.*.name, 'full-ci') ||
+      (github.event_name == 'pull_request' &&
+       contains(fromJSON('["integration-slice1", "composite-p6a"]'), github.base_ref))
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -645,7 +664,7 @@ jobs:
   # The composite node's mutants (tests/node/mutants.txt, tools/mutate-node.py),
   # in six shards: each mutant must be killed by a node test, or triaged in the
   # list with a reason. Not required for merging.
-  node-mutants:
+  node-mutants-shard:
     name: node mutants (shard ${{ matrix.shard }} of 6)
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -654,7 +673,9 @@ jobs:
       github.event_name == 'merge_group' || github.event_name == 'push' ||
       github.event_name == 'schedule' ||
       (github.event_name == 'workflow_dispatch' && inputs.tier != 'fast') ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci')
+      contains(github.event.pull_request.labels.*.name, 'full-ci') ||
+      (github.event_name == 'pull_request' &&
+       contains(fromJSON('["integration-slice1", "composite-p6a"]'), github.base_ref))
     strategy:
       fail-fast: false
       matrix:
@@ -668,8 +689,8 @@ jobs:
       - name: Every node mutant of this shard is killed or triaged
         run: python3 -I tools/mutate-node.py . "$RUNNER_TEMP/node-mutants" -j "$(nproc)" --shard ${{ matrix.shard }}/6
 
-  signer-mutants:
-    name: signer mutants
+  signer-mutants-run:
+    name: signer mutants (run)
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     # Heavy tier: the same condition as msan's (docs/notes/ci.md, "Tiers").
@@ -677,7 +698,9 @@ jobs:
       github.event_name == 'merge_group' || github.event_name == 'push' ||
       github.event_name == 'schedule' ||
       (github.event_name == 'workflow_dispatch' && inputs.tier != 'fast') ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci')
+      contains(github.event.pull_request.labels.*.name, 'full-ci') ||
+      (github.event_name == 'pull_request' &&
+       contains(fromJSON('["integration-slice1", "composite-p6a"]'), github.base_ref))
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -687,29 +710,48 @@ jobs:
       - name: Every check of signer/ and of the two S1 tools is killed by a test
         run: python3 -I tools/mutate-signer.py . "$RUNNER_TEMP/signer-mutants" -j "$(nproc)"
 
-  # The nightly run covers main itself (this run). The other long-lived
-  # branches get the same full run through workflow_dispatch on each, with
-  # that branch's own ci.yml: a schedule runs on the default branch only.
-  # A branch whose ci.yml has no workflow_dispatch yet (it has not merged
-  # main since the tiers came) gets a warning, not a run.
-  nightly-dispatch:
-    name: nightly full runs of the long-lived branches
-    if: github.event_name == 'schedule'
+  # The stable name for the six node mutant shards: like "valgrind", it passes only if every one
+  # of its jobs passed, and is skipped with them outside the heavy tier.
+  # Not required; whether it becomes required is the owner's decision.
+  node-mutants:
+    name: node mutants
+    needs: node-mutants-shard
     runs-on: ubuntu-24.04
+    if: >-
+      always() && (github.event_name == 'merge_group' || github.event_name == 'push' ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.tier != 'fast') ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci') ||
+      (github.event_name == 'pull_request' &&
+       contains(fromJSON('["integration-slice1", "composite-p6a"]'), github.base_ref)))
     timeout-minutes: 5
-    # actions: write, to start workflow_dispatch runs; nothing else
-    permissions:
-      actions: write
     steps:
-      - name: Dispatch ci.yml with tier=full on integration-slice1 and composite-p6a
+      - name: Every job passed
         env:
-          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ needs.node-mutants-shard.result }}
         run: |
-          for b in integration-slice1 composite-p6a; do
-            if gh workflow run ci.yml -R "$GITHUB_REPOSITORY" -r "$b" -f tier=full; then
-              echo "- $b: full run started" >> "$GITHUB_STEP_SUMMARY"
-            else
-              echo "::warning::no nightly run on $b (the branch is gone, or its ci.yml has no workflow_dispatch yet)"
-              echo "- $b: not started" >> "$GITHUB_STEP_SUMMARY"
-            fi
-          done
+          echo "node mutants: $RESULT"
+          [ "$RESULT" = success ] || { echo "::error::node mutants: a job failed or was cancelled ($RESULT)"; exit 1; }
+
+  # The stable name for the signer mutants: like "valgrind", it passes only if every one
+  # of its jobs passed, and is skipped with them outside the heavy tier.
+  # Not required; whether it becomes required is the owner's decision.
+  signer-mutants:
+    name: signer mutants
+    needs: signer-mutants-run
+    runs-on: ubuntu-24.04
+    if: >-
+      always() && (github.event_name == 'merge_group' || github.event_name == 'push' ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.tier != 'fast') ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci') ||
+      (github.event_name == 'pull_request' &&
+       contains(fromJSON('["integration-slice1", "composite-p6a"]'), github.base_ref)))
+    timeout-minutes: 5
+    steps:
+      - name: Every job passed
+        env:
+          RESULT: ${{ needs.signer-mutants-run.result }}
+        run: |
+          echo "signer mutants: $RESULT"
+          [ "$RESULT" = success ] || { echo "::error::signer mutants: a job failed or was cancelled ($RESULT)"; exit 1; }

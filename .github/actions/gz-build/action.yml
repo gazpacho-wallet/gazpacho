@@ -1,11 +1,11 @@
 name: Gazpacho build
 description: >
-  Install the packages, configure and build one of CI's builds (configs.sh),
-  with ccache and the pinned dependencies cached. ci.yml and agent-run.yml
-  both build through this action, so an agent's run builds what CI builds.
-  The caches only save time: the dependencies are checked against their pins
-  on every use (and by CMake again), and ccache hashes every input of every
-  compilation (docs/notes/ci.md, "Caches").
+  Install the packages, configure and build one of CI's builds (configs.sh).
+  ci.yml and agent-run.yml both build through this action, so an agent's run
+  builds what CI builds. Caches only save time (docs/notes/ci.md, "Caches"):
+  in the merge queue none is restored or saved and the build is exactly the
+  uncached one; elsewhere ccache and two pinned tarballs are restored, and
+  only pushes to main and the nightly run save.
 inputs:
   config:
     description: "gcc-off, gcc-on, clang-plain, clang-asan, msan, valgrind, debug, fuzz, interface or wallet (configs.sh)"
@@ -14,117 +14,132 @@ inputs:
     description: The build directory
     default: build
   build-type:
-    description: CMAKE_BUILD_TYPE instead of the configuration's own (agent runs only)
+    description: "CMAKE_BUILD_TYPE instead of the configuration's own: empty, Debug, Release, RelWithDebInfo or MinSizeRel (agent runs only)"
     default: ""
   targets:
     description: Build only these targets (space-separated); all when empty
     default: ""
   save-cache:
-    description: "'true' to save the ccache after the build (one job per configuration)"
+    description: "'true' for the one job per configuration that saves the ccache (on pushes to main and nightly only)"
     default: "true"
 runs:
   using: composite
   steps:
     - name: Install dependencies
+      id: setup
       shell: bash
       env:
         CONFIG: ${{ inputs.config }}
         BUILD_TYPE_OVERRIDE: ${{ inputs.build-type }}
+        BUILD_DIR: ${{ inputs.build-dir }}
+        TARGETS: ${{ inputs.targets }}
+        EVENT: ${{ github.event_name }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
         set -eu
+        # Checked before anything reaches GITHUB_ENV or a command line.
+        case "$BUILD_TYPE_OVERRIDE" in ""|Debug|Release|RelWithDebInfo|MinSizeRel) ;;
+          *) echo "::error::build-type must be empty, Debug, Release, RelWithDebInfo or MinSizeRel"; exit 1 ;; esac
+        printf '%s' "$BUILD_DIR" | grep -Eq '^[A-Za-z0-9._/-]+$' || { echo "::error::bad build-dir"; exit 1; }
+        printf '%s' "$TARGETS" | grep -Eq '^[A-Za-z0-9._ -]*$' || { echo "::error::bad targets"; exit 1; }
         . "$ACTION_PATH/configs.sh"
         gz_config "$CONFIG"
-        sudo apt-get update && sudo apt-get install -y $PKGS ccache
+        # The merge queue builds with no cache at all (review of #96, M-2):
+        # the result that gates main depends on no cache entry.
+        if [ "$EVENT" = merge_group ]; then caches=false; else caches=true; fi
+        # Saved only from main's own runs: a push to main or the nightly run.
+        if [ "$EVENT" = push ] || [ "$EVENT" = schedule ]; then save=true; else save=false; fi
+        { echo "caches=$caches"; echo "save=$save"; } >> "$GITHUB_OUTPUT"
+        if [ "$caches" = true ]; then extra=ccache; else extra=; fi
+        sudo apt-get update && sudo apt-get install -y $PKGS $extra
         # The compiler goes to every later step, as the job-level CC did.
         if [ "$COMPILER" != gcc ]; then echo "CC=$COMPILER" >> "$GITHUB_ENV"; fi
-        {
-          echo "CCACHE_DIR=$HOME/.cache/ccache"
-          echo "CCACHE_MAXSIZE=400M"
-          echo "GZ_CCACHE_KEY=ccache-v1-${ImageOS:-ubuntu24}-$COMPILER-${BUILD_TYPE_OVERRIDE:-$BUILD_TYPE}-$SANITIZER-$CONFIG"
-        } >> "$GITHUB_ENV"
-    - name: The pinned dependencies' hashes
+        if [ "$caches" = true ]; then
+          {
+            echo "CCACHE_DIR=$HOME/.cache/ccache"
+            echo "CCACHE_MAXSIZE=400M"
+            echo "GZ_CCACHE_KEY=ccache-v2-${ImageOS:-ubuntu24}-$COMPILER-${BUILD_TYPE_OVERRIDE:-$BUILD_TYPE}-$SANITIZER-$CONFIG"
+          } >> "$GITHUB_ENV"
+        fi
+    - name: The pinned tarballs' hashes
       id: pins
+      if: steps.setup.outputs.caches == 'true'
       shell: bash
       run: |
         set -u
-        secp=$(sed -n 's/^ *GIT_TAG  *\([0-9a-f]\{40\}\) *$/\1/p' CMakeLists.txt | head -n 1)
         f=ports/storage/crypto/CMakeLists.txt
         sv=$(sed -n 's/^set(GZ_SODIUM_VERSION \([0-9.]*\))$/\1/p' "$f" 2>/dev/null)
         ss=$(sed -n 's/^set(GZ_SODIUM_SHA256 \([0-9a-f]\{64\}\))$/\1/p' "$f" 2>/dev/null)
         uv=$(sed -n 's/^set(GZ_UTF8PROC_VERSION \([0-9.]*\))$/\1/p' "$f" 2>/dev/null)
         us=$(sed -n 's/^set(GZ_UTF8PROC_SHA256 \([0-9a-f]\{64\}\))$/\1/p' "$f" 2>/dev/null)
-        if [ -n "$secp" ] && [ -n "$sv" ] && [ -n "$ss" ] && [ -n "$uv" ] && [ -n "$us" ]; then
-          { echo "ok=true"; echo "secp=$secp"; echo "sv=$sv"; echo "ss=$ss"; echo "uv=$uv"; echo "us=$us"
-            echo "key=gz-deps-v1-secp-$secp-sodium-$ss-utf8proc-$us"; } >> "$GITHUB_OUTPUT"
+        if [ -n "$sv" ] && [ -n "$ss" ] && [ -n "$uv" ] && [ -n "$us" ]; then
+          { echo "ok=true"; echo "sv=$sv"; echo "ss=$ss"; echo "uv=$uv"; echo "us=$us"
+            echo "key=gz-tarballs-v2-sodium-$ss-utf8proc-$us"; } >> "$GITHUB_OUTPUT"
         else
-          echo "::notice::the dependency pins were not found where expected; CMake fetches them itself"
+          echo "::notice::the tarball pins were not found where expected; CMake fetches them itself"
           echo "ok=false" >> "$GITHUB_OUTPUT"
         fi
-    - name: Restore the pinned dependencies
+    - name: Restore the pinned tarballs
       id: deps-cache
       if: steps.pins.outputs.ok == 'true'
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: ~/.cache/gz-deps
+        path: ~/.cache/gz-tarballs
         key: ${{ steps.pins.outputs.key }}
-    - name: Fetch the pinned dependencies, or check the cached ones against their pins
+    - name: Fetch the pinned tarballs, or check the cached ones against their SHA-256
       id: deps
       if: steps.pins.outputs.ok == 'true'
       shell: bash
       env:
         HIT: ${{ steps.deps-cache.outputs.cache-hit }}
-        SECP: ${{ steps.pins.outputs.secp }}
         SV: ${{ steps.pins.outputs.sv }}
         SS: ${{ steps.pins.outputs.ss }}
         UV: ${{ steps.pins.outputs.uv }}
         US: ${{ steps.pins.outputs.us }}
-      # Any failure here only leaves the dependencies to CMake, which fetches
-      # and checks them as it always did.
+      # Two release tarballs only, never extracted here and with no git
+      # metadata: each is checked against the SHA-256 pinned in
+      # ports/storage/crypto/CMakeLists.txt, and CMake checks it again before
+      # extracting (URL_HASH). secp256k1-zkp is not cached: CMake fetches it
+      # at its pinned commit, as before (review of #96, M-3). Any failure here
+      # leaves the tarballs to CMake, which fetches and checks them as always.
       run: |
         set -u
-        d="$HOME/.cache/gz-deps"
-        src="$d/_deps/secp256k1-zkp-src"
+        d="$HOME/.cache/gz-tarballs"
         st="libsodium-$SV.tar.gz"; ut="utf8proc-$UV.tar.gz"
-        fetch() {
-          rm -rf "$d" && mkdir -p "$src" &&
-          git -C "$src" init -q &&
-          git -C "$src" fetch -q --depth 1 https://github.com/BlockstreamResearch/secp256k1-zkp.git "$SECP" &&
-          git -C "$src" -c advice.detachedHead=false checkout -q FETCH_HEAD &&
-          { curl -fsSL --retry 3 -o "$d/$st" "https://download.libsodium.org/libsodium/releases/$st" ||
-            curl -fsSL --retry 3 -o "$d/$st" "https://github.com/jedisct1/libsodium/releases/download/$SV-RELEASE/$st"; } &&
-          curl -fsSL --retry 3 -o "$d/$ut" "https://github.com/JuliaStrings/utf8proc/releases/download/v$UV/$ut"
-        }
         if [ "$HIT" != true ]; then
-          fetch || echo "::warning::fetching the dependencies failed; CMake fetches them itself"
+          { rm -rf "$d" && mkdir -p "$d" &&
+            { curl -fsSL --retry 3 -o "$d/$st" "https://download.libsodium.org/libsodium/releases/$st" ||
+              curl -fsSL --retry 3 -o "$d/$st" "https://github.com/jedisct1/libsodium/releases/download/$SV-RELEASE/$st"; } &&
+            curl -fsSL --retry 3 -o "$d/$ut" "https://github.com/JuliaStrings/utf8proc/releases/download/v$UV/$ut"; } ||
+            echo "::warning::fetching the tarballs failed; CMake fetches them itself"
         fi
-        # The source at the pinned commit with nothing changed or added, and
-        # each tarball with its pinned SHA-256.
-        if [ "$(git -C "$src" rev-parse HEAD 2>/dev/null)" = "$SECP" ] &&
-           [ -z "$(git -C "$src" status --porcelain --ignored 2>&1)" ] &&
+        # Exactly the two regular files, each with its pinned SHA-256.
+        if [ "$(find "$d" -mindepth 1 2>/dev/null | sort | tr '\n' ' ')" = "$d/$st $d/$ut " ] &&
+           [ -f "$d/$st" ] && [ ! -L "$d/$st" ] && [ -f "$d/$ut" ] && [ ! -L "$d/$ut" ] &&
            printf '%s  %s\n%s  %s\n' "$SS" "$d/$st" "$US" "$d/$ut" | sha256sum --check --strict --quiet; then
-          echo "GZ_DEPS_ARGS=-DGZ_DEPS_DIR=$d -DFETCHCONTENT_SOURCE_DIR_SECP256K1-ZKP=$src" >> "$GITHUB_ENV"
-          [ "$HIT" = true ] || echo "save=true" >> "$GITHUB_OUTPUT"
-          echo "dependencies: secp256k1-zkp $SECP, libsodium $SV, utf8proc $UV (checked against their pins)"
+          echo "GZ_DEPS_ARGS=-DGZ_DEPS_DIR=$d" >> "$GITHUB_ENV"
+          [ "$HIT" = true ] || echo "fetched=true" >> "$GITHUB_OUTPUT"
+          echo "tarballs: libsodium $SV, utf8proc $UV (checked against their pinned SHA-256)"
         else
-          echo "::warning::the cached dependencies do not match their pins; CMake fetches them itself"
+          echo "::warning::the cached tarballs do not match their pins; CMake fetches them itself"
         fi
-    - name: Save the pinned dependencies
-      if: steps.deps.outputs.save == 'true' && github.event_name != 'merge_group'
+    - name: Save the pinned tarballs
+      if: steps.deps.outputs.fetched == 'true' && steps.setup.outputs.save == 'true'
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: ~/.cache/gz-deps
+        path: ~/.cache/gz-tarballs
         key: ${{ steps.pins.outputs.key }}
     - name: Restore OpenSSL built with MemorySanitizer
       id: openssl-cache
-      if: inputs.config == 'msan'
+      if: inputs.config == 'msan' && steps.setup.outputs.caches == 'true'
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ~/openssl-msan
         key: openssl-3.0.22-msan-clang18-ubuntu24.04-v1
     - name: Build OpenSSL with MemorySanitizer
       # Every library the tests call must be instrumented, or MSan reports
-      # the bytes it returns as uninitialised. libcrypto only, static.
+      # the bytes it returns as uninitialised. libcrypto only, static. Always
+      # built here in the merge queue, which restores no cache.
       if: inputs.config == 'msan' && steps.openssl-cache.outputs.cache-hit != 'true'
       shell: bash
       env:
@@ -143,12 +158,13 @@ runs:
         make -j"$(nproc)" build_libs > /dev/null
         make install_dev > /dev/null
     - name: Save OpenSSL built with MemorySanitizer
-      if: inputs.config == 'msan' && steps.openssl-cache.outputs.cache-hit != 'true' && github.event_name != 'merge_group'
+      if: inputs.config == 'msan' && steps.openssl-cache.outputs.cache-hit != 'true' && steps.setup.outputs.save == 'true'
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ~/openssl-msan
         key: openssl-3.0.22-msan-clang18-ubuntu24.04-v1
     - name: Restore the compiler cache
+      if: steps.setup.outputs.caches == 'true'
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ~/.cache/ccache
@@ -160,26 +176,32 @@ runs:
         CONFIG: ${{ inputs.config }}
         BUILD_DIR: ${{ inputs.build-dir }}
         BUILD_TYPE_OVERRIDE: ${{ inputs.build-type }}
+        CACHES: ${{ steps.setup.outputs.caches }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
         set -eu
         . "$ACTION_PATH/configs.sh"
         gz_config "$CONFIG"
-        ccache -z > /dev/null
+        launcher=()
+        if [ "$CACHES" = true ]; then
+          ccache -z > /dev/null
+          launcher=(-DCMAKE_C_COMPILER_LAUNCHER=ccache)
+        fi
         set -x
         cmake -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE="${BUILD_TYPE_OVERRIDE:-$BUILD_TYPE}" "${CMAKE_ARGS[@]}" \
-          -DCMAKE_C_COMPILER_LAUNCHER=ccache ${GZ_DEPS_ARGS:-}
+          "${launcher[@]}" ${GZ_DEPS_ARGS:-}
     - name: Build
       shell: bash
       env:
         BUILD_DIR: ${{ inputs.build-dir }}
         TARGETS: ${{ inputs.targets }}
+        CACHES: ${{ steps.setup.outputs.caches }}
       run: |
         set -eu
         if [ -n "$TARGETS" ]; then cmake --build "$BUILD_DIR" --target $TARGETS -j; else cmake --build "$BUILD_DIR" -j; fi
-        ccache -s
+        if [ "$CACHES" = true ]; then ccache -s; fi
     - name: Save the compiler cache
-      if: inputs.save-cache == 'true' && github.event_name != 'merge_group'
+      if: inputs.save-cache == 'true' && steps.setup.outputs.save == 'true'
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ~/.cache/ccache

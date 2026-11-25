@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Branch, tag or full commit SHA to test"
+        description: "A branch of this repository, or a full commit SHA on one (never a fork's commit)"
         required: true
       suite:
         description: "focused: one build, ctest -R regex; full: CI's fast tier; heavy: CI's heavy tier; mutants: the named mutants; playwright: the browser job"
@@ -39,8 +39,10 @@ on:
         options: [none, asan, msan]
         default: none
       build_type:
-        description: "CMAKE_BUILD_TYPE instead of the build's own (empty: CI's)"
-        default: ""
+        description: "CMAKE_BUILD_TYPE instead of the build's own (default: CI's)"
+        type: choice
+        options: [default, Debug, Release, RelWithDebInfo, MinSizeRel]
+        default: default
 
 permissions:
   contents: read
@@ -60,13 +62,36 @@ jobs:
       sha: ${{ steps.plan.outputs.sha }}
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          ref: ${{ inputs.ref }}
+      - name: The ref is a branch of this repository, or a commit on one
+        # Only this repository's branches are fetched (no pull request refs,
+        # no tags), with no lazy fetching: a fork's commit, which GitHub
+        # would otherwise serve by its SHA, is refused (review of #96, M-2).
+        id: ref
+        env:
+          REF: ${{ inputs.ref }}
+          GIT_NO_LAZY_FETCH: "1"
+        run: |
+          set -eu
+          git init -q "$RUNNER_TEMP/src" && cd "$RUNNER_TEMP/src"
+          git remote add origin "https://github.com/$GITHUB_REPOSITORY"
+          git fetch -q --filter=blob:none --no-tags origin '+refs/heads/*:refs/remotes/origin/*'
+          sha=
+          if printf '%s\n' "$REF" | grep -Eqx '[0-9a-f]{40}'; then
+            if git cat-file -e "$REF^{commit}" 2>/dev/null &&
+               [ -n "$(git for-each-ref --contains "$REF" refs/remotes/origin)" ]; then
+              sha=$REF
+            fi
+          elif git check-ref-format --branch "$REF" > /dev/null 2>&1; then
+            sha=$(git rev-parse -q --verify "refs/remotes/origin/$REF^{commit}" || true)
+          fi
+          [ -n "$sha" ] || { echo "::error::ref must be a branch of this repository or a full commit SHA on one"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "testing $sha"
       - name: The jobs this suite runs
         id: plan
+        working-directory: ${{ runner.temp }}/src
         env:
+          SHA: ${{ steps.ref.outputs.sha }}
           SUITE: ${{ inputs.suite }}
           REGEX: ${{ inputs.regex }}
           MUTANTS: ${{ inputs.mutants }}
@@ -76,7 +101,7 @@ jobs:
           import json, os, re, subprocess, sys
           suite, regex, sanitizer = os.environ["SUITE"], os.environ["REGEX"], os.environ["SANITIZER"]
           names = os.environ["MUTANTS"].split()
-          sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+          sha = os.environ["SHA"]
           def err(msg):
               print("::error::" + msg); sys.exit(1)
           if regex:
@@ -111,10 +136,10 @@ jobs:
           elif suite == "mutants":
               if not names: err("suite mutants needs mutant names (suite heavy runs them all)")
               def listed(path):
-                  try:
-                      return {l.split("\t", 1)[0] for l in open(path, encoding="utf-8") if l.strip() and not l.startswith("#")}
-                  except OSError:
+                  r = subprocess.run(["git", "show", "%s:%s" % (sha, path)], capture_output=True, text=True)
+                  if r.returncode != 0:
                       return set()
+                  return {l.split("\t", 1)[0] for l in r.stdout.splitlines() if l.strip() and not l.startswith("#")}
               node, signer = listed("tests/node/mutants.txt"), listed("signer/tests/mutants.txt")
               unknown = [n for n in names if n not in node and n not in signer]
               if unknown: err("no such mutant in tests/node/mutants.txt or signer/tests/mutants.txt: " + " ".join(unknown))
@@ -175,9 +200,10 @@ jobs:
         uses: ./.agent-run/.github/actions/gz-build
         with:
           config: ${{ matrix.config }}
-          build-type: ${{ inputs.build_type }}
+          build-type: ${{ inputs.build_type != 'default' && inputs.build_type || '' }}
           targets: ${{ matrix.targets }}
-          # Agent runs read CI's compiler cache but do not add to it.
+          # Agent runs restore main's caches but never save any (the action
+          # saves only on pushes to main and nightly).
           save-cache: "false"
       - name: Install dependencies (the mutant runners build their own trees; as in ci.yml)
         if: matrix.kind == 'node-mutants' || matrix.kind == 'signer-mutants'
