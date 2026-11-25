@@ -39,7 +39,7 @@
 #include "unlock.h"
 
 #define GZP_WPORT_COINS 256
-#define GZP_WPORT_PLANS 8
+#define GZP_WPORT_PLANS GZ_FUND_MAX_FACTORIES   /* one per factory the engine keeps (M-1, review B of PR 101) */
 #define GZP_WPORT_TIP_RETRY_MS 15000   /* a tip that could not be read is asked again */
 #define GZP_WPORT_RETRY_CAP_MS 600000  /* a wide read not settled is asked again at most this far apart */
 #define GZP_WPORT_RETRY_CAP_PLAIN_MS 120000 /* a scan that published nothing, with no wide read pending */
@@ -163,6 +163,9 @@ int gzp_wport_log_attempt(unsigned n);
  * the scan reads the change chain to it plus `gap`); every change index
  * handed out afterwards saves the mark first. Before the scan starts. 0, or -1. */
 int gzp_wport_set_marks(gzp_wport_t *w, const gzp_wport_marks_t *m);
+/* The master key is derived from the unlocked seed at gzp_wport_open, which
+ * fails without it, so every port call (adopt_plan at a resume too) has it:
+ * nothing waits for it to arrive later (L2, review A of PR 101). */
 /* A host's port: plans and spend-backs are refused until marks are set. */
 void gzp_wport_require_marks(gzp_wport_t *w);
 /* Test build, no chain: one invented coin paying the first receive address. */

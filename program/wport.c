@@ -30,7 +30,7 @@ static int take_change(gzp_wport_t *w, uint32_t *index)
     if (i + w->gap >= GZP_WPORT_CHANGE_MAX) {
         gzp_log("wallet-plan-refused why=change-chain-full index=%u (a scan reads %u change addresses)", (unsigned)i,
                 (unsigned)GZP_WPORT_CHANGE_MAX);
-        w->coin_list.change_mark = "change_chain_full";
+        w->coin_list.refused = "change_chain_full";   /* beside change_mark (L3, review A of PR 101) */
         return -1;
     }
     if (w->marks.save && i + 1 > w->mark) {
@@ -42,6 +42,7 @@ static int take_change(gzp_wport_t *w, uint32_t *index)
     }
     w->next_change = i + 1;
     *index = i;
+    w->coin_list.refused = NULL;
     return 0;
 }
 
@@ -196,6 +197,7 @@ static int w_sign_plan(void *ctx, const uint8_t txid[32], uint8_t *out, size_t c
  * keys are derived once and kept. 1 if found. Under the mutex. */
 static int change_index_of(gzp_wport_t *w, const uint8_t *script, uint32_t from, uint32_t *index)
 {
+    if (script[0] != 0x51 || script[1] != 0x20) return 0;   /* P2TR only: OP_1 <32 bytes> (L-3, review B of PR 101) */
     if (!w->chg && !(w->chg = malloc((size_t)GZP_WPORT_CHANGE_MAX * sizeof *w->chg))) return 0;
     for (uint32_t j = 0; j < GZP_WPORT_CHANGE_MAX; j++) {
         if (j == w->n_chg) {
@@ -288,7 +290,7 @@ static int w_adopt_plan(void *ctx, const uint8_t *tx, size_t len, const gz_fund_
     int k;
     if (w_adopt(ctx, tx, len, script, amount)) return 1;   /* this run's own (raises the mark too) */
     if (n_prev == 0 || n_prev > GZT_MAX_INPUTS || len > GZ_FUND_MAX_TX || !gz_tx_parse(tx, len, &info) ||
-        info.n_out != 2)
+        (info.n_out != 1 && info.n_out != 2))   /* without change too: its change was dust (M1, review A of PR 101) */
         return 0;
     pthread_mutex_lock(&w->mu);
     for (k = 0; k < GZP_WPORT_PLANS && w->used[k]; k++) {}
@@ -308,7 +310,8 @@ static int w_adopt_plan(void *ctx, const uint8_t *tx, size_t len, const gz_fund_
         uint64_t amt;
         const uint8_t *scr;
         size_t sl;
-        if (!gz_tx_output(tx, len, &info, 1, &amt, &scr, &sl) || sl != 34 || !change_index_of(w, scr, 0, &ci))
+        if (info.n_out == 2 &&
+            (!gz_tx_output(tx, len, &info, 1, &amt, &scr, &sl) || sl != 34 || !change_index_of(w, scr, 0, &ci)))
             goto refused;
     }
     gzp_os_random(aux, sizeof aux);
@@ -343,6 +346,16 @@ static void release_locked(void *ctx, const uint8_t *tx, size_t len)
     unhold(w, k);
     gzt_funding_wipe(&w->plans[k]);
     w->used[k] = 0;
+}
+
+/* The factory of a plan has ended (funding.h, forget): its slot and coins are
+ * freed; an index it took is kept, as on any release (M-1, review B of PR 101). */
+static void w_forget(void *ctx, const uint8_t *tx, size_t len)
+{
+    gzp_wport_t *w = ctx;
+    pthread_mutex_lock(&w->mu);
+    release_locked(ctx, tx, len);
+    pthread_mutex_unlock(&w->mu);
 }
 
 /* The coins and their holds, under the mutex the scan publishes with. */
@@ -390,6 +403,7 @@ static int w_spend_back(void *ctx, const uint8_t txid[32], uint32_t index, uint6
     if (w->wide) {
         if (!w->wide_reach) {
             gzp_log("wallet-plan-refused why=change-chain-not-read (spend-back; the wide read has made no pass yet)");
+            w->coin_list.refused = "spend_back_before_first_pass";   /* told (L-2, review B of PR 101) */
             pthread_mutex_unlock(&w->mu);
             return 0;
         }
@@ -511,6 +525,7 @@ int gzp_wport_open(gzp_wport_t *w, const secp256k1_context *secp, const gzp_unlo
     w->port.can_plan = w_can_plan;
     w->port.note_tx = w_note_tx;
     w->port.adopt_plan = w_adopt_plan;
+    w->port.forget = w_forget;
     w->coin_list.chain = w->coin_list.index = -1;
     {
         gz_fund_config_t fc;   /* the engine's default B, as fundslot.c falls back to it */
@@ -547,7 +562,12 @@ int gzp_wport_coins_json(const gzp_wport_coins_t *c, char *buf, size_t cap)
         snprintf(params, sizeof params, "{\"kept\":%d}", GZP_WPORT_COINS);
     else
         snprintf(params, sizeof params, "{}");
-    if (c->change_mark)
+    if (c->change_mark && c->refused)
+        n = snprintf(buf, cap,
+                     "{\"state\":\"%s\",\"reason\":%s,\"params\":%s,\"attempts\":%u,\"change_mark\":\"%s\","
+                     "\"refused\":\"%s\"}",
+                     STATE[c->state], reason, params, c->attempts, c->change_mark, c->refused);
+    else if (c->change_mark)
         n = snprintf(buf, cap, "{\"state\":\"%s\",\"reason\":%s,\"params\":%s,\"attempts\":%u,\"change_mark\":\"%s\"}",
                      STATE[c->state], reason, params, c->attempts, c->change_mark);
     else
@@ -888,8 +908,10 @@ uint32_t gzp_wport_retry_ms(uint32_t base, unsigned n)
 
 uint32_t gzp_wport_failed_retry_ms(uint32_t base, unsigned n, int wide)
 {
-    (void)wide;
-    return gzp_wport_retry_ms(base, n);   /* step 1: one cap */
+    uint32_t ms = gzp_wport_retry_ms(base, n);
+    /* an ordinary scan is about 40 requests: after an outage the coin list
+     * is wanted soon (L-4, review B of PR 101) */
+    return !wide && ms > GZP_WPORT_RETRY_CAP_PLAIN_MS ? GZP_WPORT_RETRY_CAP_PLAIN_MS : ms;
 }
 
 int gzp_wport_scan_until(gzp_wport_t *w, const gz_chain *view, uint32_t wait_ms)
@@ -931,7 +953,7 @@ int gzp_wport_scan_until(gzp_wport_t *w, const gz_chain *view, uint32_t wait_ms)
             /* nothing published (an unreachable server, a 5xx, a malformed answer,
              * a refusal not yet repeated): asked again later and later too
              * (R2-1, review B of PR 97) */
-            ms = gzp_wport_retry_ms(wait_ms, failed_in_row++);
+            ms = gzp_wport_failed_retry_ms(wait_ms, failed_in_row++, pending);
             /* no coin list without the tip and every address: every lobby would be
              * refused, so say so and ask again (review B of PR 83, L-2; review of PR 85) */
             if (gzp_wport_log_attempt(tries))

@@ -216,6 +216,9 @@ static void drop_watches(gz_fund_t *f, gz_fund_factory_t *x)
 /* A factory ends: remembered for the slot end conditions, then freed. */
 static void finish(gz_fund_t *f, gz_fund_factory_t *x, int state)
 {
+    /* the factory has ended: the wallet frees its plan and coins (M-1, review
+     * B of PR 101); a plan it does not hold (released before) is ignored */
+    if (f->cfg.host && x->tx_len && f->cfg.wallet.forget) f->cfg.wallet.forget(f->cfg.wallet.ctx, x->tx, x->tx_len);
     drop_watches(f, x);
     remember_end(f, x->scope, state, f->tip);
     memset(x, 0, sizeof *x);
