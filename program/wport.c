@@ -1,7 +1,9 @@
 /* The funding engine's wallet port over wallet/tx: see wport.h. */
+#define _POSIX_C_SOURCE 200809L   /* nanosleep */
 #include "wport.h"
 
 #include <string.h>
+#include <time.h>
 
 #include <openssl/crypto.h>
 #include <openssl/sha.h>
@@ -36,6 +38,22 @@ static void unhold(gzp_wport_t *w, int k)
 {
     for (size_t i = 0; i < w->n_coins; i++)
         if (w->held[i] == k + 1) w->held[i] = 0;
+}
+
+/* Every listed coin that a live plan spends is held by that plan: the holds
+ * come from the plans' inputs, so a list that missed a held coin, or a tip that
+ * moved back, never frees it (review B of PR 83, L-1). Under the mutex. */
+static void rehold_locked(gzp_wport_t *w)
+{
+    memset(w->held, 0, sizeof w->held);
+    for (int k = 0; k < GZP_WPORT_PLANS; k++) {
+        const gzt_tx *t = &w->plans[k].priv_tx;
+        if (!w->used[k]) continue;
+        for (uint32_t i = 0; i < t->n_in; i++)
+            for (size_t j = 0; j < w->n_coins; j++)
+                if (w->coins[j].vout == t->in[i].prev_vout && memcmp(w->coins[j].txid, t->in[i].prev_txid, 32) == 0)
+                    w->held[j] = (uint8_t)(k + 1);
+    }
 }
 
 /* The fee policy of every plan: the engine's rate, a ceiling of ten times it. */
@@ -211,25 +229,18 @@ static int w_can_plan(void *ctx, uint64_t amount, uint64_t feerate, uint64_t *ha
 int gzp_wport_publish(gzp_wport_t *w, const gzt_coin *coins, const uint32_t *heights, size_t n, uint32_t tip)
 {
     static gzt_coin keep[GZP_WPORT_COINS];
-    uint8_t held[GZP_WPORT_COINS];
     size_t nk = 0;
     pthread_mutex_lock(&w->mu);
-    memset(held, 0, sizeof held);
     for (size_t i = 0; i < n && nk < GZP_WPORT_COINS; i++) {
         /* confirmed only (review A of PR 56, M5); change once buried (B deep),
          * which a funding's change is not before it is buried (N-1) */
         if (heights[i] == 0 || heights[i] > tip) continue;
         if (coins[i].change == 1 && tip - heights[i] + 1 < w->burial) continue;
-        keep[nk] = coins[i];
-        /* a plan's holds survive the new list, by outpoint (N-1) */
-        for (size_t j = 0; j < w->n_coins; j++)
-            if (w->held[j] && w->coins[j].vout == coins[i].vout && memcmp(w->coins[j].txid, coins[i].txid, 32) == 0)
-                held[nk] = w->held[j];
-        nk++;
+        keep[nk++] = coins[i];
     }
     memcpy(w->coins, keep, nk * sizeof keep[0]);
-    memcpy(w->held, held, sizeof held);
     w->n_coins = nk;
+    rehold_locked(w);   /* every live plan's coins, in the new list (N-1; L-1) */
     w->published = 1;
     pthread_mutex_unlock(&w->mu);
     OPENSSL_cleanse(keep, sizeof keep);
@@ -281,6 +292,10 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
     size_t nf = 0;
     uint32_t next_change = 100;
     int failed = 0;
+    /* the tip first, then the heights: a block found during the scan cannot make
+     * a change coin look deeper than it is (review B of PR 83, L-2) */
+    memset(&tip, 0, sizeof tip);
+    if (gz_chain_tip_get(view, &tip) != GZ_CHAIN_OK || tip.height == 0) return 0;
     for (uint32_t change = 0; change < 2 && !w->stop; change++)
         for (uint32_t j = 0; j < w->gap && !w->stop; j++) {
             gzw_bip86_output o;
@@ -309,11 +324,9 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
                 if (change == 1 && j + 100 > next_change) next_change = j + 100;
             }
         }
-    if (w->stop) return -1;
-    memset(&tip, 0, sizeof tip);
-    if (gz_chain_tip_get(view, &tip) != GZ_CHAIN_OK || tip.height == 0) {
+    if (w->stop) {
         OPENSSL_cleanse(found, sizeof found);
-        return 0;
+        return -1;
     }
     pthread_mutex_lock(&w->mu);
     if (next_change > w->next_change) w->next_change = next_change;
@@ -326,8 +339,19 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
 
 int gzp_wport_scan_until(gzp_wport_t *w, const gz_chain *view, uint32_t wait_ms)
 {
-    (void)wait_ms;   /* step 1: one attempt, as today */
-    return gzp_wport_scan_view(w, view) == 1 ? 1 : -1;
+    for (unsigned tries = 1;; tries++) {
+        int r = gzp_wport_scan_view(w, view);
+        if (r != 0) return r;
+        /* no coin list without a tip: every lobby would be refused as no_wallet,
+         * so say so and ask again (review B of PR 83, L-2) */
+        gzp_log("wallet-coins tip-unreadable attempt=%u retry_ms=%u (funding waits for the coin list)", tries,
+                (unsigned)wait_ms);
+        for (uint32_t t = 0; t < wait_ms && !w->stop; t += 100) {
+            struct timespec ts = {0, (long)(wait_ms - t < 100 ? wait_ms - t : 100) * 1000000L};
+            nanosleep(&ts, NULL);
+        }
+        if (w->stop) return -1;
+    }
 }
 
 #ifdef GZP_HAVE_CURL
