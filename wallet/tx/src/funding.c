@@ -402,19 +402,83 @@ gzt_err gzt_funding_spend_back(const secp256k1_context *ctx, const gzw_xprv *mas
     return GZT_OK;
 }
 
+static gzt_err adopt(const secp256k1_context *ctx, const gzw_xprv *master, gzt_network net, uint32_t account,
+                     const uint8_t *raw, size_t len, const gzt_adopt_input *ins, size_t n_in, uint32_t change_index,
+                     const uint8_t aux32[32], gzt_funding *f) {
+    gzt_tx *tx = &f->priv_tx;
+    gzw_network knet;
+    gzw_bip86_output o;
+    uint64_t in = 0, outs = 0, weight, vsize;
+    gzt_err e;
+    if (!ctx || !master || !raw || !ins || !aux32 || master->depth != 0 || account >= GZW_HARDENED ||
+        change_index >= GZW_HARDENED)
+        return GZT_ERR_ARG;
+    if (gzt_network_to_keys(net, &knet)) return GZT_ERR_ARG;
+    if (gzt_tx_parse(raw, len, tx) != GZT_OK || gzt_tx_has_witness(tx) || !gzt_tx_in_caps(tx)) return GZT_ERR_ARG;
+    if (n_in == 0 || n_in > GZT_MAX_INPUTS || tx->n_in != n_in || (tx->n_out != 1 && tx->n_out != 2))
+        return GZT_ERR_ARG;
+    /* output 0 is the factory's P2TR output; output 1, this wallet's change */
+    if (tx->out[0].script_len != P2TR_LEN || tx->out[0].script[0] != 0x51 || tx->out[0].script[1] != 0x20)
+        return GZT_ERR_SCRIPT;
+    if (tx->n_out == 2) {
+        if (!gzw_bip86_output_from_master(ctx, master, knet, account, 1, change_index, &o, NULL)) return GZT_ERR_KEY;
+        if (tx->out[1].script_len != P2TR_LEN || memcmp(tx->out[1].script, o.script_pubkey, P2TR_LEN) != 0)
+            return GZT_ERR_KEY;
+    }
+    for (size_t i = 0; i < n_in; i++) {
+        const gzt_adopt_input *a = &ins[i];
+        if (!a->script || a->script_len != P2TR_LEN || a->change > 1 || a->index >= GZW_HARDENED ||
+            a->amount > GZT_MAX_MONEY)
+            return GZT_ERR_ARG;
+        /* the input's key at its path owns the output it spends */
+        if (!gzw_bip86_output_from_master(ctx, master, knet, account, a->change, a->index, &o, NULL) ||
+            memcmp(o.script_pubkey, a->script, P2TR_LEN) != 0)
+            return GZT_ERR_KEY;
+        f->priv_spent[i].amount = a->amount;
+        f->priv_spent[i].script_len = P2TR_LEN;
+        memcpy(f->priv_spent[i].script, a->script, P2TR_LEN);
+        f->priv_key_change[i] = a->change;
+        f->priv_key_index[i] = a->index;
+        in += a->amount;
+    }
+    for (uint32_t i = 0; i < tx->n_out; i++) {
+        if (tx->out[i].value > GZT_MAX_MONEY) return GZT_ERR_ARG;
+        outs += tx->out[i].value;
+    }
+    if (in < outs || in > GZT_MAX_MONEY) return GZT_ERR_ARG;
+    f->priv_net = net;
+    f->priv_account = account;
+    if (gzt_tx_txid(tx, f->info.txid)) return GZT_ERR_INTERNAL;
+    /* signed once, to know it can be and its size, as gzt_funding_build does */
+    gzt_tx work = *tx;
+    e = sign_all(ctx, master, f, aux32, &work);
+    if (!e) e = gzt_tx_weight(&work, &weight, &vsize);
+    gzw_wipe(&work, sizeof work);
+    if (e) return e;
+    f->info.vout = 0;
+    f->info.amount = tx->out[0].value;
+    f->info.fee = in - outs;
+    f->info.vsize = vsize;
+    f->info.has_change = tx->n_out == 2;
+    f->info.change = tx->n_out == 2 ? tx->out[1].value : 0;
+    f->info.change_index = tx->n_out == 2 ? change_index : 0;
+    f->info.selection.n_selected = (uint32_t)n_in;
+    for (uint32_t i = 0; i < n_in; i++) f->info.selection.selected[i] = i;
+    f->info.selection.total_in = in;
+    f->info.selection.fee = in - outs;
+    f->info.selection.vsize = vsize;
+    f->info.selection.has_change = f->info.has_change;
+    f->info.selection.change = f->info.change;
+    f->priv_state = 1;
+    return GZT_OK;
+}
+
 gzt_err gzt_funding_adopt(const secp256k1_context *ctx, const gzw_xprv *master, gzt_network net,
                           uint32_t account, const uint8_t *raw, size_t len, const gzt_adopt_input *ins,
                           size_t n_in, uint32_t change_index, const uint8_t aux32[32], gzt_funding *out) {
-    (void)ctx;
-    (void)master;
-    (void)net;
-    (void)account;
-    (void)raw;
-    (void)len;
-    (void)ins;
-    (void)n_in;
-    (void)change_index;
-    (void)aux32;
-    if (out) gzt_funding_wipe(out);
-    return GZT_ERR_STATE; /* step 1: nothing is adopted */
+    if (!out) return GZT_ERR_ARG;
+    gzt_funding_wipe(out);
+    gzt_err e = adopt(ctx, master, net, account, raw, len, ins, n_in, change_index, aux32, out);
+    if (e) gzt_funding_wipe(out);
+    return e;
 }

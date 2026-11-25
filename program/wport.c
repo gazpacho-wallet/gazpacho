@@ -25,6 +25,14 @@
 static int take_change(gzp_wport_t *w, uint32_t *index)
 {
     uint32_t i = w->next_change;
+    /* past what a scan reads, change would be out of sight: refused, and said
+     * (R2-2, review B of PR 97) */
+    if (i + w->gap >= GZP_WPORT_CHANGE_MAX) {
+        gzp_log("wallet-plan-refused why=change-chain-full index=%u (a scan reads %u change addresses)", (unsigned)i,
+                (unsigned)GZP_WPORT_CHANGE_MAX);
+        w->coin_list.change_mark = "change_chain_full";
+        return -1;
+    }
     if (w->marks.save && i + 1 > w->mark) {
         if (w->marks.save(w->marks.ctx, i + 1, w->wide) != 0) {
             gzp_log("wallet-change-mark-not-kept index=%u (nothing handed out)", (unsigned)i);
@@ -240,6 +248,20 @@ static void w_note_tx(void *ctx, const uint8_t *tx, size_t len)
     raise_from_journal(ctx, tx, len);
 }
 
+/* The receive index whose address is `script`, among the first GZP_WPORT_GAP_MAX. */
+static int receive_index_of(gzp_wport_t *w, const uint8_t *script, uint32_t *index)
+{
+    for (uint32_t j = 0; j < GZP_WPORT_GAP_MAX; j++) {
+        gzw_bip86_output o;
+        if (!out_of(w, 0, j, &o)) return 0;
+        if (memcmp(o.script_pubkey, script, 34) == 0) {
+            *index = j;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* Holds again only a plan this run made, with its change (the stand-in of wport.h). */
 static int w_adopt(void *ctx, const uint8_t *tx, size_t len, const uint8_t script[34], uint64_t amount)
 {
@@ -249,6 +271,61 @@ static int w_adopt(void *ctx, const uint8_t *tx, size_t len, const uint8_t scrip
     f = by_tx(w, tx, len, NULL);
     return f && f->info.has_change && f->info.vout == 0 && f->info.amount == amount &&
            memcmp(f->priv_tx.out[0].script, script, 34) == 0;
+}
+
+/* A plan from the funding engine's journal, at a resume, with the outputs its
+ * inputs spend (funding.h, adopt_plan): held again, rebuilt from its bytes,
+ * when every input is this wallet's and its change is, so it can be signed
+ * and spent back from after a restart (P97-3, review B of PR 97). */
+static int w_adopt_plan(void *ctx, const uint8_t *tx, size_t len, const gz_fund_prevout_t *prev, size_t n_prev,
+                        const uint8_t script[34], uint64_t amount)
+{
+    gzp_wport_t *w = ctx;
+    gzt_adopt_input ins[GZT_MAX_INPUTS];
+    gz_tx_info_t info;
+    uint8_t aux[32];
+    uint32_t ci = 0;
+    int k;
+    if (w_adopt(ctx, tx, len, script, amount)) return 1;   /* this run's own (raises the mark too) */
+    if (n_prev == 0 || n_prev > GZT_MAX_INPUTS || len > GZ_FUND_MAX_TX || !gz_tx_parse(tx, len, &info) ||
+        info.n_out != 2)
+        return 0;
+    pthread_mutex_lock(&w->mu);
+    for (k = 0; k < GZP_WPORT_PLANS && w->used[k]; k++) {}
+    if (k == GZP_WPORT_PLANS) goto refused;
+    for (size_t i = 0; i < n_prev; i++) {
+        uint32_t idx;
+        if (prev[i].script_len != 34) goto refused;
+        ins[i].amount = prev[i].amount;
+        ins[i].script = prev[i].script;
+        ins[i].script_len = 34;
+        if (receive_index_of(w, prev[i].script, &idx)) ins[i].change = 0;
+        else if (change_index_of(w, prev[i].script, 0, &idx)) ins[i].change = 1;
+        else goto refused;
+        ins[i].index = idx;
+    }
+    {
+        uint64_t amt;
+        const uint8_t *scr;
+        size_t sl;
+        if (!gz_tx_output(tx, len, &info, 1, &amt, &scr, &sl) || sl != 34 || !change_index_of(w, scr, 0, &ci))
+            goto refused;
+    }
+    gzp_os_random(aux, sizeof aux);
+    if (gzt_funding_adopt(w->secp, &w->master, w->net, 0, tx, len, ins, n_prev, ci, aux, &w->plans[k]) != GZT_OK ||
+        w->plans[k].info.amount != amount || memcmp(w->plans[k].priv_tx.out[0].script, script, 34) != 0) {
+        gzt_funding_wipe(&w->plans[k]);
+        goto refused;
+    }
+    w->used[k] = 1;
+    rehold_locked(w);
+    pthread_mutex_unlock(&w->mu);
+    gzp_log("wallet-plan-adopted inputs=%zu change_index=%u (held again from the journal)", n_prev, (unsigned)ci);
+    return 1;
+refused:
+    pthread_mutex_unlock(&w->mu);
+    gzp_log("wallet-plan-not-adopted (an input or the change is not this wallet's, or no room)");
+    return 0;
 }
 
 static gzt_funding *by_txid(gzp_wport_t *w, const uint8_t txid[32])
@@ -305,10 +382,19 @@ static int w_spend_back(void *ctx, const uint8_t txid[32], uint32_t index, uint6
         return 0;
     }
     /* a wide read pending: the spend-back is not held back (it returns the
-     * coins of a funding being abandoned), but its change goes above what the
-     * read can find in use, and is kept as the mark with the read still
-     * pending; a later read reaches it (B2-2, review B of PR 93) */
-    if (w->wide && w->next_change < GZP_WPORT_SB_FLOOR) w->next_change = GZP_WPORT_SB_FLOOR;
+     * coins of a funding being abandoned), but its change goes past every
+     * address the read's last pass read, so it cannot pay one already used,
+     * and is kept as the mark with the read still pending; a later read
+     * reaches it (B2-2, review B of PR 93). Before a first pass nothing is
+     * known of the chain: refused until then (P97-2, review B of PR 97) */
+    if (w->wide) {
+        if (!w->wide_reach) {
+            gzp_log("wallet-plan-refused why=change-chain-not-read (spend-back; the wide read has made no pass yet)");
+            pthread_mutex_unlock(&w->mu);
+            return 0;
+        }
+        if (w->next_change < w->wide_reach) w->next_change = w->wide_reach;
+    }
     if (take_change(w, &ci) != 0) {
         pthread_mutex_unlock(&w->mu);
         return 0;
@@ -424,6 +510,7 @@ int gzp_wport_open(gzp_wport_t *w, const secp256k1_context *secp, const gzp_unlo
     w->port.spend_back = w_spend_back;
     w->port.can_plan = w_can_plan;
     w->port.note_tx = w_note_tx;
+    w->port.adopt_plan = w_adopt_plan;
     w->coin_list.chain = w->coin_list.index = -1;
     {
         gz_fund_config_t fc;   /* the engine's default B, as fundslot.c falls back to it */
@@ -545,6 +632,7 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
     uint32_t next_change = 0;
     int failed = 0, truncated = 0, unsettled = 0, end_reached = 0, no_history = 0, wide;
     int refused_out = 0, disagrees = 0, too_many = 0;   /* why a wide read did not settle (P97-1) */
+    uint32_t reach = 0;   /* how far the change chain was read */
     const char *left_out = NULL, *left_error = NULL;   /* the first address left out, and why */
     int left_chain = -1, left_index = -1;
     unsigned attempt;
@@ -578,6 +666,7 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
             gzw_bip86_output o;
             size_t n = 0;
             int known = 0;   /* the history said whether this change address was used */
+            if (change == 1) reach = j + 1;
             int never = 0;   /* and it said never */
             if (change == 1 && j + 1 == GZP_WPORT_CHANGE_MAX) end_reached = 1;
             if (!out_of(w, change, j, &o)) {
@@ -744,6 +833,7 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
     }
     pthread_mutex_lock(&w->mu);
     if (next_change > w->next_change) w->next_change = next_change;
+    if (wide) w->wide_reach = reach;
     if (wide && w->wide && w->marks.save) {
         /* read wide (no mark, or a restore): the mark goes past what was
          * found, and the read is done, only when every change address was
@@ -798,7 +888,7 @@ uint32_t gzp_wport_retry_ms(uint32_t base, unsigned n)
 
 int gzp_wport_scan_until(gzp_wport_t *w, const gz_chain *view, uint32_t wait_ms)
 {
-    unsigned unsettled = 0;
+    unsigned unsettled = 0, failed_in_row = 0;
     for (unsigned tries = 1;; tries++) {
         int r = gzp_wport_scan_view(w, view);
         int pending, final;
@@ -811,24 +901,36 @@ int gzp_wport_scan_until(gzp_wport_t *w, const gz_chain *view, uint32_t wait_ms)
         cause = w->coin_list.change_mark;
         pthread_mutex_unlock(&w->mu);
         if (r == 1 && !pending) return 1;
+        if (r == 1) failed_in_row = 0;
         if (r == 1) {
             /* published, the wide read not settled: asked again later and later,
              * and not at all for a cause asking cannot cure, nor after
              * GZP_WPORT_UNSETTLED_MAX reads; plans stay refused (M1 of review A,
              * P97-1 of review B of PR 97) */
-            if (final || ++unsettled >= GZP_WPORT_UNSETTLED_MAX) {
-                gzp_log("wallet-change-mark wide read stopped cause=%s reads=%u: asked again at the next start "
-                        "(plans stay refused)", cause ? cause : "unknown", unsettled + (final ? 1 : 0));
+            if (final) {
+                gzp_log("wallet-change-mark wide read stopped cause=%s: asked again at the next start "
+                        "(plans stay refused)", cause ? cause : "unknown");
                 return 1;
             }
-            ms = gzp_wport_retry_ms(wait_ms, unsettled - 1);
+            /* after the tenth read, a cause that can clear by itself (a server
+             * that refused or lagged) is asked again once an hour, not only at
+             * the next start (R2-3, review B of PR 97) */
+            if (++unsettled >= GZP_WPORT_UNSETTLED_MAX)
+                ms = w->slow_retry_ms ? w->slow_retry_ms : GZP_WPORT_SLOW_RETRY_MS;
+            else
+                ms = gzp_wport_retry_ms(wait_ms, unsettled - 1);
             gzp_log("wallet-change-mark wide read not settled cause=%s: asked again in %u ms", cause ? cause : "unknown",
                     (unsigned)ms);
-        } else if (gzp_wport_log_attempt(tries)) {
+        } else {
+            /* nothing published (an unreachable server, a 5xx, a malformed answer,
+             * a refusal not yet repeated): asked again later and later too
+             * (R2-1, review B of PR 97) */
+            ms = gzp_wport_retry_ms(wait_ms, failed_in_row++);
             /* no coin list without the tip and every address: every lobby would be
              * refused, so say so and ask again (review B of PR 83, L-2; review of PR 85) */
-            gzp_log("wallet-coins retry attempt=%u retry_ms=%u (funding waits for the coin list; logged at the "
-                    "first and every 10th attempt)", tries, (unsigned)wait_ms);
+            if (gzp_wport_log_attempt(tries))
+                gzp_log("wallet-coins retry attempt=%u retry_ms=%u (funding waits for the coin list; logged at the "
+                        "first and every 10th attempt)", tries, (unsigned)ms);
         }
         for (uint32_t t = 0; t < ms && !w->stop; t += 100) {
             struct timespec ts = {0, (long)(ms - t < 100 ? ms - t : 100) * 1000000L};

@@ -1140,7 +1140,12 @@ gz_status_t gz_fund_resume(void *e, gz_action_list_t *out, int *more)
         if (!x->used) continue;
         if (f->cfg.host) {
             /* The wallet's hold is in its memory only (A11). */
-            if (!f->cfg.wallet.adopt(f->cfg.wallet.ctx, x->tx, x->tx_len, x->script, x->amount) &&
+            /* with the outputs its inputs spend, when the wallet takes them, so it can
+             * hold the plan again and sign it or spend back from it (P97-3) */
+            if (!(f->cfg.wallet.adopt_plan ? f->cfg.wallet.adopt_plan(f->cfg.wallet.ctx, x->tx, x->tx_len, x->prev,
+                                                                     x->n_in, x->script, x->amount)
+                                           : f->cfg.wallet.adopt(f->cfg.wallet.ctx, x->tx, x->tx_len, x->script,
+                                                                 x->amount)) &&
                 (st = log_note(f, out, "funding-adopt-refused", x->scope)) != GZ_OK)
                 return st;
             if (x->state == GZ_FUND_ST_AWAITING && (st = attention(f, out, x->scope, 0)) != GZ_OK) return st;
