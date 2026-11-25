@@ -251,6 +251,15 @@ static inline int ftw_adopt_plan(void *ctx, const uint8_t *tx, size_t len, const
     return ftw_adopt(ctx, tx, len, script, amount);
 }
 
+/* The factory of a plan has ended (M-1, review B of PR 101). */
+static inline void ftw_forget(void *ctx, const uint8_t *tx, size_t len)
+{
+    ft_wallet_t *w = (ft_wallet_t *)ctx;
+    (void)tx;
+    (void)len;
+    w->forgot++;
+}
+
 /* Holds a plan again after a restart, if its outputs are the factory's and
  * this wallet's change (script 0xcc) only. */
 static inline int ftw_adopt(void *ctx, const uint8_t *tx, size_t len, const uint8_t script[34], uint64_t amount)
@@ -375,6 +384,7 @@ static inline void ft_cfg(ft_t *t, int host, gz_host_funding_t mode)
         t->cfg.wallet.can_plan = ftw_can_plan;
         t->cfg.wallet.note_tx = ftw_note;
         t->cfg.wallet.adopt_plan = ftw_adopt_plan;
+        t->cfg.wallet.forget = ftw_forget;
     }
 }
 

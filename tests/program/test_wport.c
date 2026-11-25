@@ -1453,8 +1453,10 @@ static void test_spend_back_during_pending_read(void)
     CHECK(gzp_wport_publish(&w, &k, &h, 1, 110) == 0);
     CHECK(plan(&w, 300000, tx, &len) == 1);
     w.wide = 1;
-    /* no pass of the read yet: where the chain is used is not known (P97-2) */
+    /* no pass of the read yet: where the chain is used is not known (P97-2);
+     * status says so (L-2, review B of PR 101) */
     CHECK(w.port.spend_back(w.port.ctx, w.plans[0].info.txid, 0, 1000, sb, sizeof sb, &sbl) == 0);
+    CHECK(coins_json_has(&w, "\"refused\":\"spend_back_before_first_pass\""));
     w.wide_reach = 1350;   /* a pass read the change chain to index 1,349 */
     CHECK(w.port.spend_back(w.port.ctx, w.plans[0].info.txid, 0, 1000, sb, sizeof sb, &sbl) == 1);
     CHECK(ms.v == 1351 && ms.wv == 1 && w.next_change == 1351);
@@ -1805,7 +1807,8 @@ static void test_change_chain_full(void)
     w.next_change = GZP_WPORT_CHANGE_MAX - 20;   /* 20: the gap a scan reads past the mark */
     CHECK(plan(&w, 100000, tx, &len) == 0);
     CHECK(w.next_change == GZP_WPORT_CHANGE_MAX - 20);
-    CHECK(coins_json_has(&w, "\"change_mark\":\"change_chain_full\""));
+    /* beside the change mark's own state, not over it (L3, review A of PR 101) */
+    CHECK(coins_json_has(&w, "\"change_mark\":\"kept\"") && coins_json_has(&w, "\"refused\":\"change_chain_full\""));
     gzp_wport_close(&w);
 }
 
@@ -1842,6 +1845,179 @@ static void test_spend_back_after_restart_adopted(void)
     CHECK(b.port.sign_plan(b.port.ctx, txid, sig, sizeof sig, &sl) == 1);
     CHECK(held_by_txid_tag(&b, 0xf6) == 1);   /* its coin is held again */
     gzp_wport_close(&b);
+}
+
+/* A plan through the port, with the outputs its inputs spend. */
+static int plan_prev(gzp_wport_t *w, uint64_t amount, uint8_t *tx, size_t *len, gz_fund_prevout_t *prev, size_t *n_prev)
+{
+    return w->port.plan(w->port.ctx, amount, factory, 100, NULL, tx, GZ_FUND_MAX_TX, len, prev, GZ_FUND_MAX_INPUTS,
+                        n_prev);
+}
+
+/* n coins of 500,000 sat on the first n receive addresses, published. */
+static void many_coins(gzp_wport_t *w, int n, uint8_t tag)
+{
+    static gzt_coin cs[32];
+    static uint32_t hs[32];
+    for (int i = 0; i < n; i++) {
+        cs[i] = coin(w, 0, (uint32_t)i, 500000, (uint8_t)(tag + i));
+        hs[i] = 100;
+    }
+    CHECK(gzp_wport_publish(w, cs, hs, (size_t)n, 110) == 0);
+}
+
+/* M-1 (review B of PR 101): as many plans as the engine has factories, 16:
+ * a ninth funding in one run is planned. */
+static void test_nine_fundings_one_run(void)
+{
+    static gzp_wport_t w;
+    mark_store ms;
+    static uint8_t tx[GZ_FUND_MAX_TX];
+    size_t len;
+    memset(&ms, 0, sizeof ms);
+    open_marked(&w, &ms);
+    many_coins(&w, 9, 0x90);
+    for (int i = 0; i < 9; i++) CHECK(plan(&w, 100000, tx, &len) == 1);
+    gzp_wport_close(&w);
+}
+
+/* M-1: a finished factory frees its plan's slot and coins (forget), so a run
+ * can fund more than 16 factories. */
+static void test_forget_frees_slot(void)
+{
+    static gzp_wport_t w;
+    mark_store ms;
+    static uint8_t tx[GZ_FUND_MAX_TX];
+    size_t len;
+    memset(&ms, 0, sizeof ms);
+    open_marked(&w, &ms);
+    many_coins(&w, 1, 0xa0);
+    CHECK(w.port.forget != NULL);
+    for (int i = 0; i < 20; i++) {
+        CHECK(plan(&w, 100000, tx, &len) == 1);
+        CHECK(held_by_txid_tag(&w, 0xa0) != 0);
+        if (w.port.forget) w.port.forget(w.port.ctx, tx, len);   /* live, say */
+        CHECK(held_by_txid_tag(&w, 0xa0) == 0);
+    }
+    gzp_wport_close(&w);
+}
+
+/* M-1: nine plans from the journal are all held again at a resume. */
+static void test_nine_adoptions_at_resume(void)
+{
+    static gzp_wport_t a, b;
+    mark_store ma, mb;
+    static uint8_t tx[9][GZ_FUND_MAX_TX];
+    static gz_fund_prevout_t prev[9][GZ_FUND_MAX_INPUTS];
+    size_t len[9], np[9];
+    memset(&ma, 0, sizeof ma);
+    memset(&mb, 0, sizeof mb);
+    open_marked(&a, &ma);
+    many_coins(&a, 9, 0xb0);
+    for (int i = 0; i < 9; i++) CHECK(plan_prev(&a, 100000, tx[i], &len[i], prev[i], &np[i]) == 1);
+    gzp_wport_close(&a);
+    open_marked(&b, &mb);
+    many_coins(&b, 9, 0xb0);
+    for (int i = 0; i < 9; i++)
+        CHECK(b.port.adopt_plan && b.port.adopt_plan(b.port.ctx, tx[i], len[i], prev[i], np[i], factory, 100000) == 1);
+    gzp_wport_close(&b);
+}
+
+/* M1 (review A of PR 101): a funding without change (its change was dust)
+ * is held again after a restart and can be spent back from. */
+static void test_adopt_without_change(void)
+{
+    static gzp_wport_t b;
+    mark_store mb;
+    static gzt_funding f;
+    gzt_funding_request r;
+    gzt_coin k;
+    uint8_t aux[32];
+    static uint8_t tx[GZ_FUND_MAX_TX], sb[GZ_FUND_MAX_TX];
+    gz_fund_prevout_t prev[1];
+    size_t len = 0, sl = 0, sbl = 0;
+    memset(&mb, 0, sizeof mb);
+    open_marked(&b, &mb);
+    k = coin(&b, 0, 0, 500000, 0xc0);
+    memset(&r, 0, sizeof r);
+    r.net = GZT_NET_SIGNET;
+    r.funding_script = factory;
+    r.funding_script_len = 34;
+    r.amount = 500000 - 200;   /* what is left after the fee is below dust: no change */
+    r.change_index = 7;
+    r.fee.rate.sat_per_kvb = 100;
+    r.fee.ceiling.sat_per_kvb = 10000;
+    memset(aux, 3, 32);
+    CHECK(gzt_funding_build(secp, &b.master, &r, &k, 1, aux, &f) == GZT_OK && !f.info.has_change);
+    CHECK(gzt_funding_unsigned(&f, tx, sizeof tx, &len) == GZT_OK);
+    prev[0].amount = k.amount;
+    prev[0].script_len = 34;
+    memcpy(prev[0].script, k.script, 34);
+    CHECK(b.port.adopt_plan && b.port.adopt_plan(b.port.ctx, tx, len, prev, 1, factory, 500000 - 200) == 1);
+    CHECK(b.port.spend_back(b.port.ctx, f.info.txid, 0, 1000, sb, sizeof sb, &sbl) == 1);
+    (void)sl;
+    gzt_funding_wipe(&f);
+    gzp_wport_close(&b);
+}
+
+/* L-5 (review B of PR 101): the port refuses a plan that is not this
+ * wallet's: a foreign input, a P2WSH script with this wallet's key, foreign
+ * change, output 0 or its amount not the engine's, and no free slot. */
+static void test_adopt_refusals(void)
+{
+    static gzp_wport_t a, b;
+    mark_store ma, mb;
+    static uint8_t tx[GZ_FUND_MAX_TX], bad[GZ_FUND_MAX_TX], other[34];
+    gz_fund_prevout_t prev[GZ_FUND_MAX_INPUTS], p2[GZ_FUND_MAX_INPUTS];
+    size_t len = 0, np = 0;
+    gz_tx_info_t info;
+    uint64_t amt;
+    const uint8_t *scr;
+    size_t sl;
+    memset(&ma, 0, sizeof ma);
+    memset(&mb, 0, sizeof mb);
+    open_marked(&a, &ma);
+    many_coins(&a, 1, 0xd0);
+    CHECK(plan_prev(&a, 100000, tx, &len, prev, &np) == 1);
+    gzp_wport_close(&a);
+    open_marked(&b, &mb);
+    CHECK(b.port.adopt_plan != NULL);
+    if (!b.port.adopt_plan) {
+        gzp_wport_close(&b);
+        return;
+    }
+    memcpy(p2, prev, sizeof prev);
+    p2[0].script[10] ^= 1;   /* a foreign input */
+    CHECK(b.port.adopt_plan(b.port.ctx, tx, len, p2, np, factory, 100000) == 0);
+    memcpy(p2, prev, sizeof prev);
+    p2[0].script[0] = 0x00;   /* P2WSH, this wallet's key bytes */
+    CHECK(b.port.adopt_plan(b.port.ctx, tx, len, p2, np, factory, 100000) == 0);
+    memcpy(bad, tx, len);   /* foreign change: output 1's key changed */
+    CHECK(gz_tx_parse(bad, len, &info) && gz_tx_output(bad, len, &info, 1, &amt, &scr, &sl) && sl == 34);
+    bad[(size_t)(scr - bad) + 10] ^= 1;
+    CHECK(b.port.adopt_plan(b.port.ctx, bad, len, prev, np, factory, 100000) == 0);
+    memcpy(other, factory, 34);
+    other[5] ^= 1;
+    CHECK(b.port.adopt_plan(b.port.ctx, tx, len, prev, np, other, 100000) == 0);   /* output 0 not the engine's */
+    CHECK(b.port.adopt_plan(b.port.ctx, tx, len, prev, np, factory, 100001) == 0);  /* nor its amount */
+    {
+        static uint8_t t2[GZ_FUND_MAX_TX];
+        size_t l2;
+        many_coins(&b, (int)GZP_WPORT_PLANS, 0x40);   /* every slot taken */
+        for (int i = 0; i < (int)GZP_WPORT_PLANS; i++) CHECK(plan(&b, 100000, t2, &l2) == 1);
+        CHECK(b.port.adopt_plan(b.port.ctx, tx, len, prev, np, factory, 100000) == 0);
+    }
+    gzp_wport_close(&b);
+}
+
+/* L-4 (review B of PR 101): with no wide read pending, a scan that published
+ * nothing is asked again at most 2 minutes apart, not 10. */
+static void test_failed_retry_caps(void)
+{
+    CHECK(gzp_wport_failed_retry_ms(15000, 1, 0) == 30000);
+    CHECK(gzp_wport_failed_retry_ms(15000, 5, 0) == GZP_WPORT_RETRY_CAP_PLAIN_MS);
+    CHECK(gzp_wport_failed_retry_ms(15000, 5, 1) == 480000);
+    CHECK(gzp_wport_failed_retry_ms(15000, 50, 1) == GZP_WPORT_RETRY_CAP_MS);
 }
 
 int main(void)
@@ -1911,6 +2087,12 @@ int main(void)
     test_lookup_failures_back_off();
     test_change_chain_full();
     test_spend_back_after_restart_adopted();
+    test_nine_fundings_one_run();
+    test_forget_frees_slot();
+    test_nine_adoptions_at_resume();
+    test_adopt_without_change();
+    test_adopt_refusals();
+    test_failed_retry_caps();
     secp256k1_context_destroy(secp);
     printf("program_wport: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
