@@ -143,3 +143,10 @@ p1-pending-tip-not-kept ## funding.c ## if (!x->pending && which) x->pending_tip
 # --- C-1: told pending before any tip
 c1-first-tip-ignored ## funding.c ## if (f->fac[i].used && f->fac[i].pending && f->fac[i].pending_tip == 0) f->fac[i].pending_tip = f->tip; ## (void)0;
 c1-first-tip-any ## funding.c ## if (f->fac[i].used && f->fac[i].pending && f->fac[i].pending_tip == 0) f->fac[i].pending_tip = f->tip; ## if (f->fac[i].used && f->fac[i].pending) f->fac[i].pending_tip = f->tip;
+# --- funds_short (local-api 15.2; review of PR 77, L2)
+fs-fee-left-out ## txsize.c ## need = fee == UINT64_MAX || set_aside_sat > UINT64_MAX - fee ? UINT64_MAX : set_aside_sat + fee; ## need = set_aside_sat;
+fs-exact-short ## txsize.c ## return sat < need ? 1 : 0; ## return sat <= need ? 1 : 0;
+fs-unknown-enough ## txsize.c ## return -1;\n    fee = gz_fund_funding_fee_bound ## return 0;\n    fee = gz_fund_funding_fee_bound
+fs-no-input-floor ## txsize.c ## uint64_t n = n_coins == 0 ? 1 : ## uint64_t n = n_coins == 0 ? 0 :
+fs-no-input-cap ## txsize.c ## n_coins > GZ_FUND_MAX_INPUTS ? GZ_FUND_MAX_INPUTS : n_coins; ## n_coins;
+fs-no-witness ## txsize.c ## uint64_t wit = 2 + 67 * n; ## uint64_t wit = 0;

@@ -2013,6 +2013,62 @@ static void test_pending_before_tip(void)
     free(u);
 }
 
+/* local-api 15.2's funds_short: the set-aside plus the most the funding can
+ * pay in fee, for the coins the wallet would spend, at the funding rate. */
+static void test_funds_short(void)
+{
+    ft_t *t = ft_new(1, GZ_HOST_FUNDING_AUTO);
+    const uint64_t aside = 37500000;
+    uint64_t need = 0, have = 0, bound1, bound2, bound197;
+    /* the bound: one input at 100 sat/kvB; then more inputs cost more */
+    bound1 = gz_fund_funding_fee_bound(&t->cfg, 1);
+    bound2 = gz_fund_funding_fee_bound(&t->cfg, 2);
+    bound197 = gz_fund_funding_fee_bound(&t->cfg, 197);
+    CHECK(bound1 > 0 && bound2 > bound1 && bound197 > bound2);
+    CHECK(gz_fund_funding_fee_bound(&t->cfg, 0) == bound1);       /* at least one input */
+    CHECK(gz_fund_funding_fee_bound(&t->cfg, 500) == bound197);   /* no plan spends more */
+    /* it bounds what a real plan of that size pays: the fake wallet's
+     * two-input plan, signed, at the same rate */
+    {
+        gz_fund_plan_in_t in = plan_in(SCOPE_A, 0);
+        gz_fund_plan_out_t res;
+        uint8_t sig[GZ_FUND_MAX_SIGNED];
+        size_t sig_len = 0;
+        uint64_t vsize = 0;
+        gz_event_t e = ev_tip(1000);
+        CHECK(ft_ev(t, &e) == GZ_OK);
+        ft_reset(t);
+        CHECK(gz_fund_host_plan(&t->f, &in, &t->out, &res) == GZ_OK && res.ok);
+        ft_after(t);
+        CHECK(ftw_sign_plan(&t->w, res.funding.txid, sig, sizeof sig, &sig_len) == 1);
+        CHECK(gz_fund_tx_vsize(sig, sig_len, &vsize, NULL) == 1);
+        CHECK(gz_fund_fee(t->cfg.feerate, vsize) <= bound2);
+    }
+    /* the wallet cannot tell: -1 */
+    t->w.spendable_n = 0;
+    CHECK(gz_fund_funds_short(&t->cfg, aside, &need, &have) == -1);
+    /* exactly enough, then one sat short */
+    t->w.spendable_n = 2;
+    t->w.spendable_sat = aside + bound2;
+    CHECK(gz_fund_funds_short(&t->cfg, aside, &need, &have) == 0);
+    CHECK(need == aside + bound2 && have == aside + bound2);
+    t->w.spendable_sat = aside + bound2 - 1;
+    CHECK(gz_fund_funds_short(&t->cfg, aside, &need, &have) == 1);
+    CHECK(need == aside + bound2 && have == aside + bound2 - 1);
+    /* the set-aside alone is short: the fee is on top (review of PR 77, L2) */
+    t->w.spendable_sat = aside;
+    CHECK(gz_fund_funds_short(&t->cfg, aside, &need, &have) == 1);
+    /* more coins, a larger bound */
+    t->w.spendable_n = 40;
+    t->w.spendable_sat = aside + bound2;
+    CHECK(gz_fund_funds_short(&t->cfg, aside, &need, &have) == 1);
+    CHECK(need == aside + gz_fund_funding_fee_bound(&t->cfg, 40));
+    /* no port at all */
+    t->cfg.wallet.spendable = NULL;
+    CHECK(gz_fund_funds_short(&t->cfg, aside, &need, &have) == -1);
+    free(t);
+}
+
 static void test_corrupt(void)
 {
     ft_t *t = ft_new(1, GZ_HOST_FUNDING_AUTO);
@@ -2213,6 +2269,7 @@ int main(void)
     test_watch_pending();
     test_long_absence();
     test_pending_before_tip();
+    test_funds_short();
     test_corrupt();
     test_journal_replay_steps();
     test_ignored_events();

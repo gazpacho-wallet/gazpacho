@@ -164,3 +164,33 @@ uint64_t gz_fund_replace_fee(uint64_t package_fee, uint64_t package_vsize, uint6
     }
     return fee;
 }
+
+uint64_t gz_fund_funding_fee_bound(const gz_fund_config_t *cfg, size_t n_coins)
+{
+    uint64_t n = n_coins == 0 ? 1 : n_coins > GZ_FUND_MAX_INPUTS ? GZ_FUND_MAX_INPUTS : n_coins;
+    /* without witnesses: version, the input count (one byte up to 197),
+     * 41 bytes an input, the output count, two P2TR outputs (43 bytes
+     * each), the lock time */
+    uint64_t base = 4 + 1 + 41 * n + 1 + 2 * 43 + 4;
+    /* the marker and flag, and each input's witness at its largest */
+    uint64_t wit = 2 + 67 * n;
+    uint64_t vsize = (4 * base + wit + 3) / 4;
+    if (cfg == NULL) return UINT64_MAX;
+    return gz_fund_fee(cfg->feerate, vsize);
+}
+
+int gz_fund_funds_short(const gz_fund_config_t *cfg, uint64_t set_aside_sat, uint64_t *need_sat,
+                        uint64_t *have_sat)
+{
+    uint64_t sat = 0, fee, need;
+    size_t n = 0;
+    if (need_sat) *need_sat = 0;
+    if (have_sat) *have_sat = 0;
+    if (cfg == NULL || cfg->wallet.spendable == NULL || !cfg->wallet.spendable(cfg->wallet.ctx, &sat, &n))
+        return -1;
+    fee = gz_fund_funding_fee_bound(cfg, n);
+    need = fee == UINT64_MAX || set_aside_sat > UINT64_MAX - fee ? UINT64_MAX : set_aside_sat + fee;
+    if (need_sat) *need_sat = need;
+    if (have_sat) *have_sat = sat;
+    return sat < need ? 1 : 0;
+}

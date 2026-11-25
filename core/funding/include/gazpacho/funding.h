@@ -143,7 +143,12 @@ typedef struct {
  *               own script, paying exactly `fee`, signed. The engine never
  *               asks more than the top of its ladder (funding.md 2): the
  *               funding's fee plus `incremental_high` on the spend-back's
- *               size, or the ordinary rate when nothing is replaced. */
+ *               size, or the ordinary rate when nothing is replaced.
+ *   spendable   optional: what `plan` could spend now: the sum and the
+ *               number of the wallet's confirmed coins that no plan holds
+ *               (never the change of a funding not yet buried). 0 if it
+ *               cannot tell. For the host's funds check (local-api 15.2,
+ *               `funds_short`; gz_fund_funds_short). */
 typedef struct {
     int (*plan)(void *ctx, uint64_t amount, const uint8_t script[34], uint64_t feerate,
                 const gz_outpoint_t *must_spend, uint8_t *tx, size_t cap, size_t *tx_len,
@@ -153,6 +158,7 @@ typedef struct {
     void (*release)(void *ctx, const uint8_t *tx, size_t tx_len);
     int (*spend_back)(void *ctx, const uint8_t txid[32], uint32_t index, uint64_t fee,
                       uint8_t *out, size_t cap, size_t *out_len);
+    int (*spendable)(void *ctx, uint64_t *sat, size_t *n_coins);
     void *ctx;
 } gz_wallet_port_t;
 
@@ -426,6 +432,25 @@ gz_fund_scope_t gz_fund_scope_state(const gz_fund_t *f, const uint8_t scope[32],
  * (`package_fee` over `package_vsize`, rule 6). UINT64_MAX on overflow. */
 uint64_t gz_fund_replace_fee(uint64_t package_fee, uint64_t package_vsize, uint64_t vsize,
                              uint64_t incremental);
+/* The most a funding plan can pay in fee when it spends at most `n_coins`
+ * coins (at most GZ_FUND_MAX_INPUTS), at the host's funding rate
+ * (cfg->feerate, the only rate a funding pays: H16 never bumps a funding
+ * itself): the size of n key-path inputs, each with the largest witness
+ * (GZ_FUND_MAX_SIGNED's 67 bytes), the factory's output and the change, at
+ * that rate. At least one input. UINT64_MAX on overflow. */
+uint64_t gz_fund_funding_fee_bound(const gz_fund_config_t *cfg, size_t n_coins);
+
+/* Local-api 15.2's `funds_short` for a host opening or starting a lobby:
+ * the wallet's confirmed spendable coins (wallet.spendable) below
+ * `set_aside_sat` (gz_fund_set_aside_sat of the lobby's terms, plus what
+ * other hosted lobbies hold set aside: the caller's sum) and the fee bound
+ * above for those coins. 1 if short, 0 if enough, -1 if the wallet cannot
+ * tell (no `spendable`, or it answers 0): the caller then refuses as for
+ * `no_wallet`. `*need_sat` and `*have_sat`, when not NULL, are set for the
+ * error's `params` and `host_funds_short` (need is UINT64_MAX on overflow). */
+int gz_fund_funds_short(const gz_fund_config_t *cfg, uint64_t set_aside_sat, uint64_t *need_sat,
+                        uint64_t *have_sat);
+
 /* ceil(rate x vsize / 1000), UINT64_MAX on overflow. */
 uint64_t gz_fund_fee(uint64_t rate, uint64_t vsize);
 

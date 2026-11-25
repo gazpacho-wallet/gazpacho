@@ -81,6 +81,8 @@ typedef struct {
     int no_change, third_output, must_at_1, in1_bigger, adopt_refuse, factory_twice;
     int sb_two_outputs, zero_prev, scriptsig, factory_at_1;   /* more faults the engine must refuse */
     uint32_t last_sb_index;
+    uint64_t spendable_sat;   /* what `spendable` answers; 0 coins: it cannot tell */
+    size_t spendable_n;
     unsigned next_plan;
     ft_plan_t plans[FT_PLANS];   /* memory only: a restart forgets them */
 } ft_wallet_t;
@@ -244,6 +246,14 @@ static inline void ftw_release(void *ctx, const uint8_t *tx, size_t len)
 }
 
 /* The spend-back of a plan this wallet holds, by its txid. */
+static inline int ftw_spendable(void *ctx, uint64_t *sat, size_t *n)
+{
+    ft_wallet_t *w = (ft_wallet_t *)ctx;
+    if (w->spendable_n == 0) return 0;
+    *sat = w->spendable_sat;
+    *n = w->spendable_n;
+    return 1;
+}
 static inline int ftw_sb(void *ctx, const uint8_t txid[32], uint32_t index, uint64_t fee, uint8_t *out, size_t cap,
                   size_t *out_len)
 {
@@ -325,6 +335,7 @@ static inline void ft_cfg(ft_t *t, int host, gz_host_funding_t mode)
         t->cfg.wallet.adopt = ftw_adopt;
         t->cfg.wallet.release = ftw_release;
         t->cfg.wallet.spend_back = ftw_sb;
+        t->cfg.wallet.spendable = ftw_spendable;
     }
 }
 
