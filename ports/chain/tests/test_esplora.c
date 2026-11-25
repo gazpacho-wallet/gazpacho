@@ -1027,6 +1027,20 @@ static void test_raw_tx_any_size(test_state *T) {
   /* the room of a proof: fetched whole, past the 512 KiB response buffer */
   CHECK_RESULT(gz_chain_raw_tx(&x.chain, id, buf, GZ_TX_CONSENSUS_MAX_BYTES, &n), GZ_CHAIN_OK);
   CHECK(n == len && memcmp(buf, raw, len) == 0);
+  /* a small transaction with the room of a proof: fetched whole, through the
+   * ordinary buffer, so no 8 MB answer is asked for (review of PR 72,
+   * optional point); the large one above took the large path */
+  uint8_t a[GZ_HASH_LEN], small[1024], check[GZ_HASH_LEN];
+  size_t n_small = 0;
+  test_hash(TX_A, a);
+  CHECK_RESULT(gz_chain_raw_tx(&x.chain, a, small, sizeof small, &n_small), GZ_CHAIN_OK);
+  CHECK_RESULT(gz_chain_raw_tx(&x.chain, a, buf, GZ_TX_CONSENSUS_MAX_BYTES, &n), GZ_CHAIN_OK);
+  CHECK(n == 244 && n == n_small && memcmp(buf, small, n) == 0);
+  CHECK(gz_txid_from_raw(buf, n, check) && memcmp(check, a, GZ_HASH_LEN) == 0);
+  CHECK(x.fake.last_cap <= 512 * 1024);
+  /* and the large one again after it: still the large path, still whole */
+  CHECK_RESULT(gz_chain_raw_tx(&x.chain, id, buf, GZ_TX_CONSENSUS_MAX_BYTES, &n), GZ_CHAIN_OK);
+  CHECK(n == len && memcmp(buf, raw, len) == 0);
   fx_close(&x);
   free(raw);
   free(buf);
