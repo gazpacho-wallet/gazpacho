@@ -82,6 +82,7 @@ typedef struct {
     long test_sweep;               /* host: print the timeout sweep at this height and stop (sweep.h); 0: none */
     int test_sweep_force;          /* build the spends below their heights too (the node must refuse them) */
     int test_owed;                 /* the sweep counts this member (1-based, tree order) as owed */
+    const char *test_spend_coin;   /* host: TXID:VOUT:AMOUNT:SCRIPT, one wallet coin spent to the first address (sweep.h) */
     const char *test_sweep_to;     /* hex of the destination script (default: the first receive address) */
     int test_drop_kind;            /* drop received messages of this kind (0: none) */
     int test_commands;             /* read test commands from standard input */

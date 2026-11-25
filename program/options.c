@@ -147,6 +147,7 @@ void gzp_usage(void)
         "  --test-sweep-force            with --test-sweep: build the spends below their heights too\n"
         "  --test-owed N                 with --test-sweep: member N (tree order) is owed: its outputs are refused\n"
         "  --test-sweep-to HEX           with --test-sweep: the destination script (default: the first address)\n"
+        "  --test-spend-coin T:V:A:S     host: one coin of this wallet spent to the first address, printed, then stop\n"
         "  --test-passphrase-file PATH   unlock with the passphrase in PATH (set up a wallet if none)\n"
         "  --test-kdf-floor              set up at the storage library's test floor (1 pass, 8 KiB)\n"
         "  --test-standin-store          the journal stand-in instead of the sealed journal\n"
@@ -317,6 +318,7 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--test-sweep")) { ok = num(val, 1, 100000000, &v); o->test_sweep = v; }
         else if (!strcmp(a, "--test-owed")) { ok = num(val, 1, 256, &v); o->test_owed = (int)v; }
         else if (!strcmp(a, "--test-sweep-to")) o->test_sweep_to = val;
+        else if (!strcmp(a, "--test-spend-coin")) o->test_spend_coin = val;
         else if (!strcmp(a, "--test-kill-at")) { ok = num(val, 1, 100000000, &v); o->test_kill_at = (int)v; }
         else if (!strcmp(a, "--test-power-cut-at")) { ok = num(val, 1, 100000000, &v); o->test_power_cut_at = (int)v; }
         else if (!strcmp(a, "--test-sync-fail-at")) { ok = num(val, 1, 1000000, &v); o->test_sync_fail_at = (int)v; }

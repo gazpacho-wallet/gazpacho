@@ -41,4 +41,23 @@ typedef struct {
 
 int gzp_sweep_run(const gzp_sweep_in_t *in);
 
+/* --test-spend-coin TXID:VOUT:AMOUNT:SCRIPT (test build): one coin of this
+ * wallet (found among its first 300 receive and change outputs by the script
+ * it pays) spent whole, by key path, to `to_script` at `feerate` sat/kvB.
+ * Prints "spend-coin change=C index=I amount=A" and "spend-tx ... tx=HEX", or
+ * spend-refused / spend-error. Never broadcasts. */
+#include "unlock.h"
+#include "gazpacho/wallet_keys.h"
+typedef struct {
+    const gzp_unlock_t *unlock;
+    secp256k1_context *secp;
+    gzw_network wnet;
+    const char *spec;
+    const uint8_t *to_script;
+    size_t to_len;
+    uint64_t feerate;
+} gzp_spend_in_t;
+
+int gzp_spend_coin(const gzp_spend_in_t *in);
+
 #endif

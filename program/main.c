@@ -620,7 +620,7 @@ int main(int argc, char **argv)
     gzp_log("wallet network=%s first-address=%s", opt.network, first.address);
 
 #ifdef GZP_TEST_BUILD
-    if (opt.test_sweep) {
+    if (opt.test_sweep || opt.test_spend_coin) {
         uint8_t to[64];
         size_t to_len = sizeof first.script_pubkey;
         memcpy(to, first.script_pubkey, to_len);
@@ -638,6 +638,11 @@ int main(int argc, char **argv)
         if (opt.role != GZP_ROLE_HOST || !to_len) {
             fprintf(stderr, "gazpacho: --test-sweep: a host, and a destination script\n");
             rc = GZP_EXIT_USAGE;
+            goto out;
+        }
+        if (opt.test_spend_coin) {
+            gzp_spend_in_t sp = {&unlock_tab, secp, wnet, opt.test_spend_coin, to, to_len, 100};
+            rc = gzp_spend_coin(&sp);
             goto out;
         }
         gzp_sweep_in_t sw = {dir.dir, wallet, &keys, secp, (uint32_t)opt.test_sweep, opt.test_sweep_force,

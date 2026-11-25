@@ -32,6 +32,9 @@
 #include "gzp.h"
 #include "keys.h"
 #include "store.h"
+#include "unlock.h"
+#include "gazpacho/wallet_keys.h"
+#include "gazpacho/wallet_tx.h"
 
 #define SW_MAX 8
 #define SW_LOBBY_OPENED   0x00010002u   /* journal.md 9: lobby_opened (2 scope, 4 outer) */
@@ -391,6 +394,104 @@ int gzp_sweep_run(const gzp_sweep_in_t *in)
     }
     fflush(stdout);
     return rc;
+}
+
+/* ---- one wallet coin back to the first receive address (--test-spend-coin) ---------------- */
+
+static int unhex(const char *s, size_t n, uint8_t *out)
+{
+    for (size_t i = 0; i < n; i++) {
+        unsigned v;
+        if (sscanf(s + 2 * i, "%2x", &v) != 1) return 0;
+        out[i] = (uint8_t)v;
+    }
+    return 1;
+}
+
+int gzp_spend_coin(const gzp_spend_in_t *in)
+{
+    /* TXID:VOUT:AMOUNT:SCRIPT, the txid in display order, the script the coin pays (P2TR, 34 bytes). */
+    char txh[65], sch[69];
+    unsigned vout = 0;
+    unsigned long long amount = 0;
+    uint8_t txid_disp[32], script[34], seed[64];
+    gzw_xprv master;
+    gzw_reason why;
+    gzw_network wn = in->wnet;
+    int found = 0;
+    uint32_t chg = 0, idx = 0;
+    if (!in->spec || sscanf(in->spec, "%64[0-9a-f]:%u:%llu:%68[0-9a-f]", txh, &vout, &amount, sch) != 4 ||
+        strlen(txh) != 64 || strlen(sch) != 68 || !unhex(txh, 32, txid_disp) || !unhex(sch, 34, script)) {
+        printf("spend-error why=spec\n");
+        return GZP_EXIT_USAGE;
+    }
+    if (!in->unlock || !in->unlock->seed || in->unlock->seed(in->unlock->ctx, seed) != 0) {
+        printf("spend-error why=locked\n");
+        return GZP_EXIT_DATA;
+    }
+    int have = gzw_bip32_master(in->secp, seed, sizeof seed, &master, &why) == 1;
+    OPENSSL_cleanse(seed, sizeof seed);
+    if (!have) return GZP_EXIT_DATA;
+    /* Which output of this wallet the coin is: receive and change, the first 300 of each. */
+    for (uint32_t c = 0; c < 2 && !found; c++)
+        for (uint32_t i = 0; i < 300 && !found; i++) {
+            gzw_bip86_output o;
+            if (gzw_bip86_output_from_master(in->secp, &master, wn, 0, c, i, &o, &why) == 1 &&
+                memcmp(o.script_pubkey, script, 34) == 0) {
+                found = 1;
+                chg = c;
+                idx = i;
+            }
+        }
+    if (!found) {
+        gzw_wipe(&master, sizeof master);
+        printf("spend-refused why=not-this-wallet\n");
+        return GZP_EXIT_DATA;
+    }
+    printf("spend-coin change=%u index=%u amount=%llu\n", chg, idx, amount);
+    static gzt_tx tx;
+    gzt_spent_output sp;
+    secp256k1_keypair kp;
+    gzw_bip86_output o;
+    uint8_t aux[32], raw[1024];
+    size_t raw_len = 0, sl = in->to_len;
+    memset(&tx, 0, sizeof tx);
+    tx.version = 2;
+    tx.n_in = 1;
+    tx.n_out = 1;
+    for (int i = 0; i < 32; i++) tx.in[0].prev_txid[i] = txid_disp[31 - i];
+    tx.in[0].prev_vout = vout;
+    tx.in[0].sequence = 0xfffffffdu;
+    uint64_t vs = gzt_keypath_vsize(1, &sl, 1);
+    uint64_t fee = (vs * in->feerate + 999) / 1000;
+    if (!vs || amount <= fee || amount - fee < gzt_dust_limit(in->to_script, in->to_len) || in->to_len > GZT_MAX_SCRIPT) {
+        gzw_wipe(&master, sizeof master);
+        printf("spend-error why=amount\n");
+        return GZP_EXIT_DATA;
+    }
+    tx.out[0].value = amount - fee;
+    tx.out[0].script_len = (uint16_t)in->to_len;
+    memcpy(tx.out[0].script, in->to_script, in->to_len);
+    memset(&sp, 0, sizeof sp);
+    sp.amount = amount;
+    sp.script_len = 34;
+    memcpy(sp.script, script, 34);
+    gzp_os_random(aux, sizeof aux);
+    int ok = gzw_bip86_tweaked_keypair(in->secp, &master, wn, 0, chg, idx, &kp, &o, &why) == 1 &&
+             gzt_sign_keypath(in->secp, &tx, &sp, 0, &kp, aux) == GZT_OK &&
+             gzt_tx_serialize(&tx, GZT_SER_WITNESS, raw, sizeof raw, &raw_len) == GZT_OK;
+    gzw_wipe(&kp, sizeof kp);
+    gzw_wipe(&master, sizeof master);
+    if (!ok) {
+        printf("spend-error why=sign\n");
+        return GZP_EXIT_DATA;
+    }
+    printf("spend-tx amount=%llu fee=%llu out=%llu vsize=%llu tx=", amount, (unsigned long long)fee,
+           (unsigned long long)(amount - fee), (unsigned long long)vs);
+    hex(raw, raw_len);
+    printf("\n");
+    fflush(stdout);
+    return 0;
 }
 #else
 typedef int gzp_sweep_release_empty;   /* the release program has no sweep */
