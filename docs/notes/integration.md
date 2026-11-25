@@ -1,6 +1,6 @@
 # Integration: Slice 1 end to end (P4.6)
 
-Draft 10, 2026-11-24. Branch `integration-slice1`, a draft pull request (#66) that is **never merged**. It merges the
+Draft 11, 2026-11-25. Branch `integration-slice1`, a draft pull request (#66) that is **never merged**. It merges the
 open pull requests of Slice 1 onto `main`, in this order: #51 (`p5-p6-api`), #52 (`composite-p4-3`), #54
 (`s5-s6-program`), #53 (`keys-p8`), #56 (`funding-p45`), #55 (`composite-p6a`). Then it wires them together so
 that one host and three members, each a separate `gazpacho` process, form a factory on the local test chain
@@ -167,6 +167,8 @@ branch's tree with F1 to F6 and the wiring, its chain worker polling the tip eve
 | After the merge of `main` `5e23043` (head `dbef63e`), one test at a time, valgrind and fuzz tests left out | 116 of 123 pass, `program_lobby` (every case, #67's hello again in) and `program_slice1` among them. Red: the expected `program_api`, `program_release_build` (B3), `program_p6a_views` (B8), `program_signing` (B13), `program_derived_keys` (B1); and the two constant-time checks `program_keys_ct` and `signing_ctime`: the debug build only (B18) |
 | Head `72fbf10` (#51, #52 `bb4cdfe`, #56 `2b9905a`, the two new tests), one test at a time, valgrind and fuzz left out | 110 of 118 pass. Red: the expected `program_api`, `program_release_build` (B3), `program_p6a_views` (B8), `program_signing` (B13), `program_derived_keys` (B1), `program_ack_depth` (B16, before #52's fix), and `program_chain_watch` (its timing on the shared server, as before; it passes in CI). `program_slice1_signet` skipped, as designed |
 | Head after `main` `a75d4ac`, #55 `397fadb`, F12, F13 (Debug, one at a time) | `program_slice1` passes (all three cases); `program_ack_depth` passes (B16 fixed by #52); `program_keys_setting` passes; `program_lobby`, `node`, `node_lobby` pass. Red as expected: `program_signing` (B13's three checks only) and `program_partials_hold` (B17, both cases). `program_slice1_signet` first pass: the host's folder made (kept between runs), its first receive address read from both operators, no coin there: skipped, nothing moved |
+| Head `a540267` (`main` `02aaea8`, F14), one test at a time, Debug | 115 of 121 pass, `program_slice1` (all three cases), `program_ack_depth` and `program_keys_setting` among them. Red only as expected: `program_api`, `program_release_build` (B3), `program_p6a_views` (B8), `program_signing` (B13), `program_partials_hold` (B17), `program_derived_keys` (B1). `program_slice1_signet` skipped there (no live environment) |
+| `program_slice1_signet` on signet, head `a540267` | **PASS** (section 8): funded, buried in about 30 minutes, Live and Active on the host and every member, each by its own chain view |
 
 ## 7. CI on this branch
 
@@ -209,5 +211,27 @@ server, each a `gazpacho-test` process with `--network signet`.
   joined and readied, and the begin was refused: `wallet-plan-refused coins=1 amount=802811`, then
   `sign-begin-refused-funding` and a Failed outcome. T1's `channel_sat` of 100,000 makes a factory of about 0.008
   for three members, eight times the coin. Nothing was signed or broadcast; the coin is still the host's. The test,
-  left waiting, was stopped. F14 sets 10,000-sat channels (about 83,000 sat with fees, if the fees stay as they were: inside the coin); the next run
-  waits for the coordinator's word.
+  left waiting, was stopped. F14 sets 10,000-sat channels (about 83,000 sat with fees, inside the coin); the next run
+  was made with the coordinator's word (below).
+- **Second run, with F14 (2026-11-25, 00:37:20 to 01:09:23 UTC): PASS.** One host and three AUTO members, each a
+  separate `gazpacho-test`, on the public servers of two operators, nothing mined. The round was signed and reached
+  Funding in about two minutes; the funding engine planned the factory from the host's coin, H1 passed, and the
+  funding was broadcast at 0.1 sat/vB: `26a86fc0f31110d9fe3a36418c8e699bae3b7c25c8862c68b7e76c31ad9d29ec`, 82,811 sat
+  to the factory (output 0), 17,173 sat change to the host, fee 16 sat for 154 vB. It confirmed in signet block
+  332374. Times (a watcher on the logs every 20 s):
+
+  | | First confirmation | Third (buried) | Live (its own funding engine) | Active |
+  |---|---|---|---|---|
+  | host | 00:55:45 | 01:08:29 | 01:08:29 | 01:08:29 |
+  | m1 | 00:55:25 | 01:09:09 | 01:09:09 | 01:08:29 |
+  | m2 | 00:55:25 | 01:08:09 | 01:08:09 | 01:08:09 |
+  | m3 | 00:55:05 | 01:09:09 | 01:09:09 | 01:08:29 |
+
+  So the funding confirmed about 16 minutes after its broadcast and was buried about 30 minutes after it. m1 and m3
+  showed Active from the host's status about 40 s before their own chain views judged it Live; the test waits for
+  both. Nobody judged it abandoned, dead or live late; no node-error, repair or fatal line anywhere.
+- **Getting the coins back:** the proposal's end height is about 332553 (the host's tip at the begin, 332373, plus
+  the lifetime of 144 and the wind-down of 36). After it, the host spends the tree's root kickoff on the host
+  timeout path and sweeps its outputs, from the signed tree kept in its folder on the build server, which stays
+  until then; a cooperative close is not built yet. The members are owed only their 10,000-sat channels in the tree.
+  Recorded in the funds record.
