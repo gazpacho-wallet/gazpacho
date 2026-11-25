@@ -237,6 +237,19 @@ static inline void ftw_note(void *ctx, const uint8_t *tx, size_t len)
         w->noted_tag = scr[2];
 }
 
+static inline int ftw_adopt(void *ctx, const uint8_t *tx, size_t len, const uint8_t script[34], uint64_t amount);
+
+/* adopt with the plan's spent outputs (P97-3, review B of PR 97). */
+static inline int ftw_adopt_plan(void *ctx, const uint8_t *tx, size_t len, const gz_fund_prevout_t *prev, size_t n_prev,
+                                 const uint8_t script[34], uint64_t amount)
+{
+    ft_wallet_t *w = (ft_wallet_t *)ctx;
+    (void)prev;
+    w->adopted_prev++;
+    w->last_n_prev = n_prev;
+    return ftw_adopt(ctx, tx, len, script, amount);
+}
+
 /* Holds a plan again after a restart, if its outputs are the factory's and
  * this wallet's change (script 0xcc) only. */
 static inline int ftw_adopt(void *ctx, const uint8_t *tx, size_t len, const uint8_t script[34], uint64_t amount)
@@ -360,6 +373,7 @@ static inline void ft_cfg(ft_t *t, int host, gz_host_funding_t mode)
         t->cfg.wallet.spend_back = ftw_sb;
         t->cfg.wallet.can_plan = ftw_can_plan;
         t->cfg.wallet.note_tx = ftw_note;
+        t->cfg.wallet.adopt_plan = ftw_adopt_plan;
     }
 }
 

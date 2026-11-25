@@ -284,6 +284,55 @@ static void test_can_plan(void)
     agree(many, 100, 150000, GZT_ERR_LIMIT);   /* the sum (200,000) is enough; 64 coins are not */
 }
 
+/* P97-3 (review B of PR 97): a funding built before a restart, held again
+ * from its unsigned bytes, its spent outputs and their key paths: the same
+ * txid, fee and size, and it can be signed and spent back from; a wrong
+ * change index, key path or amount is refused. */
+static void test_adopt(void)
+{
+    static gzt_funding f, g;
+    gzt_funding_request r = request(100000);
+    uint8_t aux[32], tx[GZT_MAX_TX_BYTES];
+    static uint8_t out[GZT_MAX_TX_BYTES], out2[GZT_MAX_TX_BYTES];
+    size_t len, n = 0, n2 = 0, ni;
+    gzt_adopt_input in[GZT_MAX_INPUTS];
+    gzw_bip86_output dest;
+    memset(aux, 1, 32);
+    r.require_change = 1;
+    CHECK(gzt_funding_build(ctx, &master, &r, coins, 3, aux, &f) == GZT_OK);
+    CHECK(gzt_funding_unsigned(&f, tx, sizeof tx, &len) == GZT_OK);
+    ni = f.info.selection.n_selected;
+    for (size_t i = 0; i < ni; i++) {
+        const gzt_coin *c = &coins[f.info.selection.selected[i]];
+        in[i].amount = c->amount;
+        in[i].script = c->script;
+        in[i].script_len = 34;
+        in[i].change = c->change;
+        in[i].index = c->index;
+    }
+    CHECK(gzt_funding_adopt(ctx, &master, GZT_NET_SIGNET, 0, tx, len, in, ni, 50, aux, &g) == GZT_OK);
+    CHECK(memcmp(g.info.txid, f.info.txid, 32) == 0 && g.info.fee == f.info.fee && g.info.vsize == f.info.vsize);
+    CHECK(g.info.amount == 100000 && g.info.has_change && g.info.change == f.info.change && g.info.change_index == 50);
+    CHECK(gzt_funding_release(ctx, &master, &g, f.info.txid, aux, out, sizeof out, &n) == GZT_OK);
+    CHECK(gzt_funding_release(ctx, &master, &f, f.info.txid, aux, out2, sizeof out2, &n2) == GZT_OK);
+    CHECK(n == n2 && memcmp(out, out2, n) == 0);   /* the same signed funding */
+    CHECK(gzw_bip86_output_from_master(ctx, &master, GZW_NET_SIGNET, 0, 1, 2000, &dest, NULL));
+    CHECK(gzt_funding_spend_back(ctx, &master, &g, 0, dest.script_pubkey, 34, 12, aux, out, sizeof out, &n) == GZT_OK);
+    /* refused: the change is not at that index; a key path that is not the
+     * input's; an input worth less than the outputs; inputs miscounted */
+    CHECK(gzt_funding_adopt(ctx, &master, GZT_NET_SIGNET, 0, tx, len, in, ni, 51, aux, &g) == GZT_ERR_KEY);
+    in[0].index ^= 1;
+    CHECK(gzt_funding_adopt(ctx, &master, GZT_NET_SIGNET, 0, tx, len, in, ni, 50, aux, &g) == GZT_ERR_KEY);
+    in[0].index ^= 1;
+    in[0].amount = 1;
+    CHECK(gzt_funding_adopt(ctx, &master, GZT_NET_SIGNET, 0, tx, len, in, ni, 50, aux, &g) == GZT_ERR_ARG);
+    in[0].amount = coins[f.info.selection.selected[0]].amount;
+    CHECK(gzt_funding_adopt(ctx, &master, GZT_NET_SIGNET, 0, tx, len, in, ni + 1, 50, aux, &g) == GZT_ERR_ARG);
+    CHECK(g.priv_state == 0);   /* wiped on failure */
+    gzt_funding_wipe(&f);
+    gzt_funding_wipe(&g);
+}
+
 int main(void)
 {
     setup();
@@ -293,6 +342,7 @@ int main(void)
     test_require_change();
     test_must_reach();
     test_can_plan();
+    test_adopt();
     secp256k1_context_destroy(ctx);
     if (fails) return 1;
     printf("wallet funding port: all passed\n");
