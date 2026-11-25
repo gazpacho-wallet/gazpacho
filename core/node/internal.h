@@ -26,6 +26,15 @@
 #define GZ_NODE_N_TEST 0
 #endif
 
+/* The highest key_index a slot_opened may name. Allocation counts up from 1
+ * (highest_index + 1) and never comes near it; an index above it is damage:
+ * the factory index (key_index + 1) would wrap, or the pair would meet the
+ * indexes the program reserves at the top. A second defence after the sealed
+ * journal (L4; core-slot-index-bounds). Allocation stops once highest_index
+ * reaches it, so it never gives an index the next start would refuse (review
+ * of PR 87, L1); the load refuses anything above it. */
+#define GZ_LS_KEY_INDEX_MAX 0xfffffff0u
+
 /* ---- the test engine (test builds) -------------------------------------- */
 
 #define TE_MAX_PENDING     512       /* unacknowledged replies held in memory */

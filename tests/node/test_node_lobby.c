@@ -1922,6 +1922,32 @@ static void test_leave_after_funding_deadline(void)
     w_free(3);
 }
 
+
+/* The index ceiling at allocation (review of PR 87, L1): a slot never takes a
+ * key index the next start would refuse as damage. Allocation gives
+ * highest_index + 1, so it must stop once highest_index reaches
+ * GZ_LS_KEY_INDEX_MAX: at 0xfffffff0 the next index would be 0xfffffff1.
+ * Both open paths, the host's and the member's; one below, the last index
+ * is still given and loads again after a restart. */
+static void test_index_ceiling(void)
+{
+    terms_t t[4];
+    w_world(1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    for (int i = 0; i < 4; i++) make_terms(&t[i], 3, 3, 1900 + (uint32_t)i);
+    size_t hb = N[0].n_batches, mb = N[1].n_batches;
+    N[0].n->np.highest_index = GZ_LS_KEY_INDEX_MAX;
+    CHECK(host_open(&t[0], 0) == 503 && slot(0, &t[0]) == NULL && N[0].n_batches == hb);
+    N[1].n->np.highest_index = GZ_LS_KEY_INDEX_MAX;
+    CHECK(member_join(1, &t[1]) == 503 && slot(1, &t[1]) == NULL && N[1].n_batches == mb);
+    N[0].n->np.highest_index = GZ_LS_KEY_INDEX_MAX - 1;
+    CHECK(host_open(&t[2], 0) == 200 && slot(0, &t[2]) && slot(0, &t[2])->key_index == GZ_LS_KEY_INDEX_MAX);
+    N[1].n->np.highest_index = GZ_LS_KEY_INDEX_MAX - 1;
+    CHECK(member_join(1, &t[3]) == 200 && slot(1, &t[3]) && slot(1, &t[3])->key_index == GZ_LS_KEY_INDEX_MAX);
+    /* what was given loads again */
+    CHECK(w_restart(0) == GZ_OK && slot(0, &t[2]) && slot(0, &t[2])->key_index == GZ_LS_KEY_INDEX_MAX);
+    CHECK(w_restart(1) == GZ_OK && slot(1, &t[3]) && slot(1, &t[3])->key_index == GZ_LS_KEY_INDEX_MAX);
+    w_free(1);
+}
 int main(int argc, char **argv)
 {
     unsigned long events = argc > 1 ? strtoul(argv[1], NULL, 10) : 20000;
@@ -1942,6 +1968,7 @@ int main(int argc, char **argv)
     test_seat_capacity();
     test_left_out();
     test_node_record_fields();
+    test_index_ceiling();
     test_timer_of_ended_lobby();
     test_gate_refused_ready();
     test_hostile(events, seed);

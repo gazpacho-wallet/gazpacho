@@ -501,13 +501,6 @@ static int node_rec_known(gz_bytes_t b, uint32_t known)
     return 1;
 }
 
-/* The highest key_index a slot_opened may name. Allocation counts up from 1
- * (highest_index + 1) and never comes near it; an index above it is damage:
- * the factory index (key_index + 1) would wrap, or the pair would meet the
- * indexes the program reserves at the top. A second defence after the sealed
- * journal (L4; core-slot-index-bounds). */
-#define GZ_LS_KEY_INDEX_MAX 0xfffffff0u
-
 
 /* A slot_opened record at load: the slot is Open again, with its lobby
  * engine made anew for the Lobby records that follow. */
