@@ -208,6 +208,7 @@ typedef struct {
 typedef struct {
     int pause;                      /* GZ_PAUSE_* */
     uint64_t pause_since;
+    uint32_t pause_version;         /* the person's pause changes, saved: a resume names it (M1 of PR 75's review) */
     uint8_t held[GZ_NODE_MAX_SLOTS][32];
     int n_held;
     int have_signing;
@@ -226,8 +227,15 @@ typedef struct {
     unsigned cond_left;             /* the slots a conditions change left (bit i) */
     api_lid_t ids[API_MAX_IDS];
     uint64_t id_seq;
-    api_req_t reqs[GZ_API_MAX_REQUESTS];
+    api_req_t reqs[GZ_API_MAX_REQUESTS]; /* ids with an object (a lobby): each lobby's share, kept by 7.4 */
+    api_req_t ring[GZ_API_RING];    /* ids with none (pause, signing): the newest, a ring */
+    int ring_next;
     uint64_t req_seq;
+    /* The clock the 30 days are counted on: never back. Wall time while the
+     * wall clock runs ahead of it, else the monotonic clock's progress; at a
+     * load it starts at the newest time the journal holds (api.c, keep_clock). */
+    uint64_t keep_now, keep_mono;
+    int keep_mono_set;
     int opened;                     /* the slot a command opened, plus one */
     unsigned left, aborted;         /* a pause's answer: the slots it left, and aborted (bit i) */
     int status_dirty;               /* the pause changed inside a slot's step: the status object follows it */
@@ -235,7 +243,8 @@ typedef struct {
     uint8_t res[2400], rec[640];
     char params[2048];              /* a pause's three lists of at most 8 ids each, or a 409's first call */
 } api_t;
-_Static_assert(GZ_API_MAX_REQUESTS >= GZ_NODE_MAX_SLOTS * 64, "request ids: 64 calls for each slot's lobby (7.4)");
+_Static_assert(GZ_API_MAX_REQUESTS == GZ_NODE_MAX_SLOTS * (GZ_API_LOBBY_SHARE + GZ_API_LOBBY_RESERVE),
+               "request ids: every slot's lobby its share and its reserve (7.4; review A of PR 55, N1)");
 _Static_assert(sizeof(((api_t *)0)->rec) >= COND_MAX + 4u + API_MAX_PRESET + 12u, "the conditions record fits api.rec");
 
 /* ---- a query to a host for its lobbies (discovery.c) ---------------------- */
@@ -711,6 +720,7 @@ void gz_api_slot_ended(gz_node_t *c, const uint8_t scope[32]);
 gz_status_t gz_api_resume(gz_node_t *c, gz_action_list_t *out);
 gz_status_t gz_api_save_pause(gz_node_t *c, gz_action_list_t *out);
 gz_status_t gz_api_release(gz_node_t *c, const uint8_t scope[32], gz_action_list_t *out);
+int gz_api_req_kept(gz_node_t *c, const char *rid);
 gz_status_t gz_api_precheck(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action_list_t *out, int *done);
 gz_status_t gz_api_after(gz_node_t *c, gz_bytes_t cmd, size_t from, gz_action_list_t *out);
 gz_status_t gz_api_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action_list_t *out);

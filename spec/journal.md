@@ -376,7 +376,7 @@ The fields of the records the API engine writes in P6a (`core/gazpacho/include/g
 
 | Record | Fields |
 |---|---|
-| `pause` | 2 state (`u8`: 0 off, 1 on, 2 held for signing), 4 since (`u64` ms), 6 the held lobbies' scopes (32 bytes each, at most 8; present exactly when the state is 2) |
+| `pause` | 2 state (`u8`: 0 off, 1 on, 2 held for signing), 4 since (`u64` ms), 6 the held lobbies' scopes (32 bytes each, at most 8; present exactly when the state is 2), 8 version (`u32`: the person's pauses and resumes) |
 | `local_ids` | 2 scope (32), 4 local id (`lob_` and 1 to 60 of `[A-Za-z0-9_-]`; one scope per id); saved with the slot's `slot_opened`, in one batch, or alone at the start that finds a slot without one |
 | `request_id` | 2 request id (16 to 64 of `[A-Za-z0-9_-]`), 4 method, 6 path (printable ASCII without `"` or `\`), 8 body digest (32), 10 answer status (`u16`), 12 the acted-on lobby's local id, 14 created (`u64` ms), 15 the answer's error code (odd: optional); saved right after the action's first save, in one batch |
 | `signing_setting` | 2 `member_signing` (`u8`: 0 at_join, 1 auto, 2 when_unlocked), 4 `host_funding` (`u8`), 6 version (`u32`); in force from the next start |

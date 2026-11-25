@@ -32,6 +32,7 @@ static size_t boundary(src_t *s, uint32_t *type, uint8_t *rec, size_t cap)
         gz_rec_put(rec, cap, &at, 2, &two, 1);
         gz_rec_put(rec, cap, &at, 4, v, 8);
         gz_rec_put(rec, cap, &at, 6, v, 32 * (8 + over));
+        gz_rec_put(rec, cap, &at, 8, v, 4);
         break;
     case 1: /* local_ids: an id of 64 or 65 */
         *type = 0x000d000eu;

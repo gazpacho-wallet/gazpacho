@@ -13,7 +13,7 @@ This note says, for each field of the answers the API server builds from the vie
   - A lobby's id is its local id (local-api.md 7.3): `lob_` followed by 16 hex digits. They come from the random port, mixed with the slot serial so that two slots never share one.
   - The id is saved in record `0x000d000e` `local_ids`, in the slot's first batch, with `slot_opened` and `lobby_opened`.
   - The status object's id is `status`.
-  - An attention item's id is `att_` followed by the lobby's local id.
+  - An attention item's id is `att_` followed by the lobby's local id without its `lob_` (`att_7k2q` for `lob_7k2q`): at most 64 characters, never cut, so two lobbies never share an item.
 - **Ended lobbies.**
   - When a lobby ends, its last object is emitted before its slot is freed, and the program keeps it.
   - At a start, a host emits a short object for each ended lobby still in its index (the newest 256): fingerprint, stage, end reason.
@@ -84,12 +84,12 @@ This note says, for each field of the answers the API server builds from the vie
 
 Each item is one object; `gone` removes it. Records: 6 code, 8 the lobby's local id, 10 `since_at`, 14 count. Codes: 1 `unlock_to_take_part` (a member's seat is locked by its gate, 14.3 rule 4), 2 `lobby_left_out` (keys not given at this start), 3 `member_refused` (a host: the number of refused seats).
 
-- **No fingerprint** (7.3: never in an event). An item's id is `att_` and the lobby's local id; field 12 is not used. Every lobby slot has a local id: from its open, or, for a slot opened before the engine, one made and saved at the start that finds it without one.
+- **No fingerprint** (7.3: never in an event). An item's id is `att_` and the lobby's local id after its `lob_` (section 1); field 12 is not used. Every lobby slot has a local id: from its open, or, for a slot opened before the engine, one made and saved at the start that finds it without one.
 
 ## 6. The API engine (area 0x000d)
 
 - **Commands.**
-  - `0x0d01` pause: 12 `on`, u8 1 or 0 (`400 bad_value` otherwise).
+  - `0x0d01` pause: 12 `on`, u8 1 or 0 (`400 bad_value` otherwise), 14 `based_on_version` (u32). A resume without it, or with another version than the pause's, answers `409 changed_elsewhere`; a pause on is applied whatever it names. The version is saved in the `pause` record (field 8) and shown in the status object (field 8's last 4 bytes).
   - `0x0d02` set signing: 12 `member_signing` (u8), 14 `based_on_version` (u32), 16 `confirm_member_signing` (u8). It is **the one command that sets the signing mode** (W11, coordinator decision K19): `PUT /api/v1/signing` uses it and nothing else. PR 52's `0x0403` is handled apart; a runtime switch, if open point 46 decides one, becomes an "apply now" path of `0x0d02`.
   - `0x0d03` set conditions: 12 the conditions (the encoding `LOBBY_JOIN` and `slot_opened` use, `core/node/lobbyslot.c`: current_only u8, the ready hint u16, then the limits; empty: no limits), 14 `based_on_version` (u32), 16 `confirm_loosens` (the codes of what the change loosens, one byte each, increasing), 18 `preset` (ASCII, 1 to 16 of `a-z` and `_`; absent: `custom`). `PUT /api/v1/conditions` uses it.
   - The lobby's `0x0109` start (`node.h`): 12 scope, 14 `confirm_funding_max_sat` (u64). `POST /api/v1/host/lobbies/{id}/start` uses it.
@@ -107,7 +107,10 @@ Each item is one object; `gone` removes it. Records: 6 code, 8 the lobby's local
   - **Replay.** The same id with the same method, path and digest answers the saved status and error code, with `params {"replayed":true}` and `object` set to the local id, and does nothing. After a restart the object is still there (record field 12).
   - **Reuse.** The same id with another request answers `409 request_id_reused` with `params.first`.
   - **Saving.** A request that saved something gets record `0x000d0014` right after its first save, in the same batch, before its result notice: 12 the object, 14 created, 15 the error code. A request that saved nothing keeps no id.
-  - **Keeping** (7.4). An id is kept until its object has ended and 30 days have passed: a request with no object (pause, signing) from its making, a lobby from its slot's end (an end before this start counts from this start). The table holds 512 (64 calls for each of the 8 lobbies). A new request that finds every id still kept answers `503 node_busy` and does nothing; no id is ever dropped early.
+  - **Keeping** (7.4; review A of PR 55, N1). No table of ids can block the wallet:
+    - **A lobby's ids** are kept until the lobby has ended and 30 days have passed (an end before this start counts from this start). Each lobby has a share of 64; a call over its lobby's share answers `503 node_busy` and does nothing, and no other lobby's call is touched. A `leave`, which protects the member's funds, and a host's `cancel`, which frees the host's, have 4 more (the reserve; leave alone and move join it when they reach the engine). The table holds 544, every slot's share and reserve, so a live lobby's id is never dropped; when room is needed, ids past their 30 days go first, then the oldest of ended lobbies.
+    - **Ids with no object** (pause, signing, any call that names no lobby) are the newest 32, in a ring, and are never refused. A replay of an older one acts again, so these calls carry versions (local-api.md 7.4's Slice 1 deviation): a stale resume and a stale signing change answer `409 changed_elsewhere`; a pause on only tightens and is applied.
+    - **The 30 days** run on a clock that never goes back: the wall clock while it is ahead, else the monotonic clock's progress; at a start it begins at the newest time the journal holds. A wall clock set back cannot stretch the keep. Field 14 of `request_id` holds this clock's time.
   - **Not requests.** Commands without a digest (the program's own, tests') keep no id.
 - **Pause** (11.3). The record `0x000d000c` is saved before anything the pause does.
   - **Members**, by 11.3's table:

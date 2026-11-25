@@ -442,8 +442,10 @@ static gz_status_t attention(gz_node_t *c, slot_t *s, int force, gz_action_list_
     if (!s->view.local_id[0]) return GZ_OK;
     if (!force && code == s->view.att_code && count == s->view.att_count) return GZ_OK;
     if (!code && !s->view.att_code) return GZ_OK;
+    /* "att_" and the local id after its "lob_": at most 64 characters, one
+     * item per lobby (review A of PR 55, N2: never cut, so never shared). */
     id[k++] = 'a'; id[k++] = 't'; id[k++] = 't'; id[k++] = '_';
-    for (size_t j = 0; s->view.local_id[j] && k < GZ_LOCAL_ID_MAX; j++) id[k++] = s->view.local_id[j];
+    for (size_t j = memcmp(s->view.local_id, "lob_", 4) == 0 ? 4 : 0; s->view.local_id[j]; j++) id[k++] = s->view.local_id[j];
     id[k] = 0;
     s->view.att_code = code;
     s->view.att_count = count;
@@ -464,7 +466,7 @@ static uint8_t slot_role(const slot_t *s) { return s->host ? GZ_ROLE_HOSTED : GZ
 static size_t status_view(gz_node_t *c)
 {
     vw_t w = {c->view.body, sizeof c->view.body, 0, 0};
-    uint8_t p[9], sg[7], d[11 + GZ_LOCAL_ID_MAX], *e = c->view.seats;
+    uint8_t p[13], sg[7], d[11 + GZ_LOCAL_ID_MAX], *e = c->view.seats;
     /* at the function's scope: a block's array this large makes an ASan build
      * call __asan_(un)poison_stack_memory, outside calls the isolation check refuses */
     uint8_t cv[4 + COND_MAX];
@@ -492,7 +494,8 @@ static size_t status_view(gz_node_t *c)
     put8(&w, GZ_VST_ROLE, (uint8_t)(c->cfg.host != 0));
     p[0] = (uint8_t)c->api.pause;
     gz_put_u64(p + 1, c->api.pause_since);
-    put(&w, GZ_VST_PAUSE, p, 9);
+    gz_put_u32(p + 9, c->api.pause_version);
+    put(&w, GZ_VST_PAUSE, p, 13);
     for (int k = 0; k < c->api.n_held; k++) {
         int i = gz_route_slot_by_scope(c, c->api.held[k]);
         const char *id = i >= 0 ? c->slots[i].view.local_id : gz_api_local_id(c, c->api.held[k]);
