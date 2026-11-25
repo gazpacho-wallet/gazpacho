@@ -1672,14 +1672,63 @@ static void test_partials_out_real_flow(void)
     CHECK(h_find(&h, 1, first) == NULL && x != NULL);
     if (x) CHECK(x->state == GZ_SIGN_ROUND_COMPLETE && x->has_scope && !memcmp(x->scope, scope, 32) && x->ack_tip == 1000);
     CHECK(gz_sign_partials_out(e, scope) == GZ_SIGN_OUT_THIS && gz_sign_partials_out(e, other) == GZ_SIGN_OUT_NONE);
-    tip_to(&h, 1, 1035);                                             /* before the deadline */
+    tip_to(&h, 1, 1035);
+    tip_to(&h, 1, 1036);                                             /* at the deadline: not yet (C11: past it, B-6) */
     CHECK(gz_sign_partials_out(e, scope) == GZ_SIGN_OUT_THIS && (!x || x->state == GZ_SIGN_ROUND_COMPLETE));
-    for (int k = 0; k < 4; k++) tip_to(&h, 1, 1036 + (uint32_t)k);    /* at it: a few each step */
+    {
+        int abandoned = 0;
+        for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++) abandoned += e->rounds[i].state == GZ_SIGN_ROUND_ABANDONED;
+        CHECK(abandoned == 0);                                       /* none of the held ones either */
+    }
+    for (int k = 0; k < 4; k++) tip_to(&h, 1, 1037 + (uint32_t)k);    /* past it: a few each step */
     if (x) CHECK(x->state == GZ_SIGN_ROUND_ABANDONED);
     CHECK(gz_sign_partials_out(e, scope) == GZ_SIGN_OUT_NONE);
     CHECK(h_restart(&h, 1) == GZ_OK);                                /* saved: it stays so */
     e = h.p[1].e;
     CHECK(gz_sign_partials_out(e, scope) == GZ_SIGN_OUT_NONE);
+    CHECK(h.errors == 0);
+    h_free(&h);
+}
+
+/* The evicted path through the real flow (review B of PR 81, B-4): a member acks a round of lobby A, then
+ * GZ_SIGN_MAX_ROUNDS newer rounds of lobby B push it out of memory Complete. No round of A is held then, so
+ * its exposure entry alone, which knows its lobby, answers for A: A's leave is refused, B's too (its own
+ * rounds), a third lobby's is not. Past the funding deadline, both end. */
+static void test_partials_out_two_lobbies(void)
+{
+    harness_t h;
+    uint8_t first[32], a_scope[32], b_scope[32], other[32];
+    memset(other, 0x7d, 32);
+    h_init(&h, 1);
+    h.builder.tip = 1000;
+    gz_sign_t *e = h.p[1].e;
+    e->cfg.funding_deadline_blocks = 36;
+    g_w_lobby = 1;                                                   /* lobby A */
+    CHECK(h_begin(&h, 1, 1, 0) == GZ_OK);
+    h_flush(&h, 100000);
+    const gz_sign_round_t *r = h_newest(&h, 1);
+    CHECK(r && r->state == GZ_SIGN_ROUND_COMPLETE);
+    if (!r) { g_w_lobby = 0; h_free(&h); return; }
+    memcpy(first, r->id, 32); memcpy(a_scope, r->def.outer_digest, 32);
+    g_w_lobby = 0;                                                   /* lobby B */
+    for (int k = 0; k < GZ_SIGN_MAX_ROUNDS; k++) {
+        CHECK(h_begin(&h, 1, 1, 0) == GZ_OK);
+        h_flush(&h, 100000);
+    }
+    r = h_newest(&h, 1);
+    CHECK(r && r->state == GZ_SIGN_ROUND_COMPLETE);
+    if (r) memcpy(b_scope, r->def.outer_digest, 32); else memset(b_scope, 0, 32);
+    CHECK(memcmp(a_scope, b_scope, 32) != 0);
+    int a_held = 0;
+    for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++)
+        a_held += e->rounds[i].state != GZ_SIGN_ROUND_FREE && !memcmp(e->rounds[i].def.outer_digest, a_scope, 32);
+    gz_sign_exposed_t *x = evicted(e, first);
+    CHECK(a_held == 0 && h_find(&h, 1, first) == NULL && x != NULL);
+    if (x) CHECK(x->state == GZ_SIGN_ROUND_COMPLETE && x->has_scope && !memcmp(x->scope, a_scope, 32));
+    CHECK(gz_sign_partials_out(e, a_scope) == GZ_SIGN_OUT_THIS);       /* the evicted entry alone */
+    CHECK(gz_sign_partials_out(e, b_scope) == GZ_SIGN_OUT_THIS && gz_sign_partials_out(e, other) == GZ_SIGN_OUT_NONE);
+    for (int k = 0; k < 4; k++) tip_to(&h, 1, 1037 + (uint32_t)k);    /* past the deadline */
+    CHECK(gz_sign_partials_out(e, a_scope) == GZ_SIGN_OUT_NONE && gz_sign_partials_out(e, b_scope) == GZ_SIGN_OUT_NONE);
     CHECK(h.errors == 0);
     h_free(&h);
 }
@@ -1728,6 +1777,7 @@ int main(void)
     test_unfinished_deadline_across_restart();
     test_unheld_complete_stays_complete();
     test_partials_out_real_flow();
+    test_partials_out_two_lobbies();
     printf("  illegal-argument callbacks: %d\n", g_illegal);
     CHECK(g_illegal == 0);
     if (g_ctx) secp256k1_context_destroy(g_ctx);
