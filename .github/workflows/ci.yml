@@ -3,13 +3,17 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The merge queue: every required check runs on the queue's merge commit.
+  merge_group:
 
 # The token GitHub gives each job can only read the repository. No job here
 # needs more; a job that does must ask for it itself.
 permissions:
   contents: read
 
-# A newer push to the same pull request cancels the run it makes stale.
+# A newer push to the same pull request cancels the run it makes stale. A
+# merge queue run has a ref of its own (gh-readonly-queue/...) and is never
+# cancelled here.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
