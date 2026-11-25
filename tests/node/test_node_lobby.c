@@ -4614,6 +4614,62 @@ static void test_funds_auto_start(void)
     w_free(3);
 }
 
+/* Review B of #98: the host's factory key is the pair's second key (key_index + 1), never the first, which
+ * is its contribution role's index (mutant ls-factory-key-is-contribution). */
+static void test_k1_host_factory_index(void)
+{
+    terms_t t;
+    lt_key_t f, c0;
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    CHECK(w_start(0) == GZ_OK);
+    make_terms(&t, 4, 3, 3140);
+    CHECK(host_open(&t, 0) == 200);
+    slot_t *h = slot(0, &t);
+    CHECK(h != NULL);
+    if (!h) { w_free(0); return; }
+    wkey(IDENT[0], h->key_epoch, h->key_index + 1, &f);
+    wkey(IDENT[0], h->key_epoch, h->key_index, &c0);
+    CHECK(memcmp(h->lobby.h.cfg.factory_key, f.pub, 33) == 0 && memcmp(h->lobby.h.cfg.factory_key, c0.pub, 33) != 0);
+    no_errors(0);
+    w_free(0);
+}
+
+/* Review B of #98, L-2: after a BD5 mismatch the seat is unreadied, as by the person, so that it is not
+ * chosen and aborted again at every check; the person readies again once the passphrase is right. */
+static void test_k1_bd5_unready(void)
+{
+    terms_t t;
+    uint8_t d[32];
+    secp256k1_keypair f, kc;
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node_engine(1, 1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node(2, 2, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    for (int n = 0; n <= 2; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 4, 3, 3150);
+    CHECK(host_open(&t, 0) == 200 && member_join(1, &t) == 200);
+    w_run(3000, 100);
+    slot_t *s = slot(1, &t);
+    CHECK(s && member_ready(1, &t) == 1 && host_ready(&t) == 1);
+    if (!s) { w_free(2); return; }
+    gz_terms_current_digest(t.current, t.cn, d);
+    SECRET_SKEW[1] = 1;
+    size_t sent0 = NSENT;
+    CHECK(gz_sg_keys(N[1].n, t.scope, d, &f, &kc) == 0 && s->bd5_mismatch);
+    /* the slot's next step (here: the host's status as member 2 joins) unreadies it */
+    CHECK(member_join(2, &t) == 200);
+    w_run(3000, 100);
+    CHECK(member_ready(1, &t) == 0 && s->lobby.m.user_unready && !s->bd5_mismatch);
+    CHECK(sent_count(1, sent0, GZ_KIND_UNREADY) >= 1 && host_ready(&t) == 1);         /* member 2's alone */
+    SECRET_SKEW[1] = 0;
+    CHECK(scope_cmd(1, GZ_CMD_LOBBY_READY, &t, 0) == 200);                   /* the person readies again */
+    w_run(2000, 100);
+    CHECK(member_ready(1, &t) == 1 && host_ready(&t) == 2 && slot(1, &t) == s);
+    no_errors(2);
+    w_free(2);
+}
+
 int main(int argc, char **argv)
 {
     unsigned long events = argc > 1 ? strtoul(argv[1], NULL, 10) : 20000;
@@ -4678,5 +4734,7 @@ int main(int argc, char **argv)
     test_k1_ls_sign_no_factory();
     test_k1_stale_epoch();
     test_k1_bd5_mismatch();
+    test_k1_host_factory_index();
+    test_k1_bd5_unready();
     return check_done();
 }
