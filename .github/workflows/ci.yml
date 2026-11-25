@@ -3,8 +3,23 @@ on:
   push:
     branches: [main]
   pull_request:
-  # The merge queue: every required check runs on the queue's merge commit.
+    # labeled: adding full-ci (heavy tier) or signer-boundary-growth runs the
+    # checks again with the label; any other label also starts a new run.
+    types: [opened, synchronize, reopened, labeled]
+  # The merge queue: every required check runs on the queue's merge commit,
+  # heavy tier included.
   merge_group:
+  # Nightly, heavy tier: main here, and the job nightly-dispatch starts the
+  # same full run on the other long-lived branches.
+  schedule:
+    - cron: "23 2 * * *"
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: "fast: what every pull request runs; full: the heavy tier too"
+        type: choice
+        options: [full, fast]
+        default: full
 
 # The token GitHub gives each job can only read the repository. No job here
 # needs more; a job that does must ask for it itself.
@@ -13,9 +28,10 @@ permissions:
 
 # A newer push to the same pull request cancels the run it makes stale. A
 # merge queue run has a ref of its own (gh-readonly-queue/...) and is never
-# cancelled here.
+# cancelled here. The event is part of the group, so a nightly or dispatched
+# run never waits behind, or replaces, a push's run of the same branch.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Every third-party action is pinned to a full commit SHA; the comment names
@@ -38,14 +54,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libcurl4-openssl-dev valgrind python3-cryptography
-      - name: Configure
-        # GZ_INTEROP_PY: gz-net against the independent Python peer (BOLT 8,
-        # and BOLT 1 init, ping and pong with factory messages).
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DGZ_SANITIZE=$SANITIZE -DGZ_WERROR=ON -DGZ_INTEROP_PY=ON
-      - name: Build
-        run: cmake --build build -j
+      - name: Install, configure and build (gcc, Release, GZ_SANITIZE=OFF, GZ_INTEROP_PY)
+        # .github/actions/gz-build/configs.sh: gcc-off. One shard saves the
+        # compiler cache.
+        uses: ./.github/actions/gz-build
+        with:
+          config: gcc-off
+          save-cache: ${{ matrix.shard == '1' }}
       - name: Test
         # Reference tree; core (action list, runner, node, isolation check and
         # its negative test); simulator (generator, harness, known trace,
@@ -138,14 +153,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libcurl4-openssl-dev valgrind python3-cryptography
-      - name: Configure
-        # GZ_INTEROP_PY: gz-net against the independent Python peer (BOLT 8,
-        # and BOLT 1 init, ping and pong with factory messages).
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DGZ_SANITIZE=$SANITIZE -DGZ_WERROR=ON -DGZ_INTEROP_PY=ON
-      - name: Build
-        run: cmake --build build -j
+      - name: Install, configure and build (gcc, Release, GZ_SANITIZE=ON, GZ_INTEROP_PY)
+        # .github/actions/gz-build/configs.sh: gcc-on. One shard saves the
+        # compiler cache.
+        uses: ./.github/actions/gz-build
+        with:
+          config: gcc-on
+          save-cache: ${{ matrix.shard == '1' }}
       - name: Test
         # Reference tree; core (action list, runner, node, isolation check and
         # its negative test); simulator (generator, harness, known trace,
@@ -310,21 +324,18 @@ jobs:
       matrix:
         include:
           - name: plain
-            sanitize: OFF
+            config: clang-plain
           - name: ASan+UBSan
-            sanitize: ON
-    env:
-      CC: clang-18
+            config: clang-asan
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake clang-18 libclang-rt-18-dev libssl-dev
-      - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DGZ_SANITIZE=${{ matrix.sanitize }} -DGZW_BREAK_CHECKS=OFF
-      - name: Build
-        run: cmake --build build -j
+      - name: Install, configure and build (clang 18, Release, GZ_SANITIZE OFF or ON)
+        # .github/actions/gz-build/configs.sh: clang-plain, clang-asan (CC=clang-18).
+        uses: ./.github/actions/gz-build
+        with:
+          config: ${{ matrix.config }}
       - name: Test
         # The slow wallet break-checks run in the gcc build only.
         run: ctest --test-dir build --output-on-failure --timeout 600 -LE slow -j "$(nproc)"
@@ -343,47 +354,26 @@ jobs:
     name: clang MemorySanitizer
     runs-on: ubuntu-24.04
     timeout-minutes: 40
-    env:
-      CC: clang-18
-      OPENSSL_VERSION: 3.0.22
-      OPENSSL_SHA256: 67ebca7e50d17383028045486653492195b83db95f8558709701bb47b5c1ef81
+    # Heavy tier (docs/notes/ci.md, "Tiers"): the merge queue, main, the
+    # nightly run, a dispatch with tier=full, and pull requests labelled
+    # full-ci. Skipped by this if on other pull requests, which GitHub reports
+    # as a pass; the merge queue then runs it for real.
+    if: >-
+      github.event_name == 'merge_group' || github.event_name == 'push' ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.tier != 'fast') ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci')
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake clang-18 libclang-rt-18-dev
-      - name: Cache OpenSSL built with MemorySanitizer
-        id: openssl-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Install, configure and build (clang 18, MemorySanitizer, OpenSSL built with it)
+        # .github/actions/gz-build/configs.sh: msan. OpenSSL 3.0.22 is built
+        # from its release source, checked against its SHA-256, and cached;
+        # secp256k1's x86-64 assembly is off (MSan cannot see what it writes).
+        uses: ./.github/actions/gz-build
         with:
-          path: ~/openssl-msan
-          key: openssl-${{ env.OPENSSL_VERSION }}-msan-clang18-ubuntu24.04-v1
-      - name: Build OpenSSL with MemorySanitizer
-        # Every library the tests call must be instrumented, or MSan reports
-        # the bytes it returns as uninitialised. libcrypto only, static.
-        if: steps.openssl-cache.outputs.cache-hit != 'true'
-        run: |
-          cd "$RUNNER_TEMP"
-          curl -fsSL -o openssl.tar.gz "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VERSION/openssl-$OPENSSL_VERSION.tar.gz"
-          echo "$OPENSSL_SHA256  openssl.tar.gz" | sha256sum --check --strict
-          tar xzf openssl.tar.gz
-          cd "openssl-$OPENSSL_VERSION"
-          ./Configure linux-x86_64-clang enable-msan no-asm no-shared no-tests no-module \
-            --prefix="$HOME/openssl-msan" --libdir=lib CC=clang-18 \
-            CFLAGS="-fsanitize-memory-track-origins -fno-omit-frame-pointer -g -O1" > /dev/null
-          make -j"$(nproc)" build_libs > /dev/null
-          make install_dev > /dev/null
-      - name: Configure
-        # secp256k1's x86-64 assembly is off: MSan cannot see what assembly writes.
-        run: >
-          cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGZW_BREAK_CHECKS=OFF
-          -DCMAKE_C_FLAGS="-fsanitize=memory -fsanitize-memory-track-origins -fno-omit-frame-pointer"
-          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=memory"
-          -DSECP256K1_ASM=OFF
-          -DOPENSSL_ROOT_DIR="$HOME/openssl-msan" -DOPENSSL_USE_STATIC_LIBS=TRUE
-      - name: Build
-        run: cmake --build build -j
+          config: msan
       - name: Test
         run: ctest --test-dir build --output-on-failure --timeout 900 -LE slow -j "$(nproc)"
       - name: Keep the program tests' logs when a test fails
@@ -405,6 +395,12 @@ jobs:
     name: valgrind (shard ${{ matrix.shard }} of 3)
     runs-on: ubuntu-24.04
     timeout-minutes: 35
+    # Heavy tier: the same condition as msan's (docs/notes/ci.md, "Tiers").
+    if: >-
+      github.event_name == 'merge_group' || github.event_name == 'push' ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.tier != 'fast') ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci')
     strategy:
       fail-fast: false
       matrix:
@@ -413,38 +409,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev valgrind
-      - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGZW_BREAK_CHECKS=OFF
-      - name: Build
-        run: cmake --build build -j
+      - name: Install, configure and build (gcc, RelWithDebInfo, no sanitizer)
+        # .github/actions/gz-build/configs.sh: valgrind. Shard 0 saves the
+        # compiler cache.
+        uses: ./.github/actions/gz-build
+        with:
+          config: valgrind
+          save-cache: ${{ matrix.shard == 0 }}
       - name: Every compiled test under memcheck
-        # The 1,000-seed simulator run takes over eight minutes under valgrind;
-        # 200 seeds of the same length here, all 1,000 in every other build.
-        # storage_vector_e2r (Argon2id at 256 MiB) is E2's code at more memory.
-        # The signing sections run their "tiny" sets (every path, fewer seeds)
-        # and the engine fuzzer a short run: the full sets take hours here.
-        run: >
-          python3 -I tools/valgrind-tests.py build --shard ${{ matrix.shard }}/3
-          --args "sim_seeds=200 400 1 0" --args "journal_fuzz=3000 7"
-          --args "journal_fuzz_model=200 1" --args "journal_fuzz_open=3000 1"
-          --args "lobby_sim_profile_0=3 0" --args "lobby_sim_profile_1=3 1"
-          --args "lobby_sim_profile_2=3 2" --args "lobby_sim_profile_3=3 3"
-          --args "lobby_fuzz=3000 2" --args "lobby_fuzz_seq=300 2"
-          --args "api_http_fuzz=3000" --args "api_json_fuzz=20000"
-          --args "node_fuzz=300" --args "node_hostile=6 400" --args "sim_profile_6=25 300 1 6"
-          --args "node_lobby=1500 1" --args "lobby_hostile=3000 2"
-          --args "chain_fuzz_parse=20000" --args "chain_fuzz_watch=1500"
-          --exclude '^storage_vector_e2r$'
-          --args "signing_blocks=blocks tiny" --args "signing_decoders=decoders tiny"
-          --args "signing_golden=golden tiny" --args "signing_model=model tiny"
-          --args "signing_faults=faults tiny" --args "signing_honest=honest tiny"
-          --args "signing_t1=t1 tiny" --args "signing_crashes=crashes tiny"
-          --args "signing_restores=restores tiny" --args "signing_errors=errors tiny"
-          --args "signing_fuzz=1000 2"
-          --args "signing_fuzz_replay=1000"
-          --args "fuzz_tree_agree=40"
+        # tools/ci-valgrind.py holds the shorter cases (200 simulator seeds
+        # instead of 1,000, the signing sections' "tiny" sets, short fuzz
+        # runs) and leaves out storage_vector_e2r (Argon2id at 256 MiB, E2's
+        # code at more memory); agent-run.yml uses the same list.
+        run: python3 -I tools/ci-valgrind.py build --shard ${{ matrix.shard }}/3
       - name: Storage and signing constant-time checks (secrets marked undefined, under memcheck)
         # Registered only where valgrind and its headers are installed: here.
         # Once, in the first shard.
@@ -470,16 +447,21 @@ jobs:
     name: constant time (Debug build)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    # Heavy tier: the same condition as msan's (docs/notes/ci.md, "Tiers").
+    if: >-
+      github.event_name == 'merge_group' || github.event_name == 'push' ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.tier != 'fast') ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci')
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libcurl4-openssl-dev valgrind
-      - name: Configure (Debug, no optimisation)
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Debug -DGZW_BREAK_CHECKS=OFF
-      - name: Build
-        run: cmake --build build -j
+      - name: Install, configure and build (gcc, Debug, no optimisation)
+        # .github/actions/gz-build/configs.sh: debug.
+        uses: ./.github/actions/gz-build
+        with:
+          config: debug
       - name: The constant-time tests under memcheck, unoptimised
         # Each expected test must be registered, exactly once: a test that
         # stopped being registered (valgrind's headers missing, a renamed
@@ -496,8 +478,16 @@ jobs:
   valgrind:
     name: valgrind
     needs: valgrind-shard
-    if: always()
     runs-on: ubuntu-24.04
+    # always(): it runs, and fails, when a shard failed. Heavy tier: the same
+    # condition as msan's (docs/notes/ci.md, "Tiers"). On a pull request
+    # without full-ci both the shards and this job are skipped, which
+    # GitHub reports as a pass for the required check "valgrind".
+    if: >-
+      always() && (github.event_name == 'merge_group' || github.event_name == 'push' ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.tier != 'fast') ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci'))
     timeout-minutes: 5
     steps:
       - name: All three shards passed
@@ -512,8 +502,12 @@ jobs:
     runs-on: ubuntu-24.04
     # One minute per target, plus the build: 17 targets took 19 min 21 s.
     timeout-minutes: 30
-    env:
-      CC: clang-18
+    # Heavy tier: the same condition as msan's (docs/notes/ci.md, "Tiers").
+    if: >-
+      github.event_name == 'merge_group' || github.event_name == 'push' ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.tier != 'fast') ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci')
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -528,18 +522,12 @@ jobs:
             echo "found=false" >> "$GITHUB_OUTPUT"
             echo "::notice::No fuzz targets on this branch (no LLVMFuzzerTestOneInput); nothing to run."
           fi
-      - name: Install dependencies
+      - name: Install, configure and build (clang 18, libFuzzer, ASan+UBSan)
+        # .github/actions/gz-build/configs.sh: fuzz (CC=clang-18).
         if: steps.find.outputs.found == 'true'
-        run: sudo apt-get update && sudo apt-get install -y cmake clang-18 libclang-rt-18-dev libssl-dev
-      - name: Configure
-        if: steps.find.outputs.found == 'true'
-        run: >
-          cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGZW_BREAK_CHECKS=OFF -DGZ_LIBFUZZER=ON
-          -DCMAKE_C_FLAGS="-fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer"
-          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
-      - name: Build
-        if: steps.find.outputs.found == 'true'
-        run: cmake --build build -j
+        uses: ./.github/actions/gz-build
+        with:
+          config: fuzz
       - name: Run each target for 60 seconds
         if: steps.find.outputs.found == 'true'
         run: sh tools/run-fuzz.sh build 60
@@ -552,12 +540,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libcurl4-openssl-dev
       - name: Build gz-api-fake (the API server, the fake backend, the interface compiled in) and gazpacho-test
-        run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release -DGZ_WERROR=ON -DGZW_BREAK_CHECKS=OFF
-          cmake --build build --target gz-api-fake gazpacho-test -j
+        # .github/actions/gz-build/configs.sh: interface.
+        uses: ./.github/actions/gz-build
+        with:
+          config: interface
+          targets: gz-api-fake gazpacho-test
       - name: Install Playwright (pinned by tests/web/package-lock.json) and Chromium
         working-directory: tests/web
         run: |
@@ -661,6 +649,12 @@ jobs:
     name: node mutants (shard ${{ matrix.shard }} of 6)
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    # Heavy tier: the same condition as msan's (docs/notes/ci.md, "Tiers").
+    if: >-
+      github.event_name == 'merge_group' || github.event_name == 'push' ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.tier != 'fast') ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci')
     strategy:
       fail-fast: false
       matrix:
@@ -678,6 +672,12 @@ jobs:
     name: signer mutants
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    # Heavy tier: the same condition as msan's (docs/notes/ci.md, "Tiers").
+    if: >-
+      github.event_name == 'merge_group' || github.event_name == 'push' ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.tier != 'fast') ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci')
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -686,3 +686,30 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libcurl4-openssl-dev valgrind
       - name: Every check of signer/ and of the two S1 tools is killed by a test
         run: python3 -I tools/mutate-signer.py . "$RUNNER_TEMP/signer-mutants" -j "$(nproc)"
+
+  # The nightly run covers main itself (this run). The other long-lived
+  # branches get the same full run through workflow_dispatch on each, with
+  # that branch's own ci.yml: a schedule runs on the default branch only.
+  # A branch whose ci.yml has no workflow_dispatch yet (it has not merged
+  # main since the tiers came) gets a warning, not a run.
+  nightly-dispatch:
+    name: nightly full runs of the long-lived branches
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # actions: write, to start workflow_dispatch runs; nothing else
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch ci.yml with tier=full on integration-slice1 and composite-p6a
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for b in integration-slice1 composite-p6a; do
+            if gh workflow run ci.yml -R "$GITHUB_REPOSITORY" -r "$b" -f tier=full; then
+              echo "- $b: full run started" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::warning::no nightly run on $b (the branch is gone, or its ci.yml has no workflow_dispatch yet)"
+              echo "- $b: not started" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done

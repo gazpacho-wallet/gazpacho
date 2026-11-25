@@ -2,7 +2,57 @@
 
 What `.github/workflows/ci.yml` runs, what each job guards, and how to run the same check on your own machine. Written 2026-11-12 with the CI hardening branch (PR 16); brought up to date the same day, after the transport, chain view and wallet transactions merged.
 
-CI runs on every pull request and on every push to `main`. All jobs run in parallel on GitHub's `ubuntu-24.04` runners; the longest is valgrind, about 10 to 13 minutes. Every job has a 30-minute limit or less, so that a real slowdown shows. The wallet break-checks run in a workflow of their own (`wallet-break-checks.yml`, below).
+CI runs in two tiers (below): the fast tier on every pull request push, and the heavy tier as well in the merge queue, on every push to `main`, nightly, by hand, and on pull requests labelled `full-ci`. All jobs run in parallel on GitHub's `ubuntu-24.04` runners. Every job has a time limit, so that a real slowdown shows. The wallet break-checks run in a workflow of their own (`wallet-break-checks.yml`, below). Tests on demand, for agents and builders, run in `agent-run.yml` (below), not on a server.
+
+## Tiers
+
+Nothing that guards `main` is dropped: every required check still runs, for real, on the merge queue's merge commit before anything reaches `main`. What changed is when the slowest jobs run on a pull request.
+
+- **Fast tier, every run:** `build (OFF)` and `build (ON)` with their shards and the shard-list check, `clang (plain)`, `clang (ASan+UBSan)`, `specification vectors`, `handbook up to date`, `imported SuperScalar files unchanged`, `no addresses or local paths`, `signer boundary`, `interface in a browser`, and the wallet break-checks (their own workflow, unchanged).
+- **Heavy tier:** `clang MemorySanitizer`, the three `valgrind` shards and the job `valgrind`, `libFuzzer, 60 s per target`, `constant time (Debug build)`, the six node mutant shards and `signer mutants`. Each has the same job-level `if:`; it is true when any of these holds:
+  - the event is `merge_group` (the merge queue);
+  - a push (the `push` trigger is `main` only);
+  - `schedule`: nightly at 02:23 UTC;
+  - `workflow_dispatch` with `tier` = `full` (the default; `fast` runs the fast tier only);
+  - a pull request carrying the label `full-ci`.
+
+**Why the required checks still work.** GitHub reports a job skipped by its own `if:` as a pass, and such a job does not block a merge even when its check is required ("Status checks" and "Troubleshooting required status checks" in GitHub's documentation). So on an ordinary pull request `clang MemorySanitizer`, `valgrind` and `libFuzzer, 60 s per target` show as skipped and passing, and the merge queue then runs them for real on the merge commit: a failure there takes the pull request out of the queue. Branch protection and the ruleset are unchanged, and no required job was renamed. The required `valgrind` keeps `always()` in its `if:` beside the tier condition: in the heavy tier it runs, and fails, when a shard failed or was cancelled; outside it, it is skipped with its shards. (A skipped matrix job shows as one check with its name unexpanded, such as `valgrind (shard ${{ matrix.shard }} of 3)`; none of those is required.) A dependent job that is skipped because a job it needs failed would also read as passing, which is why the required aggregators (`build (OFF)`, `build (ON)`, `valgrind`) use `always()` and test the results themselves.
+
+**The label `full-ci`.** Adding it starts a new run with the heavy tier (the `pull_request` trigger includes `labeled`), and every later push to the pull request runs the heavy tier while the label stays. Any other label also starts a new run of the fast tier; adding `signer-boundary-growth` therefore re-runs `signer boundary` with the label, where before someone had to re-run the job. The coordinator's rule: before merging into a branch other than `main` (`composite-p6a`, `integration-slice1`), which has no merge queue, add `full-ci` and wait for the heavy tier, and list every red job's failing tests, as before.
+
+**`signer boundary` in each case.** On a pull request (labelled `full-ci` or not) it compares the allow list with the merge base and reads `signer-boundary-growth` from the event, as before. In the queue it compares with the queue's `base_sha` and reads the label through the API, failing closed. On a push, the nightly run or a dispatch it runs `--no-growth` without a base, as a push to `main` always did.
+
+**Nightly.** A schedule runs on the default branch only. The nightly run of `ci.yml` is itself the full run of `main`; its job `nightly full runs of the long-lived branches` (`actions: write`, nothing else) then starts `ci.yml` with `tier=full` by `workflow_dispatch` on `integration-slice1` and `composite-p6a`, each with that branch's own `ci.yml`. A branch whose `ci.yml` has no `workflow_dispatch` yet (it has not merged `main` since the tiers came) gets a warning in that job and no run. To add a branch, add it to the job's list.
+
+**By hand:** `gh workflow run ci.yml -R gazpacho-wallet/gazpacho -r <branch> -f tier=full` (or `tier=fast`).
+
+## Agent runs (`.github/workflows/agent-run.yml`)
+
+Tests on demand on GitHub's runners, for agents and builders, instead of a server: no SSH, no waits, up to 20 jobs at once. Started only by `workflow_dispatch`, so only by someone who can write to the repository; never a required check. Inputs:
+
+- `ref`: the branch, tag or full commit SHA to test;
+- `suite`: `focused` (one build, `ctest -R <regex>`), `full` (the fast tier: both gcc builds unsharded with the ThreadSanitizer steps and the scale check, both clang builds, the browser job, the script checks, the wallet break-checks), `heavy` (the heavy tier, sharded as in CI), `mutants` (the named mutants only) or `playwright` (the browser job);
+- `regex`: the `ctest -R` pattern (required for `focused`; it narrows `full` and `heavy`, and is a spec-file filter for `playwright`); `exclude`: `ctest -E`;
+- `mutants`: names from `tests/node/mutants.txt` or `signer/tests/mutants.txt`, space-separated; each is looked up and run by its own runner, and an unknown name fails the plan;
+- `sanitizer` (`focused` only): `none` (the gcc build), `asan` (gcc with ASan+UBSan) or `msan` (clang MemorySanitizer);
+- `build_type`: a `CMAKE_BUILD_TYPE` instead of the build's own.
+
+Every build goes through the action `.github/actions/gz-build`, the same one `ci.yml` uses, taken from the branch the workflow runs from (`-r`, normally `main`), so an agent's build is CI's build applied to `ref`. The valgrind shards use `tools/ci-valgrind.py` (CI's list of shorter cases) from `ref` when it has one. Each job writes a step summary with the passed and failed test names and the tail of each failure's output (`tools/ci-summary.py`, from ctest's and Playwright's JUnit output, or from the valgrind and mutant runners' result lines), and keeps its log, JUnit files, `build/Testing` and the program tests' logs as the artifact `agent-run-<job>` for 7 days. Token: `contents: read`. One run at a time per `ref` and `suite`: a newer one waits for the running one.
+
+    gh workflow run agent-run.yml -R gazpacho-wallet/gazpacho -r main -f ref=<sha> -f suite=focused -f regex='^program_'
+    gh run list -R gazpacho-wallet/gazpacho --workflow agent-run.yml -L 1
+    gh run view <id> -R gazpacho-wallet/gazpacho --log-failed
+    gh run download <id> -R gazpacho-wallet/gazpacho -n agent-run-focused
+
+Agents iterate on `focused` runs and do one `full` run before asking for review; push work in progress to a branch (`wip/<name>`) to test it.
+
+## Caches
+
+Caches only save time; none changes what is tested.
+
+- **ccache.** Every C job of `ci.yml` (not the mutant runners, which build their own trees) builds with `-DCMAKE_C_COMPILER_LAUNCHER=ccache`. The cache is kept with `actions/cache`, keyed by the runner image, the compiler, the build type, the sanitizer and the build configuration, plus the run; a job restores the newest entry of its key. ccache hashes the compiler, every flag and every preprocessed input of a compilation, so a hit is the object the same compilation would make; failed compilations are never cached. One job per configuration saves (shard 1 of the gcc builds, shard 0 of valgrind); merge queue runs and agent runs restore but never save.
+- **The pinned dependencies.** secp256k1-zkp (at the commit `CMakeLists.txt` pins), libsodium and utf8proc (the tarballs `ports/storage/crypto/CMakeLists.txt` pins by SHA-256) are cached under a key made of those pins. On every use the action checks the source is at the pinned commit with nothing changed or added, and each tarball against its SHA-256; only then does it pass them to CMake (`-DFETCHCONTENT_SOURCE_DIR_SECP256K1-ZKP`, under a `_deps/` folder as FetchContent's own, and `-DGZ_DEPS_DIR`, where CMake checks each tarball's SHA-256 again). If anything does not match, or a fetch fails, CMake fetches the dependencies itself, as before.
+- **OpenSSL for MSan**, as before: built from its hash-checked source, cached under its version.
 
 ## Rules for the workflow file
 
@@ -13,7 +63,8 @@ CI runs on every pull request and on every push to `main`. All jobs run in paral
 - **Tests run in parallel.** The gcc, clang and MSan jobs run `ctest -j "$(nproc)"` (4 on GitHub's runners), so they stay inside their limits on a slow runner without raising them. A test that cannot share the machine says so in CMake: the program tests that pick their port with `free_port()` (bind port 0, close, listen on that number later) hold the lock `gzp_free_port` and run one after another (with `program_two_process`, whose later hosts listen again on the number its first host was given); `program_chain_watch` is `RUN_SERIAL` (its wait for the worker's BUSY answer flaked under load); and the wallet break-checks are `RUN_SERIAL` (they build and test with `-j4` themselves). `valgrind_signing` (the build without sanitizers) is `RUN_SERIAL` too: alone it takes about 450 s of its 600 s limit, and beside three other tests it ran out. PR 51's `program_api` and `program_api_limits` pick ports with their own `free_port()` and must join `gzp_free_port` when PR 51 merges. Every other test makes its own folder (`mkdtemp`, or a folder of its own in the build directory) and listens on port 0 with the socket the kernel gave it. A new test that uses a fixed port, a shared folder or the whole machine must get a `RESOURCE_LOCK` or `RUN_SERIAL` too.
 - **Program logs on failure.** When a test fails in the gcc, clang or MSan job, the logs that the program tests' processes write under `build/program` (`*.log`, one per process) are kept as the artifact `program-logs-<job>` for 7 days: `gh run download <run-id> -p 'program-logs-*'`.
 - **The merge queue.** Every workflow that gives a required check also runs on `merge_group`, so the queue gets its results on the merge commit it builds. A step that reads a pull request's context uses the queue's own there: the wallet break-checks compare with `github.event.merge_group.base_sha` instead of the pull request's base. A queue run is never cancelled by a newer push.
-- **Stale runs are cancelled.** A new push to a pull request cancels that pull request's run in progress. Runs on `main` are never cancelled.
+- **Stale runs are cancelled.** A new push to a pull request, or a new label on it, cancels that pull request's run in progress. Runs on `main` are never cancelled. The event is part of the concurrency group, so a nightly or dispatched run never waits behind a push's run of the same branch.
+- **Builds through one action.** Every C job installs, configures and builds through `.github/actions/gz-build`; `configs.sh` there holds each build's packages and options. A change there changes what CI checks and is reviewed as such.
 
 ## The jobs
 
@@ -28,6 +79,8 @@ The lobby connections' keep-alive runs here as `net_keepalive`: two processes ho
 ### interface in a browser
 
 Guards: the local web interface (`web/`, stream S10) works in a real browser against `gz-api-fake`, the API server with the fake backend and the interface compiled in. Playwright drives Chromium through every Slice 1 flow (`tests/web/`: first run and the 24 words, sign-in and lock, conditions, lobbies, the signing moment and its refusals, hosting, the factory, node busy, the chain view in doubt, the event stream dropping), checks that no page makes a request to any host but the local API and that the words leave the page, and then runs the API server's own browser checks (`tests/api/browser/`), which no job ran before. The job builds only the `gz-api-fake` target. Playwright is installed with `npm ci` from `tests/web/package-lock.json`, which pins every package by hash; the Chromium build is the one that Playwright version names (downloaded by Playwright, not pinned by a hash of ours). The static rules for the interface's files run in every build as the CTest test `web_static_check`.
+
+End to end: the job builds `gazpacho-test` too and sets `GZ_PROGRAM`, so `tests/web/multiprocess.spec.mjs` drives real program processes, a host and its members, through their own interfaces to the ready check, with a refusal seen by the host. In CI the spec may not be skipped for want of the program (it throws without `GZ_PROGRAM`). On `main` it is still marked `fixme` until P6a (the core's lobby view objects) merges; on `composite-p6a` it runs, with three members. The job is not required.
 
 Locally: `tests/web/README.md`. Run it on a server or in CI, never on a workstation holding a wallet.
 
@@ -93,7 +146,7 @@ Locally (Linux, clang 18 and its runtime libraries installed):
 
 ### clang MemorySanitizer
 
-Guards: reads of uninitialised memory, which neither ASan nor valgrind reports precisely (checklist item 23). MSan needs every library the tests call to be built with it, or it reports the bytes that library returns as uninitialised. So:
+Heavy tier. Guards: reads of uninitialised memory, which neither ASan nor valgrind reports precisely (checklist item 23). MSan needs every library the tests call to be built with it, or it reports the bytes that library returns as uninitialised. So:
 
 - secp256k1-zkp is built from source by our CMake anyway; the job passes the MSan flags through `CMAKE_C_FLAGS`, which reach it, and turns off its x86-64 assembly (`-DSECP256K1_ASM=OFF`), whose writes MSan cannot see.
 - OpenSSL is built from the 3.0.22 release source (libcrypto only, static, `enable-msan no-asm`), checked against its SHA-256, and cached between runs (`actions/cache`), so only the first run after a change of version pays the few minutes it takes.
@@ -121,11 +174,13 @@ Locally (Linux, clang 18):
 
 Guards: memory errors and definite leaks in the compiled tests, on a build with no sanitizer (so it sees the code as shipped, at `-O2`). `tools/valgrind-tests.py` asks CTest for the registered tests and runs each one whose command is a program built in the build directory under `valgrind --error-exitcode=99 --leak-check=full --errors-for-leak-kinds=definite --track-origins=yes`, with the same arguments. Tests run through `sh` or Python are listed and skipped: valgrind would check the shell, not our code. Tests run one per processor in parallel. The job runs as three shards side by side (`valgrind (shard I of 3)`, `--shard I/3`: by name order, every third test), each under the same 35-minute limit, so every test still runs under memcheck exactly once; the job named `valgrind`, the required check, passes only if all three shards passed. The constant-time step runs in shard 0. The 1,000-seed simulator run took eight minutes under valgrind, so this job runs it with 200 seeds of the same length (`--args "sim_seeds=200 400 1 0"`); every other build runs all 1,000. Before this job, valgrind ran only in `m1a-followup`'s copy of the workflow.
 
+Heavy tier. The list of shorter cases is in `tools/ci-valgrind.py`, which `agent-run.yml` uses too; with `--include` or `--exclude` it passes only the `--args` of the tests selected.
+
 Locally (Linux, valgrind installed):
 
     cmake -B build-vg -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGZW_BREAK_CHECKS=OFF
     cmake --build build-vg -j
-    python -I tools/valgrind-tests.py build-vg --args "sim_seeds=200 400 1 0" [-j N] [-v] [--include REGEX] [--exclude REGEX] [--shard I/N]
+    python -I tools/ci-valgrind.py build-vg [--include REGEX] [--exclude REGEX] [--shard I/N]
 
 The storage layer's E2r test (Argon2id at 256 MiB, `storage_vector_e2r`) is excluded here: it is E2's code at more memory and takes minutes under memcheck. A second step runs `storage_ctime`, the constant-time check: `sc_test_ctime` marks the passphrase key, MSK, the seed and the words' entropy undefined and runs every storage operation that holds them under memcheck, so a branch or index on a secret is an error (libsecp256k1's method). Its CTest command is `ports/storage/crypto/tests/ctime-check.py`, so `valgrind-tests.py` lists it as skipped; the step runs it, and fails if it was not registered (valgrind, its headers or Python missing). The checker runs memcheck with no suppression file and its errors written as XML, and allows exactly one source line: libsodium 1.0.22's `if (ret != 0)` after the constant-time tag comparison (`aead_xchacha20poly1305.c` line 111, reached from `sc_unseal`), whose outcome is public. Any other error, or that branch at another line, fails. A suppression file could name only the function, which after a libsodium upgrade would hide any new secret-dependent branch in it (review A, L5); a libsodium upgrade has to re-check the line. libsodium is built with `-g` in every job for this.
 
@@ -141,7 +196,7 @@ A second step, `tools/pchain-tsan.sh`, builds the program's chain adapter (`prog
 
 ### libFuzzer, 60 s per target
 
-Guards: every parser of outside input keeps being fuzzed (checklist item 20), with coverage guidance, ASan and UBSan. The job looks for `LLVMFuzzerTestOneInput` in the C sources. If there is none (a branch from before PR 10), it prints a notice and passes. Otherwise it builds the tree with clang, `-fsanitize=fuzzer-no-link,address,undefined` and `-DGZ_LIBFUZZER=ON`, and `tools/run-fuzz.sh` runs every executable named `fuzz_*` for 60 seconds. It fails on any crash, leak, sanitizer report or 10-second input, and libFuzzer prints the failing input in the log. If the sources define fuzz targets but no `fuzz_*` executable was built, it fails, so a target cannot drop out of the job by being renamed.
+Heavy tier. Guards: every parser of outside input keeps being fuzzed (checklist item 20), with coverage guidance, ASan and UBSan. The job looks for `LLVMFuzzerTestOneInput` in the C sources. If there is none (a branch from before PR 10), it prints a notice and passes. Otherwise it builds the tree with clang, `-fsanitize=fuzzer-no-link,address,undefined` and `-DGZ_LIBFUZZER=ON`, and `tools/run-fuzz.sh` runs every executable named `fuzz_*` for 60 seconds. It fails on any crash, leak, sanitizer report or 10-second input, and libFuzzer prints the failing input in the log. If the sources define fuzz targets but no `fuzz_*` executable was built, it fails, so a target cannot drop out of the job by being renamed.
 
 The targets on `main` today: `fuzz_noise` and `fuzz_tlv` (the transport's BOLT 8 and TLV decoders, since PR 10) and `fuzz_tx_parse` (the wallet's transaction parser, since PR 11). The storage layer adds `fuzz_sc_keyfile`, `fuzz_sc_frame` (journal entries and header), `fuzz_sc_mark` (mark and guard files) and `fuzz_sc_export` (exports, their bodies and the attempts file). The chain view's fuzz test (`chain_fuzz`, `ports/chain/tests/test_fuzz.c`) has only a plain driver: it runs as a CTest test in every build, but not in this job.
 
@@ -174,11 +229,11 @@ Locally (Linux, clang 18):
 
 ### constant time (Debug build)
 
-Not required. The constant-time tests (`signing_ctime` and `signer_ctime`; `program_keys_ct` is added to the list when the program's key layer, #53, merges) run under memcheck in a Debug build, with no optimisation. Every other job optimises, and optimisation can turn a branch on a secret into straight-line code, so a Release run can pass where the code is not constant time: unoptimised, `a && b` on two secret-dependent results is a branch. The job first checks that each expected test is registered exactly once (`ctest -N -R "^name$"`), so a test that silently stopped being registered fails it. Locally: `cmake -B build-debug -DCMAKE_BUILD_TYPE=Debug`, build, then `ctest --test-dir build-debug -R '^(signing_ctime|signer_ctime|program_keys_ct)$'`.
+Not required; heavy tier. The constant-time tests (`signing_ctime` and `signer_ctime`; `program_keys_ct` is added to the list when the program's key layer, #53, merges) run under memcheck in a Debug build, with no optimisation. Every other job optimises, and optimisation can turn a branch on a secret into straight-line code, so a Release run can pass where the code is not constant time: unoptimised, `a && b` on two secret-dependent results is a branch. The job first checks that each expected test is registered exactly once (`ctest -N -R "^name$"`), so a test that silently stopped being registered fails it. Locally: `cmake -B build-debug -DCMAKE_BUILD_TYPE=Debug`, build, then `ctest --test-dir build-debug -R '^(signing_ctime|signer_ctime|program_keys_ct)$'`.
 
 ### node mutants (shards 0 to 5)
 
-Not required. `tools/mutate-node.py --shard I/6` runs every sixth mutant of `tests/node/mutants.txt`, so the six shards together run each mutant exactly once. For each mutant it changes one file, rebuilds the node's tests and runs them. A shard fails if any of its mutants survives without a `# equivalent` or `# untested` line giving the reason, or does not apply or compile. Locally: `python3 -I tools/mutate-node.py . WORK [-j N] [--shard I/N] [NAME...]`.
+Not required; heavy tier. `tools/mutate-node.py --shard I/6` runs every sixth mutant of `tests/node/mutants.txt`, so the six shards together run each mutant exactly once. For each mutant it changes one file, rebuilds the node's tests and runs them. A shard fails if any of its mutants survives without a `# equivalent` or `# untested` line giving the reason, or does not apply or compile. Locally: `python3 -I tools/mutate-node.py . WORK [-j N] [--shard I/N] [NAME...]`.
 
 ### signer boundary and signer mutants
 
@@ -212,7 +267,7 @@ The job fails on:
 - the tools' own tests (`tests/tools/test_check_signer_boundary.py`, `tests/tools/test_check_tags.py`);
 - `tools/signer-vectors.py --check`, the signer's vectors recomputed in pure Python.
 
-`signer mutants` runs `tools/mutate-signer.py` over `signer/tests/mutants.txt`: one mutant per check of the signer and of the two tools. A test must kill each one, or a line `# equivalent NAME: why` must triage it.
+`signer mutants` (heavy tier) runs `tools/mutate-signer.py` over `signer/tests/mutants.txt`: one mutant per check of the signer and of the two tools. A test must kill each one, or a line `# equivalent NAME: why` must triage it.
 
 The signer's constant-time test, `signer_ctime`, runs in the first valgrind shard, with `storage_ctime` and `signing_ctime`.
 
@@ -231,5 +286,5 @@ The negative tests of both checks (the sneaky object, the five bad libraries) st
 
 - **It does not require a review.** Since 2026-11-12, branch protection on `main` requires all 11 jobs above to pass on a branch that is up to date with `main`, applies to administrators too, and refuses force pushes and deletions. It does not require an approving GitHub review: reviews are kept as files in `docs/reviews/`, and their rule is checked by people, not by GitHub.
 - **A pull request with merge conflicts gets no run.** GitHub runs `pull_request` workflows on the merge of the branch into its base; while the pull request conflicts there is no merge to test, and no run starts, however many commits are pushed. Rebase on `main` to get a result.
-- **Pushes to other branches do not run CI** on their own (the `push` trigger is `main` only); a branch is tested through its pull request.
+- **Pushes to other branches do not run CI** on their own (the `push` trigger is `main` only); a branch is tested through its pull request, by `agent-run.yml`, or nightly (`integration-slice1` and `composite-p6a`).
 - **No Windows or macOS build**, no 32-bit build, no regtest node, no reproducible-build check, no mutation testing (the storage layer's runner, `tools/mutate-storage.py`, runs on the build server; its results are in `docs/notes/storage-crypto.md`).
