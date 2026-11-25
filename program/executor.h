@@ -68,6 +68,7 @@ typedef struct {
     /* one incarnation */
     struct gzp_wallet *wallet;   /* the unlocked wallet: storage keys (store_unlock.h) */
     const void *wallet_port;     /* host: the funding engine's wallet port (wport.h), or NULL */
+    uint32_t funding_burial;     /* B, for the node and the wallet port alike (0: the engine's default) */
     gzp_store_t store;
     int store_open;
     uint64_t incarnation;

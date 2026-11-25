@@ -627,7 +627,7 @@ int main(int argc, char **argv)
 
     /* The host's coins, for the funding engine (wport.h; P4.6): read once, at the start. */
     if (opt.role == GZP_ROLE_HOST) {
-        if (gzp_wport_open(&wport, secp, &unlock_tab, wnet) != 0) {
+        if (gzp_wport_open(&wport, secp, &unlock_tab, wnet, ex.funding_burial) != 0) {
             OPENSSL_cleanse(priv, sizeof priv);
             fprintf(stderr, "gazpacho: cannot open the wallet's coins\n");
             rc = GZP_EXIT_DATA;
