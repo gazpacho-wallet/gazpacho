@@ -14,6 +14,18 @@
 #include <openssl/hmac.h>
 #include <openssl/sha.h>
 
+/* A constant-time test (signer/tests/test_signer_ctime.c) builds this file
+ * with GZW_DECLASSIFY set to valgrind's MAKE_MEM_DEFINED, to declare what
+ * is public once computed: whether a key is valid. Nothing otherwise; a no-op
+ * in every other build. */
+#ifndef GZW_DECLASSIFY
+#define GZW_DECLASSIFY(p, n) ((void)(p), (void)(n))
+#endif
+static int declassified(int v) {
+    GZW_DECLASSIFY(&v, sizeof(v));
+    return v;
+}
+
 /* ---- hygiene -------------------------------------------------------------- */
 
 void gzw_wipe(void *p, size_t len) {
@@ -83,7 +95,9 @@ static int seckey_to_pubkey33(const secp256k1_context *ctx,
                               unsigned char out33[33]) {
     secp256k1_pubkey pub;
     size_t len = 33;
-    int ok = secp256k1_ec_pubkey_create(ctx, &pub, seckey) &&
+    int ok = declassified(secp256k1_ec_pubkey_create(ctx, &pub, seckey));
+    GZW_DECLASSIFY(&pub, sizeof(pub));   /* a public key is public, however derived */
+    ok = ok &&
              secp256k1_ec_pubkey_serialize(ctx, out33, &len, &pub,
                                            SECP256K1_EC_COMPRESSED) &&
              len == 33;
@@ -111,7 +125,7 @@ int gzw_bip32_master(const secp256k1_context *ctx,
     /* The left half must be a valid private key: not 0 and below the order.
        If it is not, this seed has no master key. */
     r = GZW_REASON_INVALID_CHILD;
-    if (!secp256k1_ec_seckey_verify(ctx, I)) goto done;
+    if (!declassified(secp256k1_ec_seckey_verify(ctx, I))) goto done;
 
     memcpy(out->key, I, 32);
     memcpy(out->chain_code, I + 32, 32);
@@ -146,7 +160,7 @@ int gzw_bip32_child_priv(const secp256k1_context *ctx, const gzw_xprv *parent,
 
     if (parent->depth == 255) goto done;
     r = GZW_REASON_INVALID_KEY;
-    if (!secp256k1_ec_seckey_verify(ctx, parent->key)) goto done;
+    if (!declassified(secp256k1_ec_seckey_verify(ctx, parent->key))) goto done;
     r = GZW_REASON_INTERNAL;
     if (!seckey_to_pubkey33(ctx, parent->key, parent_pub)) goto done;
 
@@ -168,7 +182,7 @@ int gzw_bip32_child_priv(const secp256k1_context *ctx, const gzw_xprv *parent,
        (The parent key was checked above, so nothing else can make it fail.) */
     memcpy(child.key, parent->key, 32);
     r = GZW_REASON_INVALID_CHILD;
-    if (!secp256k1_ec_seckey_tweak_add(ctx, child.key, I)) goto done;
+    if (!declassified(secp256k1_ec_seckey_tweak_add(ctx, child.key, I))) goto done;
 
     memcpy(child.chain_code, I + 32, 32);
     child.depth = (uint8_t)(parent->depth + 1);

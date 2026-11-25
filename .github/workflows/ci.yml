@@ -3,13 +3,17 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The merge queue: every required check runs on the queue's merge commit.
+  merge_group:
 
 # The token GitHub gives each job can only read the repository. No job here
 # needs more; a job that does must ask for it itself.
 permissions:
   contents: read
 
-# A newer push to the same pull request cancels the run it makes stale.
+# A newer push to the same pull request cancels the run it makes stale. A
+# merge queue run has a ref of its own (gh-readonly-queue/...) and is never
+# cancelled here.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -17,13 +21,19 @@ concurrency:
 # Every third-party action is pinned to a full commit SHA; the comment names
 # the release. Update both together. What each job guards: docs/notes/ci.md.
 jobs:
-  build:
+  build-off-shard:
+    name: build (OFF, shard ${{ matrix.shard }})
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        sanitize: [OFF, ON]
+        include:
+          - shard: 1
+          - shard: 2
+          - shard: serial
+    env:
+      SANITIZE: "OFF"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -33,7 +43,7 @@ jobs:
       - name: Configure
         # GZ_INTEROP_PY: gz-net against the independent Python peer (BOLT 8,
         # and BOLT 1 init, ping and pong with factory messages).
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DGZ_SANITIZE=${{ matrix.sanitize }} -DGZ_WERROR=ON -DGZ_INTEROP_PY=ON
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DGZ_SANITIZE=$SANITIZE -DGZ_WERROR=ON -DGZ_INTEROP_PY=ON
       - name: Build
         run: cmake --build build -j
       - name: Test
@@ -42,14 +52,37 @@ jobs:
         # 1,000 seeds, nine extreme fault profiles); and, in the build without
         # sanitizers, the same tests again under valgrind. The wallet
         # break-checks (label slow) run in wallet-break-checks.yml.
-        run: ctest --test-dir build --output-on-failure --timeout 600 -LE slow -j "$(nproc)"
+        # Sharded by tools/ctest-shard.py: by name, round robin, a fixture's
+        # tests kept together (ctest adds a fixture's setup to any run that
+        # needs it), valgrind_signing alone (RUN_SERIAL, about 7.5 min) in
+        # the shard "serial" of the build without sanitizers. The job
+        # "build shards cover every test once" checks the lists.
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          re=$(python3 -I tools/ctest-shard.py build "$SHARD" 2 --serial '^valgrind_signing$')
+          [ -n "$re" ] || { echo "::error::shard $SHARD has no tests"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/lists"
+          ctest --test-dir build -N -LE slow | sed -n 's/^ *Test *#[0-9]*: //p' | sort > "$RUNNER_TEMP/lists/full.txt"
+          ctest --test-dir build -N -LE slow -R "$re" | sed -n 's/^ *Test *#[0-9]*: //p' | sort > "$RUNNER_TEMP/lists/shard.txt"
+          echo "shard $SHARD: $(wc -l < "$RUNNER_TEMP/lists/shard.txt") of $(wc -l < "$RUNNER_TEMP/lists/full.txt") tests:"
+          tr '\n' ' ' < "$RUNNER_TEMP/lists/shard.txt"; echo
+          ctest --test-dir build --output-on-failure --timeout 600 -LE slow -j "$(nproc)" -R "$re"
+      - name: Keep this shard's test list
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ctest-list-${{ env.SANITIZE }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/lists
+          retention-days: 7
+          if-no-files-found: error
       - name: Keep the program tests' logs when a test fails
         # Each process of a tests/program run writes NAME.log in its folder
         # under build/program (gzp_harness.py); they stay on the runner otherwise.
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: program-logs-build-${{ matrix.sanitize }}
+          name: program-logs-build-OFF-${{ matrix.shard }}
           path: build/program/**/*.log
           retention-days: 7
           if-no-files-found: ignore
@@ -57,8 +90,8 @@ jobs:
         # Watches, requests, events, resets and shutdown racing
         # (ports/chain/tests/test_chainw.c). Its own small build: TSan does
         # not mix with the other sanitizers. Fewer address-randomisation bits,
-        # which this kernel's default exceeds what TSan can map.
-        if: matrix.sanitize == 'OFF'
+        # which this kernel's default exceeds what TSan can map. Once, in shard 1.
+        if: matrix.shard == '1'
         run: |
           sudo sysctl -w vm.mmap_rnd_bits=28
           sh tools/chain-tsan.sh "$RUNNER_TEMP/chain-tsan"
@@ -66,10 +99,145 @@ jobs:
         # program/pchain.c: the loop's lookups (--check-chain) while the chain
         # worker polls, against a local Esplora stub. One chain client used by
         # both threads corrupted the heap (docs/notes/integration.md B11).
-        if: matrix.sanitize == 'OFF'
+        if: matrix.shard == '1'
         run: sh tools/pchain-tsan.sh "$RUNNER_TEMP/pchain-tsan"
       - name: Scale check, one small case; the two former builder defects stay gone
+        if: matrix.shard == '1'
         run: ./build/tree_shapes 64 8,ps 0 && ./build/tree_shapes defects
+
+  # The required check "build (OFF)": passes only if every shard passed.
+  build-off:
+    name: build (OFF)
+    needs: [build-off-shard, build-shard-lists]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every shard passed, and together they ran every test once
+        env:
+          RESULT: ${{ needs.build-off-shard.result }}
+          LISTS: ${{ needs.build-shard-lists.result }}
+        run: |
+          echo "build (OFF) shards: $RESULT; shard lists: $LISTS"
+          [ "$RESULT" = success ] || { echo "::error::a build (OFF) shard failed or was cancelled ($RESULT)"; exit 1; }
+          [ "$LISTS" = success ] || { echo "::error::the shards do not cover every test exactly once ($LISTS)"; exit 1; }
+
+  build-on-shard:
+    name: build (ON, shard ${{ matrix.shard }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: 1
+          - shard: 2
+    env:
+      SANITIZE: "ON"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libcurl4-openssl-dev valgrind python3-cryptography
+      - name: Configure
+        # GZ_INTEROP_PY: gz-net against the independent Python peer (BOLT 8,
+        # and BOLT 1 init, ping and pong with factory messages).
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DGZ_SANITIZE=$SANITIZE -DGZ_WERROR=ON -DGZ_INTEROP_PY=ON
+      - name: Build
+        run: cmake --build build -j
+      - name: Test
+        # Reference tree; core (action list, runner, node, isolation check and
+        # its negative test); simulator (generator, harness, known trace,
+        # 1,000 seeds, nine extreme fault profiles); and, in the build without
+        # sanitizers, the same tests again under valgrind. The wallet
+        # break-checks (label slow) run in wallet-break-checks.yml.
+        # Sharded by tools/ctest-shard.py: by name, round robin, a fixture's
+        # tests kept together (ctest adds a fixture's setup to any run that
+        # needs it), valgrind_signing alone (RUN_SERIAL, about 7.5 min) in
+        # the shard "serial" of the build without sanitizers. The job
+        # "build shards cover every test once" checks the lists.
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          re=$(python3 -I tools/ctest-shard.py build "$SHARD" 2 --serial '^valgrind_signing$')
+          [ -n "$re" ] || { echo "::error::shard $SHARD has no tests"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/lists"
+          ctest --test-dir build -N -LE slow | sed -n 's/^ *Test *#[0-9]*: //p' | sort > "$RUNNER_TEMP/lists/full.txt"
+          ctest --test-dir build -N -LE slow -R "$re" | sed -n 's/^ *Test *#[0-9]*: //p' | sort > "$RUNNER_TEMP/lists/shard.txt"
+          echo "shard $SHARD: $(wc -l < "$RUNNER_TEMP/lists/shard.txt") of $(wc -l < "$RUNNER_TEMP/lists/full.txt") tests:"
+          tr '\n' ' ' < "$RUNNER_TEMP/lists/shard.txt"; echo
+          ctest --test-dir build --output-on-failure --timeout 600 -LE slow -j "$(nproc)" -R "$re"
+      - name: Keep this shard's test list
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ctest-list-${{ env.SANITIZE }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/lists
+          retention-days: 7
+          if-no-files-found: error
+      - name: Keep the program tests' logs when a test fails
+        # Each process of a tests/program run writes NAME.log in its folder
+        # under build/program (gzp_harness.py); they stay on the runner otherwise.
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: program-logs-build-ON-${{ matrix.shard }}
+          path: build/program/**/*.log
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Scale check, one small case; the two former builder defects stay gone
+        if: matrix.shard == '1'
+        run: ./build/tree_shapes 64 8,ps 0 && ./build/tree_shapes defects
+
+  # The required check "build (ON)": passes only if every shard passed.
+  build-on:
+    name: build (ON)
+    needs: [build-on-shard, build-shard-lists]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every shard passed, and together they ran every test once
+        env:
+          RESULT: ${{ needs.build-on-shard.result }}
+          LISTS: ${{ needs.build-shard-lists.result }}
+        run: |
+          echo "build (ON) shards: $RESULT; shard lists: $LISTS"
+          [ "$RESULT" = success ] || { echo "::error::a build (ON) shard failed or was cancelled ($RESULT)"; exit 1; }
+          [ "$LISTS" = success ] || { echo "::error::the shards do not cover every test exactly once ($LISTS)"; exit 1; }
+
+  # The union of each build's shard lists is its full test list, with no test
+  # twice and none missing.
+  build-shard-lists:
+    name: build shards cover every test once
+    needs: [build-off-shard, build-on-shard]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: ctest-list-*
+          path: lists
+      - name: Compare
+        run: |
+          fail=0
+          for san in OFF ON; do
+            set -- lists/ctest-list-$san-*
+            [ -e "$1" ] || { echo "::error::no shard lists for build ($san)"; fail=1; continue; }
+            full=$(mktemp); all=$(mktemp)
+            cp "$1/full.txt" "$full"
+            for d in "$@"; do cmp -s "$d/full.txt" "$full" || { echo "::error::$d: another full list"; fail=1; }; done
+            cat lists/ctest-list-$san-*/shard.txt | sort > "$all"
+            sort -u "$all" > "$all.u"
+            dup=$(uniq -d "$all"); missing=$(comm -23 "$full" "$all.u"); extra=$(comm -13 "$full" "$all.u")
+            echo "build ($san): $(wc -l < "$full") tests; shards: $(for d in "$@"; do printf '%s=%s ' "${d##*-}" "$(wc -l < "$d/shard.txt")"; done)"
+            [ -z "$dup" ] || { echo "::error::build ($san): run twice: $dup"; fail=1; }
+            [ -z "$missing" ] || { echo "::error::build ($san): never run: $missing"; fail=1; }
+            [ -z "$extra" ] || { echo "::error::build ($san): not in the full list: $extra"; fail=1; }
+          done
+          exit $fail
 
   import-check:
     name: imported SuperScalar files unchanged
@@ -275,13 +443,13 @@ jobs:
           --args "signing_t1=t1 tiny" --args "signing_crashes=crashes tiny"
           --args "signing_restores=restores tiny" --args "signing_errors=errors tiny"
           --args "signing_fuzz=1000 2"
-          --args "signing_node=tiny" --args "signing_fuzz_replay=1000"
+          --args "signing_fuzz_replay=1000"
           --args "fuzz_tree_agree=40"
       - name: Storage and signing constant-time checks (secrets marked undefined, under memcheck)
         # Registered only where valgrind and its headers are installed: here.
         # Once, in the first shard.
         if: matrix.shard == 0
-        run: ctest --test-dir build -R '^(storage|signing)_ctime$' --output-on-failure --no-tests=error
+        run: ctest --test-dir build -R '^(storage|signing|signer)_ctime$' --output-on-failure --no-tests=error
       - name: Keep the program tests' logs when a test fails
         # As in the build jobs (#64); the program tests are scripts, which
         # memcheck does not run, so this is usually empty.
@@ -292,6 +460,38 @@ jobs:
           path: build/program/**/*.log
           retention-days: 7
           if-no-files-found: ignore
+
+  # The constant-time checks again in a Debug build (-O0). Optimisation can
+  # turn a branch on a secret into straight-line code, so a Release build can
+  # pass where the code is not constant time: unoptimised, `a && b` on two
+  # secret-dependent results is a branch (signing.c's make_nonce did this).
+  # Every other job builds with optimisation.
+  ctime-debug:
+    name: constant time (Debug build)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libcurl4-openssl-dev valgrind
+      - name: Configure (Debug, no optimisation)
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Debug -DGZW_BREAK_CHECKS=OFF
+      - name: Build
+        run: cmake --build build -j
+      - name: The constant-time tests under memcheck, unoptimised
+        # Each expected test must be registered, exactly once: a test that
+        # stopped being registered (valgrind's headers missing, a renamed
+        # target) fails the job instead of passing it unrun. program_keys_ct
+        # joins this list when the program's key layer (#53) merges.
+        run: |
+          tests="signing_ctime signer_ctime"
+          for t in $tests; do
+            n=$(ctest --test-dir build -N -R "^$t\$" | sed -n 's/^Total Tests: *//p')
+            [ "$n" = 1 ] || { echo "::error::$t is registered $n times, not once"; exit 1; }
+          done
+          ctest --test-dir build -R "^($(echo $tests | tr ' ' '|'))\$" --output-on-failure
 
   valgrind:
     name: valgrind
@@ -372,3 +572,97 @@ jobs:
         run: |
           ln -s ../../web/node_modules node_modules
           GZ_API_FAKE="$GITHUB_WORKSPACE/build/ports/api/gz-api-fake" npx playwright test
+
+  # The signer boundary, step S1 (docs/notes/signer.md 7, 9). The boundary
+  # check fails on any growth (review A of #71, M2) and on any hard finding;
+  # check-tags reports only until PROTOCOL.md 8.2 registers today's strings.
+  # Their own tests and the vectors check fail the job too.
+  signer-boundary:
+    name: signer boundary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # pull-requests: read, to read the queued pull request's labels
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # the merge commit and its first parent, the base branch: the allow
+          # list is compared with the base's
+          fetch-depth: 2
+      - name: The checks refuse what they must (their own tests)
+        run: |
+          python3 -I tests/tools/test_check_signer_boundary.py
+          python3 -I tests/tools/test_check_tags.py
+      - name: Signing and secret-key symbols outside signer/ (no growth, and the allow list only shrinks)
+        # A pull request whose allow list must grow says so with the label
+        # signer-boundary-growth, which a reviewer of the signer boundary sets.
+        # In the merge queue the base is the queue's base_sha, and the label is
+        # read from the pull request the queue's head ref names (the queue
+        # event carries no labels). If that lookup fails in any way, the
+        # queue fails closed: the list may not grow. A growth PR whose
+        # lookup fails merges outside the queue, after maintainer review
+        # (docs/notes/ci.md).
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'signer-boundary-growth') }}
+          QUEUE_BASE: ${{ github.event.merge_group.base_sha }}
+          QUEUE_REF: ${{ github.event.merge_group.head_ref }}
+        run: |
+          base=""
+          growth=false
+          case "$GITHUB_EVENT_NAME" in
+          pull_request)
+            base=HEAD^1
+            growth=$PR_LABEL
+            ;;
+          merge_group)
+            git fetch --no-tags --depth=1 origin "$QUEUE_BASE"
+            base=$QUEUE_BASE
+            # refs/heads/gh-readonly-queue/<branch>/pr-<number>-<sha>
+            pr=$(printf '%s\n' "$QUEUE_REF" | sed -n 's|^refs/heads/gh-readonly-queue/.*/pr-\([0-9][0-9]*\)-[0-9a-f]*$|\1|p')
+            if [ -n "$pr" ] &&
+               labels=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq '.labels[].name' 2>/dev/null); then
+              if printf '%s\n' "$labels" | grep -qx signer-boundary-growth; then growth=true; fi
+            else
+              echo "::warning::could not read the labels of the queued pull request ($QUEUE_REF): the allow list may not grow"
+            fi
+            ;;
+          esac
+          if [ -n "$base" ] && [ "$growth" != true ]; then
+            if git show "$base:tools/signer-boundary-allowed.txt" > "$RUNNER_TEMP/base-allow.txt" 2>/dev/null; then
+              # the symbol list may only grow: a symbol deleted in the same
+              # change as a new use of it is growth too
+              git show "$base:tools/signer-only-symbols.txt" > "$RUNNER_TEMP/base-symbols.txt"
+              sh tools/check-signer-boundary.sh --no-growth --base-allow "$RUNNER_TEMP/base-allow.txt" \
+                --base-symbols "$RUNNER_TEMP/base-symbols.txt"
+            elif [ "$GITHUB_EVENT_NAME" = merge_group ] &&
+                 git cat-file -e "$base:tools/check-signer-boundary.sh" 2>/dev/null; then
+              # the base has the check but no allow list: something is wrong
+              echo "::error::the merge queue's base has no allow list"; exit 1
+            else
+              # the base predates the allow list (the pull request that adds it)
+              sh tools/check-signer-boundary.sh --no-growth
+            fi
+          else
+            sh tools/check-signer-boundary.sh --no-growth
+          fi
+      - name: Unregistered gazpacho/ strings (report only)
+        run: python3 -I tools/check-tags.py --report
+      - name: The signer's vectors, recomputed in pure Python
+        run: python3 -I tools/signer-vectors.py --check signer/tests/vectors.txt
+
+  signer-mutants:
+    name: signer mutants
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libcurl4-openssl-dev valgrind
+      - name: Every check of signer/ and of the two S1 tools is killed by a test
+        run: python3 -I tools/mutate-signer.py . "$RUNNER_TEMP/signer-mutants" -j "$(nproc)"

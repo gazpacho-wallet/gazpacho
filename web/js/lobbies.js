@@ -22,7 +22,7 @@
       return r;
     }, function (e) {
       gz.app.busy = Math.max(0, gz.app.busy - 1);
-      if (e.code !== "node_busy" && e.code !== "unreachable" && e.code !== "node_stopped" && e.code !== "cancelled") delete rids[key];
+      if (e.code !== "node_busy" && e.code !== "view_pending" && e.code !== "unreachable" && e.code !== "node_stopped" && e.code !== "cancelled") delete rids[key];
       throw e;
     });
   }

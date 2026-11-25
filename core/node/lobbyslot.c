@@ -106,14 +106,15 @@ static int ls_may_answer(void *ctx, const uint8_t scope[32])
     case GZ_MEMBER_SIGNING_WHEN_UNLOCKED: return s->node->unlocked;
     default:
         /* AT_JOIN: open for the values the person readied for, and only those
-         * (local-api.md 14.3 rule 1; #52's RULE-NODE:GATE_DIGEST). Values that
-         * changed since are not what the person agreed to: the person readies
-         * again. */
+         * (local-api.md 14.3 rule 1). Values that have changed since (before the
+         * freeze) are not what the person agreed to: the gate does not answer for
+         * them, and the person readies again. Every opening binds a digest (a join's
+         * 26, a ready's 16), with or without the signing engine. */
         if (!s->gate_open || !s->gate_have) return 0;
         {
             const gz_lobby_member_t *m = &s->lobby.m;
             const uint8_t *now = m->frozen ? m->frozen_digest : m->current_digest;
-            return m->have_terms && memcmp(now, s->gate_digest, 32) == 0;
+            return m->have_terms && memcmp(now, s->gate_digest, 32) == 0;   /* RULE-NODE:GATE_DIGEST */
         }
     }
 }
@@ -203,11 +204,17 @@ int gz_ls_init(gz_node_t *c, int i)
     cr.sign = ls_sign;
     cr.ctx = s;
     memset(&sg, 0, sizeof sg);
+    /* The signing engine behind the hand-off. In test builds, with a forced
+     * outcome (--test-sign-outcome) or no engine, the stand-in instead: the
+     * lobby's side of every hand-off with the outcome a test needs. */
+    if (c->sign_on) gz_sg_signing(s, &sg);
 #ifdef GZ_TEST_KINDS
-    sg.begin = ss_begin;
-    sg.cancel = ss_cancel;
-    sg.member_left = ss_left;
-    sg.ctx = s;
+    if (!c->sign_on || c->cfg.test_sign_outcome) {
+        sg.begin = ss_begin;
+        sg.cancel = ss_cancel;
+        sg.member_left = ss_left;
+        sg.ctx = s;
+    }
 #endif
     if (!c->cfg.keys.pub || !c->cfg.crypto.verify || !c->cfg.crypto.point_ok || !c->cfg.crypto.sign) return 0;
     if (c->cfg.keys.pub(c->cfg.keys.ctx, s->key_epoch, s->key_index, ck) != 1 ||
@@ -218,6 +225,7 @@ int gz_ls_init(gz_node_t *c, int i)
         memset(&hc, 0, sizeof hc);
         memcpy(hc.factory_key, fk, 33);
         hc.standbys = s->standbys;
+        hc.max_tree_nodes = c->sign_on ? GZ_SIGN_MAX_ITEMS : 0;   /* the engine signs at most so many (M2) */
         hc.listed = s->listed;
         hc.seat_room = ls_seat_room;
         hc.paused = ls_paused;
@@ -236,6 +244,7 @@ int gz_ls_init(gz_node_t *c, int i)
     mc.key_epoch = s->key_epoch;
     mc.key_index = s->key_index;
     mc.auto_join = s->auto_join;
+    mc.max_tree_nodes = c->sign_on ? GZ_SIGN_MAX_ITEMS : 0;
     gate.may_answer = ls_may_answer;
     gate.ctx = s;
     memcpy(s->link.local.key, ck, 33);
@@ -373,6 +382,8 @@ static gz_status_t closing_end(gz_node_t *c, int k, gz_action_list_t *out)
     } else {
         st = np_disconnect(out, &e->link, GZ_DISCONNECT_DONE);
     }
+    /* The host's compact rounds of the scope are answered no longer (H12: while a member can need them). */
+    if (e->host && c->sign_on) gz_sign_forget_scope(c->sign, e->scope);
     e->used = 0;
     /* The node part's own table: a key no Open lobby holds is unseated from
      * now, and the cap and the idle rule apply to it (M2). */
@@ -521,6 +532,7 @@ static int node_rec_known(gz_bytes_t b, uint32_t known)
     return 1;
 }
 
+
 /* A slot_opened record at load: the slot is Open again, with its lobby
  * engine made anew for the Lobby records that follow. */
 gz_status_t gz_ls_load_opened(gz_node_t *c, const gz_record_t *rec)
@@ -531,7 +543,7 @@ gz_status_t gz_ls_load_opened(gz_node_t *c, const gz_record_t *rec)
         !arg(rec->bytes, 2, 4, &serial) ||
         !arg(rec->bytes, 4, 32, &scope) || !arg(rec->bytes, 6, 1, &role) || role.data[0] > 1 ||
         !arg(rec->bytes, 12, 4, &epoch) || !arg(rec->bytes, 14, 4, &index) || gz_get_u32(serial.data) == 0 ||
-        gz_get_u32(index.data) == 0xffffffffu) /* the pair's second index would wrap (L4) */
+        gz_get_u32(index.data) > GZ_LS_KEY_INDEX_MAX)
         return GZ_ERR_CORRUPT;
     if (gz_get_u32(serial.data) > c->slot_serial) c->slot_serial = gz_get_u32(serial.data);
     if (gz_get_u32(index.data) + 1 > c->np.highest_index && gz_get_u32(epoch.data) == (c->np.have_epoch ? c->np.epoch : 0))
@@ -613,7 +625,8 @@ gz_status_t gz_ls_load_closed(gz_node_t *c, const gz_record_t *rec)
         /* The tombstone's contents: the lobby's own end record if it had one. */
         if (s->host)
             ended_add(c, s->scope, state.data[0], gz_get_u16(reason.data), s->end_cancel, s->have_end ? s->end_cancel_len : 0);
-        memset(s, 0, sizeof *s); /* Free: Closing is derived, and nothing holds a round across a start yet */
+        gz_sg_keyed_add(c, s);   /* its rounds may still need its keys across this start (2.5) */
+        memset(s, 0, sizeof *s); /* Free: Closing is derived (the signing engine keeps what its rounds need) */
         return GZ_OK;
     }
     return GZ_OK; /* a slot left out at its slot_opened */
@@ -663,15 +676,18 @@ gz_status_t gz_ls_pause_changed(gz_node_t *c, gz_action_list_t *out)
  * there is none in a release build, so the pause holds nothing there. */
 int gz_ls_partials_out(const gz_node_t *c, const uint8_t scope[32])
 {
+    /* The signing engine's fact (PR 81, three answers: GZ_SIGN_OUT_NONE, _THIS, or
+     * _UNKNOWN, which fails closed); where none runs, the test build's stand-in's
+     * (PR 55), as GZ_SIGN_OUT_THIS. As on integration-slice1 (80421aa). */
+    if (c->sign_on) return gz_sign_partials_out(c->sign, scope);
 #ifdef GZ_TEST_KINDS
     for (int k = 0; k < SS_MAX; k++)
         if (c->ss.r[k].used && !c->ss.r[k].ended && c->ss.r[k].partials && memcmp(c->ss.r[k].scope, scope, 32) == 0)
-            return 1;
+            return GZ_SIGN_OUT_THIS;
 #else
-    (void)c;
     (void)scope;
 #endif
-    return 0;
+    return GZ_SIGN_OUT_NONE;
 }
 
 #ifdef GZ_TEST_KINDS
@@ -839,12 +855,25 @@ static gz_status_t gate_opened_inline(gz_node_t *c, int eng, gz_action_list_t *o
     return gz_lobby_member_gate_opened(&c->slots[eng - ENG_SLOT0].lobby.m, out);
 }
 
+void gz_ls_wipe32(uint8_t *p)
+{
+    volatile uint8_t *v = p;
+    for (size_t i = 0; i < 32; i++) v[i] = 0;
+}
+
+static void gate_wipe(slot_t *s)
+{
+    volatile uint8_t *v = s->gate_secret;
+    for (size_t i = 0; i < sizeof s->gate_secret; i++) v[i] = 0;
+    s->gate_have = 0;
+}
+
 static void gate_close(gz_node_t *c, slot_t *s)
 {
     if (!s->gate_open && !s->gate_have) return;
     s->gate_open = 0;
     s->gate_flight = 0;
-    s->gate_have = 0;
+    gate_wipe(s);                                                             /* RULE-NODE:GATE_WIPES */
     memset(s->gate_digest, 0, sizeof s->gate_digest);
     if (c->cfg.crypto.forget) c->cfg.crypto.forget(c->cfg.crypto.ctx, s->scope); /* the scoped secret is wiped */
 }
@@ -984,6 +1013,7 @@ static gz_status_t slot_end(gz_node_t *c, int i, gz_action_list_t *out)
     put_s(text, sizeof text, &at, s->round_ok ? " closing=1" : " closing=0");
     if ((st = np_log(c, out, text)) != GZ_OK) return st;
     gate_close(c, s);
+    gz_sg_keyed_add(c, s);   /* its rounds may still need its keys (2.5) */
 #ifdef GZ_TEST_KINDS
     for (int k = 0; k < SS_MAX; k++) /* a round that was running under it is over with it */
         if (c->ss.r[k].used && !c->ss.r[k].ended && memcmp(c->ss.r[k].scope, s->scope, 32) == 0) c->ss.r[k].ended = 1;
@@ -1438,6 +1468,60 @@ static int ls_init_next(gz_node_t *c, int i)
     return 0;
 }
 
+/* Local-api.md 15.2's funds check for a host's open or early start of slot
+ * `self`, whose set-aside is `own` (#80, gz_fund_funds_short). 1 and the
+ * answer given when refused, 0 to go on.
+ *
+ * Interim rule for several hosted lobbies (#80's L-4): one dry run over the
+ * sum of this lobby's set-aside and, for every other hosted lobby not yet
+ * funded (Open to Signing), its set-aside plus a fee bound at the largest
+ * input count and a change's dust. That counts more than separate
+ * fundings need, so it refuses sooner, never later (funding.md; a
+ * multi-amount can_plan is the follow-up). */
+static int funds_refused(gz_node_t *c, int self, uint64_t own, gz_bytes_t cmd, gz_action_list_t *out, gz_status_t *st)
+{
+    gz_fund_config_t fc;
+    uint64_t amount = own, need = 0, have = 0, per;
+    char p[96];
+    size_t at = 0;
+    *st = GZ_OK;
+    if (!c->cfg.funds.can_plan) {
+        *st = np_command_result(out, cmd, 409, "no_wallet");
+        return 1;
+    }
+    memset(&fc, 0, sizeof fc);
+    fc.host = 1;
+    fc.feerate = c->cfg.funds.feerate ? c->cfg.funds.feerate : 100;
+    fc.wallet.ctx = c->cfg.funds.ctx;
+    fc.wallet.can_plan = c->cfg.funds.can_plan;
+    per = gz_fund_funding_fee_bound(&fc, GZ_FUND_MAX_INPUTS);
+    for (int j = 0; j < GZ_NODE_MAX_SLOTS; j++) {
+        slot_t *o = &c->slots[j];
+        uint64_t add;
+        if (j == self || o->state != SLOT_OPEN || o->kind != SLOT_KIND_LOBBY || !o->host) continue;
+        if (o->lobby.h.state < GZ_LOBBY_OPEN || o->lobby.h.state > GZ_LOBBY_SIGNING) continue;
+        add = gz_ls_set_aside(o);
+        add = per == UINT64_MAX || add > UINT64_MAX - per - GZ_FUND_CHANGE_DUST ? UINT64_MAX : add + per + GZ_FUND_CHANGE_DUST;
+        amount = add == UINT64_MAX || amount > UINT64_MAX - add ? UINT64_MAX : amount + add;
+    }
+    switch (gz_fund_funds_short(&fc, amount, &need, &have)) {
+    case GZ_FUND_FUNDS_OK:
+        return 0;
+    case GZ_FUND_FUNDS_SHORT:
+        p[0] = 0;
+        put_s(p, sizeof p, &at, "{\"need_sat\":");
+        put_u(p, sizeof p, &at, need);
+        put_s(p, sizeof p, &at, ",\"have_sat\":");
+        put_u(p, sizeof p, &at, have);
+        put_s(p, sizeof p, &at, "}");
+        *st = np_command_result_p(out, cmd, 409, "funds_short", p);
+        return 1;
+    default:                                    /* a port that cannot tell: never enough */
+        *st = np_command_result(out, cmd, 409, "coins_unknown");
+        return 1;
+    }
+}
+
 static gz_status_t cmd_open(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
 {
     gz_bytes_t outer, current, v, none = {NULL, 0};
@@ -1447,7 +1531,7 @@ static gz_status_t cmd_open(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
         outer.len > GZ_TERMS_OUTER_MAX || current.len > GZ_TERMS_CURRENT_MAX)
         return np_command_result(out, cmd, 400, "bad_request");
     if ((i = free_slot(c)) < 0) return np_command_result(out, cmd, 409, "too_many_lobbies"); /* a ninth: refused */
-    if (c->np.highest_index > 0xfffffff0u) return np_command_result(out, cmd, 503, "no_key");
+    if (c->np.highest_index >= GZ_LS_KEY_INDEX_MAX) return np_command_result(out, cmd, 503, "no_key");   /* the next index would not load (#87, L1) */
     slot_t *s = &c->slots[i];
     memset(s, 0, sizeof *s);
     s->kind = SLOT_KIND_LOBBY;
@@ -1478,11 +1562,15 @@ static gz_status_t cmd_open(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
         memset(s, 0, sizeof *s);
         return np_command_result(out, cmd, 409, "lobby_exists");
     }
+    if (funds_refused(c, i, gz_fund_set_aside_sat(&s->lobby.h.terms), cmd, out, &st)) {
+        memset(s, 0, sizeof *s);              /* nothing kept: no key, no slot */
+        return st;
+    }
     if (!gz_ls_init(c, i)) return gz_c_bug(c, ENG_NODE);
     c->lc.a = outer;
     c->lc.b = current;
     if ((st = slot_begin(c, i, none, out)) != GZ_OK) return st;
-    return np_command_result(out, cmd, 200, NULL);
+    return np_command_result_o(out, cmd, 200, NULL, NULL, s->view.local_id);
 }
 
 static gz_status_t cmd_join(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
@@ -1538,7 +1626,7 @@ static gz_status_t cmd_join(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
     if (left_out_by_scope(c, scope.data) >= 0) return np_command_result(out, cmd, 503, "no_key"); /* H1 */
     if (gz_route_slot_by_scope(c, scope.data) >= 0) return np_command_result(out, cmd, 409, "lobby_exists");
     if ((i = free_slot(c)) < 0) return np_command_result(out, cmd, 409, "too_many_lobbies");
-    if (c->np.highest_index > 0xfffffff0u) return np_command_result(out, cmd, 503, "no_key");
+    if (c->np.highest_index >= GZ_LS_KEY_INDEX_MAX) return np_command_result(out, cmd, 503, "no_key");   /* the next index would not load (#87, L1) */
     slot_t *s = &c->slots[i];
     memset(s, 0, sizeof *s);
     s->kind = SLOT_KIND_LOBBY;
@@ -1559,13 +1647,26 @@ static gz_status_t cmd_join(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
      * command, as for a ready with field 14; the gate is open from the join,
      * so the lobby readies by itself once its terms fit (W12). */
     if (c->cfg.member_signing == GZ_MEMBER_SIGNING_AT_JOIN && arg(cmd, 24, 1, &v) && v.data[0] == 1) {
+        /* With the signing engine the lobby's factory key is derived now, as a
+         * ready's is (#52), once the slot's pair is chosen: the gate opened
+         * from the join can then sign, for that digest alone. */
+        if (c->sign_on) {
+            uint8_t fresh[32];
+            if (!c->cfg.keys.secret || c->cfg.keys.secret(c->cfg.keys.ctx, s->key_epoch, s->key_index + 1, fresh) != 1) {
+                gz_ls_wipe32(fresh);
+                memset(s, 0, sizeof *s);
+                return np_command_result(out, cmd, 503, "no_key");
+            }
+            memcpy(s->gate_secret, fresh, 32);
+            gz_ls_wipe32(fresh);
+        }
         s->gate_open = 1;
         s->gate_flight = 0;
         s->gate_have = 1;                      /* bound to the values the person saw (26, checked above) */
         memcpy(s->gate_digest, seen.data, 32);
     }
     if ((st = slot_begin(c, i, cond, out)) != GZ_OK) return st;
-    return np_command_result(out, cmd, 200, NULL);
+    return np_command_result_o(out, cmd, 200, NULL, NULL, s->view.local_id);
 }
 
 static gz_status_t start_inline(gz_node_t *c, int eng, gz_action_list_t *out)
@@ -1612,12 +1713,13 @@ static gz_status_t cmd_start(gz_node_t *c, int i, gz_bytes_t cmd, gz_action_list
         put_s(p, sizeof p, &at, "}");
         return np_command_result_p(out, cmd, 409, "below_minimum", p);
     }
+    if (funds_refused(c, i, aside, cmd, out, &st)) return st;
     from = out->count;
     if ((st = gz_c_slot_inline(c, ENG_SLOT0 + i, start_inline, out)) != GZ_OK) return st;
     int refused = was_refused(out, from);
     if ((st = gz_ls_after(c, i, out)) != GZ_OK) return st;
     if (refused) return np_command_result(out, cmd, 409, "refused_now"); /* the checks above are the lobby's */
-    return np_command_result_p(out, cmd, 202, NULL, "{\"stage\":\"ready_check\"}");
+    return np_command_result_o(out, cmd, 202, NULL, "{\"stage\":\"ready_check\"}", s->view.local_id);
 }
 
 /* Every member lobby is told the gate changed, in turn. */
@@ -1646,6 +1748,16 @@ gz_status_t gz_ls_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action
         c->unlocked = code == GZ_CMD_SIGNING_UNLOCK;
         if ((st = gates_changed(c, c->unlocked, out)) != GZ_OK) return st;
         return np_command_result(out, cmd, 200, NULL);
+    case GZ_CMD_SIGNING_SET:
+        /* The setting at run time (local-api.md 14.3, open point 46): every gate closes (the node-wide
+         * one locked, each lobby's scoped secret wiped) and a member Ready with no check in flight
+         * says unready reason 3, so the host never counts a seat the new setting has not opened. */
+        if (!arg(cmd, 12, 1, &v) || v.data[0] > GZ_MEMBER_SIGNING_WHEN_UNLOCKED) return np_command_result(out, cmd, 400, "bad_request");
+        c->cfg.member_signing = (gz_member_signing_t)v.data[0];
+        c->unlocked = 0;
+        if ((st = gates_changed(c, 0, out)) != GZ_OK) return st;   /* RULE-NODE:SET_CLOSES_GATES */
+        if (c->cfg.member_signing == GZ_MEMBER_SIGNING_AUTO && (st = gates_changed(c, 1, out)) != GZ_OK) return st;
+        return np_command_result(out, cmd, 200, NULL);
 #ifdef GZ_TEST_KINDS
     case 0x7e86: /* the stand-in's outcome from now on: 12 outcome (u8), 14 delay (u32, ms) */
         if (!arg(cmd, 12, 1, &v) || v.data[0] < GZ_TEST_SIGN_FUNDING || v.data[0] > GZ_TEST_SIGN_UNFINISHED)
@@ -1658,12 +1770,11 @@ gz_status_t gz_ls_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action
 #else
     case GZ_CMD_LOBBY_OPEN:
     case GZ_CMD_LOBBY_JOIN:
-        /* THE RELEASE BUILD HOSTS AND JOINS NOTHING until the signing engine
-         * is behind the hand-off (P4.3): a lobby that could start a round
-         * nobody signs must not open. Refused, not an error. */
-        (void)cmd_open;
-        (void)cmd_join;
-        return np_command_result(out, cmd, 503, "signing_unavailable");
+        /* A release node without the signing engine (no secp256k1 context)
+         * hosts and joins nothing: a lobby that could start a round nobody
+         * signs must not open. Refused, not an error. */
+        if (!c->sign_on) return np_command_result(out, cmd, 503, "signing_unavailable");   /* RULE-NODE:NO_ENGINE_NO_LOBBY */
+        return code == GZ_CMD_LOBBY_OPEN ? cmd_open(c, cmd, out) : cmd_join(c, cmd, out);
 #endif
     case GZ_CMD_LOBBY_READY:
     case GZ_CMD_LOBBY_UNREADY:
@@ -1681,6 +1792,12 @@ gz_status_t gz_ls_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action
         return np_command_result(out, cmd, 404, "no_such_lobby");
     slot_t *s = &c->slots[i];
     if (code == GZ_CMD_LOBBY_START) return cmd_start(c, i, cmd, out);
+    /* Slice 1 blocker C1 (local-api.md, leave): once a partial signature has left, the lobby is not given
+     * up while its round is unresolved, so that the member's ack, and the factory, are not abandoned. */
+    int held_out = code == GZ_CMD_LOBBY_LEAVE ? gz_ls_partials_out(c, s->scope) : GZ_SIGN_OUT_NONE;   /* RULE-NODE:LEAVE_ONLY */
+    if (held_out == GZ_SIGN_OUT_THIS) return np_command_result(out, cmd, 409, "too_late");     /* RULE-NODE:LEAVE_PARTIALS_OUT */
+    /* A round whose lobby is not known (fail closed): its own reason, not this lobby's (review B of PR 81, B-3). */
+    if (held_out == GZ_SIGN_OUT_UNKNOWN) return np_command_result(out, cmd, 409, "too_late_unknown_round");
     c->lc.code = code;
     c->lc.refused = 0;
     c->lc.a.data = NULL;
@@ -1692,16 +1809,16 @@ gz_status_t gz_ls_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action
     /* "Ready" given with the passphrase opens that lobby's gate (AT_JOIN): the
      * program has handed the key port the scoped secret before the command.
      * The gate is bound to the values digest the person reviewed, which the
-     * ready carries in 16 (local-api.md 14.2's seen_current_digest; #52's
-     * RULE-NODE:READY_SEEN_DIGEST): values that changed since open nothing. */
+     * ready carries in 16 (local-api.md 14.2's seen_current_digest): values
+     * that changed since the screen open nothing (review A of PR 52, L5;
+     * review of #79, M1). */
     int opened = 0, rebound = 0, had = s->gate_have;
-    uint8_t old_digest[32];
+    uint8_t old_secret[32] = {0}, old_digest[32] = {0}, fresh[32];
     /* A new API request that wanted the passphrase and came without it (28):
      * a replay was answered by the precheck before this (7.4), so this one is
      * new, and nothing is done. */
     if (code == GZ_CMD_LOBBY_READY && gz_rec_find(cmd, 28, &v) == 1)
         return np_command_result(out, cmd, 400, "missing_field");
-    memcpy(old_digest, s->gate_digest, 32);
     if (code == GZ_CMD_LOBBY_READY && c->cfg.member_signing == GZ_MEMBER_SIGNING_AT_JOIN && arg(cmd, 14, 1, &v) &&
         v.data[0] == 1) {
         const gz_lobby_member_t *m = &s->lobby.m;
@@ -1710,7 +1827,8 @@ gz_status_t gz_ls_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action
         uint16_t code_st = 409;
         if (!arg(cmd, 16, 32, &seen)) { why = "bad_request"; code_st = 400; }
         else if (!m->have_terms) why = "refused_now";
-        else if (memcmp(seen.data, m->frozen ? m->frozen_digest : m->current_digest, 32) != 0) why = "terms_changed";
+        else if (memcmp(seen.data, m->frozen ? m->frozen_digest : m->current_digest, 32) != 0)   /* RULE-NODE:READY_SEEN_DIGEST */
+            why = "terms_changed";
         if (why) {
             /* Refused before the gate: as any refused ready, it leaves the
              * gate as it found it, and a closed one has the scoped secret the
@@ -1718,6 +1836,18 @@ gz_status_t gz_ls_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action
             if (!s->gate_open && c->cfg.crypto.forget) c->cfg.crypto.forget(c->cfg.crypto.ctx, s->scope);
             return np_command_result(out, cmd, code_st, why);
         }
+        /* AT_JOIN (12.2): with the signing engine the lobby's factory key is
+         * derived now, and only now, for that digest alone. */
+        if (c->sign_on) {
+            if (!c->cfg.keys.secret || c->cfg.keys.secret(c->cfg.keys.ctx, s->key_epoch, s->key_index + 1, fresh) != 1) {
+                gz_ls_wipe32(fresh);
+                return np_command_result(out, cmd, 503, "no_key");
+            }
+            memcpy(old_secret, s->gate_secret, 32);
+            memcpy(s->gate_secret, fresh, 32);
+            gz_ls_wipe32(fresh);
+        }
+        memcpy(old_digest, s->gate_digest, 32);
         memcpy(s->gate_digest, seen.data, 32);
         s->gate_have = 1;
         rebound = 1;
@@ -1726,17 +1856,19 @@ gz_status_t gz_ls_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action
         s->gate_flight = 0;
     }
     size_t from = out->count;
-    if ((st = gz_c_slot_inline(c, ENG_SLOT0 + i, command_inline, out)) != GZ_OK) return st;
+    if ((st = gz_c_slot_inline(c, ENG_SLOT0 + i, command_inline, out)) != GZ_OK) { gz_ls_wipe32(old_secret); return st; }
     int refused = c->lc.refused || was_refused(out, from);
-    if ((st = gz_ls_after(c, i, out)) != GZ_OK) return st;
+    if ((st = gz_ls_after(c, i, out)) != GZ_OK) { gz_ls_wipe32(old_secret); return st; }
     /* A refused ready leaves the gate as it found it: the person's own
-     * ready opens it, and there was none (review A of PR 44, L3); a gate that
-     * was open keeps the digest it had (#52's review A, L5). */
+     * ready opens it, and there was none (review A of PR 44, L3); a gate that was open keeps the
+     * secret and the digest it had (review A of PR 52, L5). */
     if (refused && opened && s->state == SLOT_OPEN) gate_close(c, s);
     else if (refused && rebound && s->state == SLOT_OPEN) {
+        memcpy(s->gate_secret, old_secret, 32);
         memcpy(s->gate_digest, old_digest, 32);
         s->gate_have = had;
     }
+    gz_ls_wipe32(old_secret);
     return refused ? np_command_result(out, cmd, 409, c->lc.refused ? "bad_values" : "refused_now")
-                   : np_command_result(out, cmd, 200, NULL);
+                   : np_command_result_o(out, cmd, 200, NULL, NULL, s->view.local_id);
 }

@@ -16,6 +16,8 @@
 #include "gazpacho/view.h"
 #include "engine.h"
 #include "gazpacho/lobby.h"
+#include "gazpacho/signing.h"
+#include "gazpacho/tree.h"
 
 #ifdef GZ_TEST_KINDS
 #define GZ_NODE_CHECKS 1        /* the test-build checks of 7.4 and 8.3 */
@@ -24,6 +26,15 @@
 #define GZ_NODE_CHECKS 0
 #define GZ_NODE_N_TEST 0
 #endif
+
+/* The highest key_index a slot_opened may name. Allocation counts up from 1
+ * (highest_index + 1) and never comes near it; an index above it is damage:
+ * the factory index (key_index + 1) would wrap, or the pair would meet the
+ * indexes the program reserves at the top. A second defence after the sealed
+ * journal (L4; core-slot-index-bounds). Allocation stops once highest_index
+ * reaches it, so it never gives an index the next start would refuse (review
+ * of PR 87, L1); the load refuses anything above it. */
+#define GZ_LS_KEY_INDEX_MAX 0xfffffff0u
 
 /* ---- the test engine (test builds) -------------------------------------- */
 
@@ -166,7 +177,8 @@ enum {
     ENG_NODE = 0,
     ENG_TEST0 = 1,
     ENG_TEST1 = 2,
-    ENG_SLOT0 = 3,
+    ENG_SIGN = 3,        /* the signing engine (signslot.c), node-wide */
+    ENG_SLOT0 = 4,
     ENG_N = ENG_SLOT0 + GZ_NODE_MAX_SLOTS
 };
 
@@ -301,6 +313,46 @@ typedef struct {
     size_t start_step;
 } view_t;
 
+/* ---- the signing engine (signslot.c) -------------------------------------- */
+
+/* Its timing (composite-node.md 8.3, R12): one tick a second; a round's
+ * resends every 5 s, so that with every slot's round visited in turn
+ * (GZ_NODE_MAX_SLOTS ticks) a resend still comes well inside the shortest
+ * step timeout, 60 s; a member's Unfinished creation is Abandoned after an
+ * hour (the funding engine's own deadline, P4.5, comes from the chain).
+ * node.h's sign_tick_ms shortens the tick in tests: the rest follows. */
+#define SG_TICK_MS 1000u
+#define SG_RESEND_MS 5000u
+#define SG_STEP_MS 60000u
+#define SG_UNFINISHED_MS 3600000u
+_Static_assert((uint64_t)GZ_NODE_MAX_SLOTS * SG_RESEND_MS < SG_STEP_MS,
+               "a round's resend must come inside the step timeout with every slot's round in turn (R12)");
+_Static_assert(GZ_SIGN_MAX_ROUNDS >= GZ_NODE_MAX_SLOTS, "one Active round for each lobby (H8)");
+/* Its worst step (8.3): a message to every member and the saves, or a
+ * failed attempt's aborts with one round's resends and the abandoned rounds
+ * that left memory. 2 MB holds a tier's nonce sets to every member of a
+ * 32-member tree; a host begins no round whose own steps could pass the
+ * bytes (signslot.c, sg_step_bytes). */
+#define SG_MAX_STEP_ACTIONS (3u * GZ_SIGN_MAX_PARTICIPANTS + GZ_SIGN_MAX_ROUNDS + 8u)
+#define SG_MAX_STEP_BYTES (2048u * 1024u)
+#define SG_MAX_QUEUED GZ_NODE_MAX_SLOTS     /* outcomes waiting for a lobby's call to return */
+
+/* The caller's memory for the signing engine (node.h sign_mem): the engine and the builders' work
+ * space, so that a node with no engine carries none of it. */
+typedef struct {
+    gz_sign_t sign;
+    gz_tree_t tree;
+    gz_tree_import_t imp;
+} sg_mem_t;
+
+typedef struct {
+    int kind;
+    uint8_t scope[32], check[32];
+    uint16_t attempt;
+    uint8_t blamed[GZ_SIGN_MAX_PARTICIPANTS * 33];
+    size_t n_blamed;
+} sg_queued_t;
+
 #define SLOT_FREE    0
 #define SLOT_OPEN    1
 #define SLOT_CLOSING 2
@@ -339,8 +391,10 @@ typedef struct {
     int auto_join;
     gz_lobby_conditions_t cond;
     int gate_open, gate_flight;     /* the per-lobby signing gate (12.2), and: its check was seen in flight */
-    int gate_have;                  /* the gate is bound to gate_digest (#52's fields; review of #79, M1) */
-    uint8_t gate_digest[32];        /* the current values digest the person readied for (local-api.md 14.3 rule 1) */
+    /* AT_JOIN: the scoped factory secret the person's ready made, for the
+     * values digest it readied for (12.2); wiped when the gate closes. */
+    int gate_have;
+    uint8_t gate_digest[32], gate_secret[32];
     int told;                       /* the lobby's log line was given, with `last` */
     uint32_t last[5];
     int have_end;                   /* at load: the lobby's own end record was seen */
@@ -413,6 +467,17 @@ typedef struct {
     uint8_t cancel[GZ_LOBBY_MAX_SAVED_MSG];
 } np_ended_t;
 
+/* A lobby that has ended, with its keys: a round of it may still need them
+ * (a status request, a resent ack, an abort) after its slot is freed, also
+ * across a start (2.5: the key hook works for a closing slot's old round).
+ * The newest NP_MAX_ENDED. */
+typedef struct {
+    int used, host;
+    uint64_t seq;
+    uint8_t scope[32];
+    uint32_t epoch, index;
+} np_keyed_t;
+
 /* A Closing slot (2.4): what it keeps while a round's last news may come. */
 typedef struct {
     int used, host;
@@ -480,6 +545,8 @@ typedef struct {
     uint64_t drops[DROP_N];
     np_ended_t ended[NP_MAX_ENDED];
     uint64_t ended_seq;
+    np_keyed_t keyed[NP_MAX_ENDED];
+    uint64_t keyed_seq;
     np_closing_t closing[GZ_NODE_MAX_TOMBSTONES];
     uint64_t closing_due_ms;        /* 0: the closing timer is not set */
     uint64_t skipped_slots;         /* slots left out at load: keys the port could not give */
@@ -558,6 +625,28 @@ struct gz_node {
 #ifdef GZ_TEST_KINDS
     ss_t ss;
 #endif
+
+    /* the signing engine (signslot.c) */
+    int sign_on;                    /* built with a secp256k1 context: the engine runs */
+    gz_sign_t *sign;                /* the engine, in the caller's memory (node.h sign_mem), or NULL */
+    uint32_t tip;                   /* the newest tip the chain (or the configuration) gave */
+    sg_queued_t sq[SG_MAX_QUEUED];
+    size_t n_sq, sq_cur;
+    uint32_t sg_touched;            /* slots an outcome reached in the signing call under way */
+    int sg_defer;                   /* a lobby called the engine: its outcomes wait (U1) */
+    uint64_t sg_lost, sg_refused;   /* outcomes for a lobby that has ended; proposals the checks refused */
+    uint32_t sg_refused_check;
+    gz_action_list_t *sg_out;       /* the list of the engine call under way (the builder's notices) */
+    gz_status_t sg_line_st;
+    uint8_t sg_begin_scope[32];
+    uint8_t sg_guard[NP_GUARD_HEAD + 8 * (NP_MAX_OLD_EPOCHS + 1)];
+    uint8_t sg_blamed[GZ_SIGN_MAX_PARTICIPANTS * 33];
+    uint8_t sg_keys[GZ_SIGN_MAX_PARTICIPANTS][33];
+    gz_tree_participant_t sg_parts[GZ_SIGN_MAX_PARTICIPANTS];
+    gz_tree_proposal_t sg_prop;
+    uint8_t sg_ftx[GZ_SIGN_MAX_FUNDING_TX]; /* the proposal's funding transaction: a real plan's, up to the engine's limit */
+    gz_tree_t *sg_tree;             /* the builder's work space (large), in the engine's memory */
+    gz_tree_import_t *sg_imp;
 
     /* one call */
     int busy[ENG_N];
@@ -660,6 +749,8 @@ gz_status_t np_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action_li
 gz_status_t np_log(gz_node_t *c, gz_action_list_t *out, const char *text);
 gz_status_t np_drop(gz_node_t *c, int why, uint16_t kind, gz_action_list_t *out);
 gz_status_t np_command_result(gz_action_list_t *out, gz_bytes_t cmd, uint16_t status, const char *error);
+gz_status_t np_command_result_o(gz_action_list_t *out, gz_bytes_t cmd, uint16_t status, const char *error,
+                                const char *params, const char *object);
 gz_status_t np_command_result_p(gz_action_list_t *out, gz_bytes_t cmd, uint16_t status, const char *error,
                                 const char *params);
 int np_conn_find(const gz_node_t *c, const gz_link_t *link);
@@ -684,7 +775,6 @@ gz_status_t gz_ls_ended_answer(const gz_node_t *c, int idx, const gz_link_t *lin
 gz_status_t gz_ls_closing_timer(gz_node_t *c, gz_action_list_t *out);
 int gz_ls_closing_count(const gz_node_t *c);
 gz_status_t gz_ls_pause_changed(gz_node_t *c, gz_action_list_t *out);
-int gz_ls_partials_out(const gz_node_t *c, const uint8_t scope[32]);
 int gz_ls_cond_decode(const uint8_t *p, size_t n, gz_lobby_conditions_t *c);
 size_t gz_ls_cond_encode(const gz_lobby_conditions_t *c, uint8_t *p, size_t cap);
 int gz_ls_conditions_blocked(const gz_node_t *c, const gz_lobby_conditions_t *person, unsigned *slots);
@@ -729,6 +819,29 @@ size_t gz_api_loosens(const gz_lobby_conditions_t *from, const gz_lobby_conditio
 gz_status_t gz_ls_left_out_note(gz_node_t *c, int i, gz_action_list_t *out);
 gz_status_t gz_c_slot_bracket(gz_node_t *c, int eng, gz_status_t (*fn)(gz_node_t *, int, gz_action_list_t *),
                               gz_action_list_t *out);
+/* signslot.c */
+gz_status_t gz_sg_init(gz_node_t *c);
+void gz_sg_started(gz_node_t *c);   /* at a start, after the engine resumed */
+/* The proposal's funding transaction, copied into the node: 1, or 0 (nothing set) if it is empty or
+ * longer than GZ_SIGN_MAX_FUNDING_TX. */
+int gz_sg_set_funding(gz_node_t *c, gz_tree_proposal_t *p, const uint8_t *tx, size_t len, const uint8_t txid[32],
+                      uint32_t vout);
+void gz_ls_wipe32(uint8_t *p);      /* 32 secret bytes, wiped */
+/* The engine's key hook (signing.h `keys`), for the node's tests too. */
+int gz_sg_keys(void *ctx, const uint8_t scope[32], const uint8_t *terms_digest, secp256k1_keypair *f, secp256k1_keypair *kc);
+int gz_sg_may_ack(void *ctx, const gz_sign_round_t *r, uint32_t *ack_tip);   /* 1 ack, 0 no, -1 not yet */
+/* GZ_SIGN_OUT_THIS if the member's round in lobby `scope` has partial signatures out and is not resolved,
+ * GZ_SIGN_OUT_UNKNOWN for such a round whose lobby is not known, else GZ_SIGN_OUT_NONE (the signing
+ * engine's fact, gz_sign_partials_out): the person's leave is then refused, Slice 1 blocker C1. The pause
+ * (local-api.md 11.3, PR 55) and a conditions change (PR 77) must ask the same. */
+int gz_ls_partials_out(const gz_node_t *c, const uint8_t scope[32]);
+const gz_engine_ops_t *gz_sg_ops(void);
+gz_status_t gz_sg_after(gz_node_t *c, gz_action_list_t *out);
+gz_status_t gz_sg_drain(gz_node_t *c, gz_action_list_t *out);
+void gz_sg_keyed_add(gz_node_t *c, const slot_t *s);
+void gz_sg_signing(slot_t *s, gz_lobby_signing_t *sg);
+size_t np_guard_for_round(gz_node_t *c, uint8_t *buf);
+
 #ifdef GZ_TEST_KINDS
 gz_status_t gz_ss_load(gz_node_t *c, const gz_record_t *rec);
 gz_status_t gz_ss_timer(gz_node_t *c, gz_action_list_t *out);

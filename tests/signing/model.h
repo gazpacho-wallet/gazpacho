@@ -88,7 +88,7 @@ static void model_watch(harness_t *h, uint32_t g, const gz_action_t *a)
                     if (!m_find(m, MF_STARTED, g, id, (uint32_t)tier[0] << 16 | be32p(items + 4 * i)))
                         m_add(m, MF_STARTED, g, id, (uint32_t)tier[0] << 16 | be32p(items + 4 * i), NULL, 0, inc);
             } else if (r->type == GZ_SIGN_REC_EXPOSURE) {
-                const uint8_t *tier = rec_field(&hr, 4, NULL), *pm = rec_field(&hr, 14, &pl);
+                const uint8_t *tier = rec_field(&hr, 4, NULL), *pm = rec_field(&hr, 16, &pl);
                 if (tier && pm && !m_find(m, MF_SAVED_PARTIALS, g, id, tier[0])) m_add(m, MF_SAVED_PARTIALS, g, id, tier[0], pm, pl, inc);
             } else if (r->type == GZ_SIGN_REC_ACK_RECEIVED) {
                 const uint8_t *key = rec_field(&hr, 4, NULL);
@@ -101,17 +101,19 @@ static void model_watch(harness_t *h, uint32_t g, const gz_action_t *a)
     }
     if (a->kind != GZ_ACTION_SEND) return;
     gz_sign_msg_t msg;
-    const uint8_t *b = a->u.send.records.data;
-    size_t len = a->u.send.records.len;
-    if (!gz_sign_decode(b, len, &msg)) return;
+    static uint8_t env[GZ_SIGN_MAX_MSG];
+    const uint8_t *b = env;
+    size_t len = w_send_env(a, env, sizeof env);
+    uint32_t to = (uint32_t)w_send_to(a);
+    if (!len || !gz_sign_decode(b, len, &msg)) return;
     m->checks++;
     switch (msg.kind) {
     case GZ_SIGN_MSG_PROPOSE: {
         mfact_t *f = m_find(m, MF_PROPOSAL, g, msg.round_id, 0);
         if (!f) m_add(m, MF_PROPOSAL, g, msg.round_id, 0, b, len, inc);
         else if (f->len != len || memcmp(f->val, b, len) != 0) m_violate(m, "S4: two different proposals under one identifier");
-        if (!m_find(m, MF_PROPOSED_TO, g, msg.round_id, (uint32_t)gz_sign_link_peer(&a->u.send.link)))
-            m_add(m, MF_PROPOSED_TO, g, msg.round_id, (uint32_t)gz_sign_link_peer(&a->u.send.link), NULL, 0, inc);
+        if (!m_find(m, MF_PROPOSED_TO, g, msg.round_id, to))
+            m_add(m, MF_PROPOSED_TO, g, msg.round_id, to, NULL, 0, inc);
         break;
     }
     case GZ_SIGN_MSG_NONCES:
@@ -206,7 +208,7 @@ static int model_run(uint64_t seed, model_stats_t *st)
     uint8_t tiers = (uint8_t)(1 + mr(2));
     h_init(&h, members);
     h.max_attempts = 40;
-    for (uint32_t g = 0; g < h.n; g++) h.p[g].e->cfg.max_attempts = 40;
+    h.builder.max_attempts = 40;
     h.watch = model_watch; h.watch_ctx = &m;
     CHECK(h_begin(&h, tiers, members, 0) == GZ_OK);
     for (int step = 0; step < 250; step++) {
@@ -245,7 +247,7 @@ static int model_run(uint64_t seed, model_stats_t *st)
     int done = r && r->state == GZ_SIGN_ROUND_DONE;
     if (done) {
         for (int j = 1; j < r->def.n_participants; j++) {
-            const gz_sign_round_t *mr2 = h_find(&h, (uint32_t)r->def.peer[j], r->id);
+            const gz_sign_round_t *mr2 = h_find(&h, (uint32_t)w_party_of(r->def.participants[j].contribution_key), r->id);
             CHECK(mr2 && mr2->state == GZ_SIGN_ROUND_COMPLETE);
             for (int i = 0; mr2 && i < r->def.n_items; i++)      /* the finals of its own items, as the host holds them */
                 for (int s = 0; s < r->def.items[i].n_signers; s++)

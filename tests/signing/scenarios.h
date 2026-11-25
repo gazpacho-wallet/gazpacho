@@ -228,20 +228,22 @@ static void honest_counts(harness_t *h, uint8_t tiers)
         CHECK(ack && ack->len == GZ_RMSG_HEADER + rl(32) + rl(32) + rl(64) && gz_sign_decode(ack->b, ack->len, &ma) && memcmp(ma.held, d, 32) == 0);
         /* the member's journal, in order, batch by batch (journal.md 9) */
         static const uint32_t one[] = {GZ_SIGN_REC_ROUND_PROPOSAL, GZ_SIGN_REC_ROUND_STARTED, GZ_SIGN_REC_GUARD, GZ_SIGN_REC_EXPOSURE,
-                                       GZ_SIGN_REC_ROUND_SIGNED, GZ_SIGN_REC_ROUND_COMPLETED, GZ_SIGN_REC_FUNDING_STATUS};
-        static const uint64_t batch[] = {1, 1, 1, 2, 3, 4, 4};
+                                       GZ_SIGN_REC_ROUND_SIGNED, GZ_SIGN_REC_ROUND_COMPLETED};   /* no funding_status (P4.3) */
+        static const uint64_t batch[] = {1, 1, 1, 2, 3, 4};
         if (tiers == 1) {
-            CHECK(h->p[j].n_recs == 7);
-            for (int k = 0; k < 7 && h->p[j].n_recs == 7; k++)
+            CHECK(h->p[j].n_recs == 6);
+            for (int k = 0; k < 6 && h->p[j].n_recs == 6; k++)
                 CHECK(h->p[j].recs[k].type == one[k] && h->p[j].recs[k].batch == batch[k]);
             /* the exposure record: the funding transaction, the tree digest, the items, the partial signatures */
             size_t fl, il, pl;
-            const h_rec_t *xr = h->p[j].n_recs == 7 ? &h->p[j].recs[3] : NULL;
+            const h_rec_t *xr = h->p[j].n_recs == 6 ? &h->p[j].recs[3] : NULL;
             const uint8_t *ftx = xr ? rec_field(xr, 8, &fl) : NULL, *dig = xr ? rec_field(xr, 10, NULL) : NULL;
-            const uint8_t *its = xr ? rec_field(xr, 12, &il) : NULL, *pms = xr ? rec_field(xr, 14, &pl) : NULL;
+            const uint8_t *its = xr ? rec_field(xr, 12, &il) : NULL, *pms = xr ? rec_field(xr, 16, &pl) : NULL;
             const h_sent_t *ps0 = h_sent_kind(h, j, GZ_SIGN_MSG_PARTIALS, 0);
             CHECK(ftx && fl == 94 && dig && memcmp(dig, r->def.tree_digest, 32) == 0 && its && il == 72u * (size_t)mine);
             CHECK(pms && ps0 && pl == ps0->len && memcmp(pms, ps0->b, pl) == 0);
+            size_t tl = 0;
+            CHECK(xr && rec_field(xr, 14, &tl) && tl == 8);                  /* the time it was saved */
         }
     }
     /* the host: one proposal, one nonce set and one result per member per tier, one complete each */
@@ -513,12 +515,13 @@ static uint64_t sc_timers(void)
     d ^= h_digest(&h);
     h_free(&h);
 
-    /* the host never hears: members give up at their deadline (the host's and the margin), Aborted, with the reason */
+    /* the host never hears: members give up at their deadline (the host's and the margin, a whole step
+     * timeout: R1), Aborted, with the reason */
     h_init(&h, 3);
     h.drop_to = 1u;
     CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
     h_flush(&h, 100000);
-    for (int t = 0; t < 12 + GZ_SIGN_NONCE_MARGIN_TICKS - 1; t++)          /* the members' timers only: the host's own deadline is not this case */
+    for (int t = 0; t < 12 + (int)h.deadline_ticks - 1; t++)                 /* the members' timers only: the host's own deadline is not this case */
         for (uint32_t j = 1; j <= 3; j++) h_tick(&h, j);
     for (uint32_t j = 1; j <= 3; j++) CHECK(h_newest(&h, j)->state == GZ_SIGN_ROUND_ACTIVE);   /* one tick before */
     for (uint32_t j = 1; j <= 3; j++) h_tick(&h, j);
@@ -819,8 +822,9 @@ static uint64_t sc_proposals(void)
 {
     harness_t h;
     h_init(&h, 3);
-    uint8_t ids[6][32];
-    for (int k = 0; k < 6; k++) {
+    enum { NR = GZ_SIGN_MAX_ROUNDS + 2 };       /* two rounds more than the engine holds in full */
+    uint8_t ids[NR][32];
+    for (int k = 0; k < NR; k++) {
         CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
         memcpy(ids[k], h_newest(&h, 0)->id, 32);
         h_flush(&h, 100000);
@@ -829,7 +833,7 @@ static uint64_t sc_proposals(void)
     CHECK(h.p[0].e->n_known == 2 && memcmp(h.p[0].e->known[0], ids[0], 32) == 0 && memcmp(h.p[0].e->known[1], ids[1], 32) == 0);
     for (uint32_t j = 1; j <= 3; j++) {
         CHECK(h.p[j].e->n_known == 2 && memcmp(h.p[j].e->known[0], ids[0], 32) == 0);
-        CHECK(h_find(&h, j, ids[0]) == NULL && h_find(&h, j, ids[5]) != NULL);
+        CHECK(h_find(&h, j, ids[0]) == NULL && h_find(&h, j, ids[NR - 1]) != NULL);
     }
     /* the oldest proposal again: refused as known, never signed */
     const h_sent_t *p0 = h_sent_kind(&h, 0, GZ_SIGN_MSG_PROPOSE, 0);
@@ -837,15 +841,22 @@ static uint64_t sc_proposals(void)
     h_inject(&h, 0, 1, p0->b, p0->len);
     CHECK(check_abort(&h.sent[h.n_sent - 1], R(GZ_SIGN_WHY_KNOWN_ROUND), WHOLE, 0, NULL) && h_count_kind(&h, 1, GZ_SIGN_MSG_NONCES) == n_nonces);
     /* a newer one again: answered with the saved ack */
-    const h_sent_t *p5 = h_sent_kind(&h, 0, GZ_SIGN_MSG_PROPOSE, 15);
+    const h_sent_t *p5 = h_sent_kind(&h, 0, GZ_SIGN_MSG_PROPOSE, 3 * (NR - 1));   /* the newest round's, to member 1 */
     h_inject(&h, 0, 1, p5->b, p5->len);
     CHECK(h.sent[h.n_sent - 1].kind == GZ_SIGN_MSG_ACK && h.p[1].e->counters[GZ_SIGN_COUNT_DUPLICATES] == 1);
     /* the same proposal from another member: nothing */
     size_t sent = h.n_sent;
     h_inject(&h, 2, 1, p5->b, p5->len);
     CHECK(h.n_sent == sent);
-    /* a status request about a round the host has pushed out of memory: ignored, as for any unknown identifier (7.10) */
+    /* a status request about a round the host has pushed out of the full slots: answered from what it keeps of
+     * it (H12, P4.3 item 8): the member's result and the round_complete again */
     uint8_t st[128];
+    sent = h.n_sent;
+    h_inject(&h, 1, 0, st, make_status(st, ids[0]));
+    CHECK(h.n_sent == sent + 2 && h.sent[sent].kind == GZ_SIGN_MSG_RESULT && h.sent[sent + 1].kind == GZ_SIGN_MSG_COMPLETE &&
+          h.sent[sent].peer == 1);
+    /* ... and once forgotten at its lobby's Closing end, ignored as for any unknown identifier (7.10) */
+    gz_sign_forget_scope(h.p[0].e, h_newest(&h, 0)->def.outer_digest);
     sent = h.n_sent;
     h_inject(&h, 1, 0, st, make_status(st, ids[0]));
     CHECK(h.n_sent == sent);
@@ -927,8 +938,11 @@ static uint64_t sc_proposals(void)
     h_inject(&h2, 0, 3, p->b, p->len);
     /* S5: the list lacks this member's current keys: reason 12, nothing held */
     CHECK(check_abort(&h2.sent[h2.n_sent - 1], 12, WHOLE, 0, NULL) && h_newest(&h2, 3) == NULL);
-    /* the host cannot begin while a round runs; a member cannot begin at all */
-    CHECK(w_begin_params(h2.p[0].e, &h2.builder, q, W_PARAMS, &list) == GZ_ERR_ARGUMENT);
+    /* a second begin while a round of the scope runs is ignored (one Active round per scope, H8); a member
+     * cannot begin at all */
+    size_t before = list.count;
+    w_params(q, 1, 2, w_mask(2), 0);
+    CHECK(w_begin_params(h2.p[0].e, &h2.builder, q, W_PARAMS, &list) == GZ_OK && list.count == before);
     CHECK(w_begin_params(h2.p[1].e, &h2.builder, q, W_PARAMS, &list) == GZ_ERR_ARGUMENT);
     d ^= h_digest(&h2);
     h_free(&h2);
@@ -973,7 +987,7 @@ static uint64_t sc_journal(void)
                  * check them against: funding_status and the guard (not the engine's to read); and in the last byte, a
                  * round_started's own key (read as a key of an earlier epoch: refused, never resumed), a
                  * host's round_ended (its why, for display) and a member's round_completed (its ack tip). */
-                int must = keep.type != GZ_SIGN_REC_FUNDING_STATUS && keep.type != GZ_SIGN_REC_GUARD &&
+                int must = keep.type != GZ_SIGN_REC_GUARD &&
                            !(how == 4 && (keep.type == GZ_SIGN_REC_ROUND_STARTED || (g == 0 && keep.type == GZ_SIGN_REC_ROUND_ENDED) ||
                                           (g != 0 && keep.type == GZ_SIGN_REC_ROUND_COMPLETED)));
                 if (must && st != GZ_ERR_CORRUPT) printf("  journal: party %u record %zu (type %x) damage %d accepted\n", g, k, keep.type, how);
@@ -1065,7 +1079,9 @@ static uint64_t sc_edges(void)
         harness_t h;
         h_init(&h, 4);
         h.builder.mutate = reverse_signers;
-        CHECK(h_begin(&h, 2, 4, 0) == GZ_ERR_ARGUMENT && h.n_sent == 0 && h_newest(&h, 0) == NULL);
+        /* a refused begin is the outcome Failed, never an error (composite-node.md 8.1) */
+        CHECK(h_begin(&h, 2, 4, 0) == GZ_OK && h.n_sent == 0 && h_newest(&h, 0) == NULL &&
+              h.builder.n_outcomes == 1 && h.builder.outcomes[0] == GZ_SIGN_OUTCOME_FAILED);
         d ^= h_digest(&h);
         h_free(&h);
     }
@@ -1164,7 +1180,7 @@ static uint64_t sc_edges(void)
         h.drop_to = 1u;
         h_deliver(&h, (size_t)q_find(&h, 0, j, GZ_SIGN_MSG_RESULT), 0);
         CHECK(h_newest(&h, j)->tier == 1 && h_newest(&h, j)->tier_state[1] == GZ_SIGN_TIER_NONCES);
-        for (int t = 0; t < 11 + GZ_SIGN_NONCE_MARGIN_TICKS; t++) h_tick(&h, j);
+        for (int t = 0; t < 11 + (int)h.deadline_ticks; t++) h_tick(&h, j);
         CHECK(h_newest(&h, j)->state == GZ_SIGN_ROUND_ACTIVE);
         h_tick(&h, j);
         CHECK(h_newest(&h, j)->state == GZ_SIGN_ROUND_UNFINISHED && h_newest(&h, j)->why == GZ_SIGN_WHY_DEADLINE);
@@ -1393,10 +1409,11 @@ static uint64_t sc_records(void)
             }
         CHECK(h.builder.may_ack_calls == 3 && h.builder.may_ack_refused == 0);
         for (uint32_t j = 1; j <= 3; j++) {
-            const h_rec_t *c = last_rec(&h, j, GZ_SIGN_REC_ROUND_COMPLETED), *f = last_rec(&h, j, GZ_SIGN_REC_FUNDING_STATUS);
-            const uint8_t *tip = c ? rec_field(c, 8, NULL) : NULL, *ft = f ? rec_field(f, 6, NULL) : NULL;
-            CHECK(tip && be32p(tip) == 1234 && ft && be32p(ft) == 1234 && c->batch == f->batch);
-            CHECK(f && memcmp(rec_field(f, 2, NULL), h_newest(&h, j)->def.funding_txid, 32) == 0);
+            /* the ack tip is field 8 of round_completed; the engine writes no funding_status (P4.3) */
+            const h_rec_t *c = last_rec(&h, j, GZ_SIGN_REC_ROUND_COMPLETED);
+            const uint8_t *tip = c ? rec_field(c, 8, NULL) : NULL;
+            CHECK(tip && be32p(tip) == 1234);
+            for (size_t i = 0; i < h.p[j].n_recs; i++) CHECK(h.p[j].recs[i].type != 0x00030006u);
         }
         CHECK(h.builder.n_outcomes == 1 && h.builder.outcomes[0] == GZ_SIGN_OUTCOME_FUNDING);
         check_restart_keeps(&h);
@@ -1410,7 +1427,8 @@ static uint64_t sc_records(void)
         h_apply(&h, 1, &l);
         CHECK(h_newest(&h, 1)->state == GZ_SIGN_ROUND_LIVE);
         gz_action_list_init(&l, s, 8, sb, sizeof sb);
-        CHECK(gz_sign_resolve(h.p[1].e, h_newest(&h, 1)->id, GZ_SIGN_END_DEAD, &l) == GZ_ERR_ARGUMENT);   /* Live is final */
+        CHECK(gz_sign_resolve(h.p[1].e, h_newest(&h, 1)->id, GZ_SIGN_END_DEAD, &l) == GZ_OK && l.count == 0 &&
+              h_newest(&h, 1)->state == GZ_SIGN_ROUND_LIVE);   /* Live is final: a counted no-op (8.1) */
         size_t st = h_count_kind(&h, 1, GZ_SIGN_MSG_STATUS);
         for (int t = 0; t < 6; t++) h_tick(&h, 1);
         CHECK(h_count_kind(&h, 1, GZ_SIGN_MSG_STATUS) == st);
@@ -1439,23 +1457,25 @@ static uint64_t sc_records(void)
         d ^= h_digest(&h);
         h_free(&h);
     }
-    /* No retry hook: a failed attempt is reported RETRY with the blamed members' keys; the last
-     * attempt FAILED. */
+    /* No retry hook: a failed attempt is reported RETRY with the blamed members' keys; an attempt
+     * whose signing budget ends in flight FAILED (the budget is time: composite-node.md 9.4). */
     {
         harness_t h;
         h_init(&h, 3);
-        h.max_attempts = 2;
-        for (uint32_t g = 0; g < h.n; g++) h.p[g].e->cfg.max_attempts = 2;
         h.p[0].e->cfg.retry = NULL;
         h.drop_to = 1u << 3;                                            /* member 3 hears nothing */
         CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
         h_flush(&h, 100000);
         h_ticks(&h, 12);
         CHECK(h.builder.n_outcomes == 1 && h.builder.outcomes[0] == GZ_SIGN_OUTCOME_RETRY && h.builder.outcome_blamed[0] == 1);
+        g_h_now = 1000; h.builder.budget_end_ms = 1005;                 /* the budget ends 5 ms from now */
         CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
         h_flush(&h, 100000);
-        h_ticks(&h, 12);
+        g_h_now = 1005;
+        h_ticks(&h, 1);
         CHECK(h.builder.n_outcomes == 2 && h.builder.outcomes[1] == GZ_SIGN_OUTCOME_FAILED);
+        CHECK(h_newest(&h, 0)->state == GZ_SIGN_ROUND_FAILED && h_newest(&h, 0)->why == GZ_SIGN_WHY_BUDGET);
+        g_h_now = 0; h.builder.budget_end_ms = 0;
         d ^= h_digest(&h);
         h_free(&h);
     }
@@ -1521,7 +1541,7 @@ static uint64_t sc_exposure(void)
     resolve_all(&h);
     CHECK(h_find(&h, 1, ida)->state == GZ_SIGN_ROUND_ABANDONED && h.p[1].e->n_exposures == 1);
     gz_action_list_init(&l, s, 8, sb, sizeof sb);
-    CHECK(gz_sign_resolve(h.p[1].e, ida, GZ_SIGN_END_ABANDONED, &l) == GZ_ERR_ARGUMENT);   /* already Abandoned */
+    CHECK(gz_sign_resolve(h.p[1].e, ida, GZ_SIGN_END_ABANDONED, &l) == GZ_OK && l.count == 0);   /* already Abandoned: a counted no-op */
     /* C7: another tree on that outpoint: reason 11 from member 1; the others accept it */
     h.builder.mutate = other_tree;
     CHECK(h_begin(&h, 1, 3, WF_SAME_TREE) == GZ_OK);

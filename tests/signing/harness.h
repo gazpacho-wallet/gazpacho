@@ -22,6 +22,7 @@ static uint8_t h_kind_of(const uint8_t *b, size_t len) { return len >= GZ_RMSG_H
 
 typedef struct {
     gz_sign_t *e;
+    w_hctx_t hctx;
     uint64_t incarnation, fill;
     h_rec_t *recs; size_t n_recs, cap_recs, reader_at;
     gz_record_t rd[8];
@@ -52,7 +53,8 @@ static void h_fill(void *ctx, gz_random_purpose_t purpose, uint8_t *out, size_t 
         out[i] = (uint8_t)(p->fill >> 56);
     }
 }
-static uint64_t h_now(void *ctx) { (void)ctx; return 0; }
+static uint64_t g_h_now;   /* the harness's clock (Unix ms): 0 unless a test sets it (the signing budget) */
+static uint64_t h_now(void *ctx) { (void)ctx; return g_h_now; }
 
 static int h_next(void *ctx, gz_stored_batch_t *b)
 {
@@ -85,7 +87,7 @@ static void h_snapshot(harness_t *h)
         const gz_sign_t *e = h->p[g].e;
         if (!e) continue;
         h_fold64(h, e->attempts); h_fold64(h, e->n_known);
-        for (int c = 0; c < 9; c++) h_fold64(h, e->counters[c]);
+        for (int c = 0; c < GZ_SIGN_COUNT_N; c++) h_fold64(h, e->counters[c]);
         for (size_t k = 0; k < e->n_known && k < GZ_SIGN_MAX_KNOWN; k++) h_fold(h, e->known[k], 4);
         for (int k = 0; k < GZ_SIGN_MAX_ROUNDS; k++) {
             const gz_sign_round_t *r = &e->rounds[k];
@@ -124,26 +126,32 @@ static void h_apply(harness_t *h, uint32_t g, const gz_action_list_t *list)
                 h_fold64(h, rec->type); h_fold(h, rec->b, rec->len);
             }
         } else if (a->kind == GZ_ACTION_SEND) {
-            h_fold64(h, gz_sign_link_peer(&a->u.send.link)); h_fold(h, a->u.send.records.data, a->u.send.records.len);
+            /* Kept as the whole envelope, and its addressee as the party whose key the link names. */
+            static uint8_t env[GZ_SIGN_MAX_MSG];
+            size_t elen = w_send_env(a, env, sizeof env);
+            int to = w_send_to(a);
+            uint32_t peer = to < 0 ? 0xffffffffu : (uint32_t)to;
+            if (!elen) abort();
+            h_fold64(h, peer); h_fold(h, env, elen);
             if (h->n_sent == h->cap_sent) {
                 h->cap_sent = h->cap_sent ? 2 * h->cap_sent : 256;
                 h->sent = realloc(h->sent, h->cap_sent * sizeof *h->sent);
                 if (!h->sent) abort();
             }
             h_sent_t *s = &h->sent[h->n_sent++];
-            s->party = g; s->peer = (uint32_t)gz_sign_link_peer(&a->u.send.link); s->len = a->u.send.records.len;
-            s->kind = h_kind_of(a->u.send.records.data, s->len);
+            s->party = g; s->peer = peer; s->len = elen;
+            s->kind = h_kind_of(env, s->len);
             s->b = malloc(s->len ? s->len : 1);
             if (!s->b) abort();
-            memcpy(s->b, a->u.send.records.data, s->len);
-            if (gz_sign_link_peer(&a->u.send.link) < h->n && !(h->drop_to >> gz_sign_link_peer(&a->u.send.link) & 1u)) {
+            memcpy(s->b, env, s->len);
+            if (peer < h->n && !(h->drop_to >> peer & 1u)) {
                 if (h->nq == h->capq) {
                     h->capq = h->capq ? 2 * h->capq : 256;
                     h->q = realloc(h->q, h->capq * sizeof *h->q);
                     if (!h->q) abort();
                 }
                 h_msg_t *m = &h->q[h->nq++];
-                m->from = g; m->to = (uint32_t)gz_sign_link_peer(&a->u.send.link); m->len = s->len;
+                m->from = g; m->to = peer; m->len = s->len;
                 m->b = malloc(m->len ? m->len : 1);
                 if (!m->b) abort();
                 memcpy(m->b, s->b, m->len);
@@ -162,6 +170,7 @@ static gz_status_t h_event(harness_t *h, uint32_t g, const gz_event_t *ev)
     gz_action_list_t list;
     gz_action_list_init(&list, h_slots, 512, h_bytes, sizeof h_bytes);
     gz_status_t st = gz_sign_handle(h->p[g].e, ev, &list);
+    w_keys_wiped(h->p[g].e);
     h->events++;
     h_fold64(h, 0xe7e7u); h_fold64(h, (uint64_t)g << 8 | ev->kind); h_fold64(h, (uint64_t)st);
     if (st == GZ_OK) h_apply(h, g, &list); else h->errors++;
@@ -176,11 +185,11 @@ static void h_build(harness_t *h, uint32_t g)
     gz_ports_t ports = {{h_fill, p}, {h_now, h_now, NULL}};
     memset(&c, 0, sizeof c);
     c.host = g == 0; c.ctx = w_ctx();
-    w_secret("test/factory", g, c.factory_secret);
-    w_secret("test/contribution", g, c.contribution_secret);
     c.build = w_build; c.retry = w_retry; c.build_ctx = &h->builder;
-    w_hooks(&h->builder, &c);
-    c.tick_ms = 1; c.resend_ticks = h->resend_ticks; c.deadline_ticks = h->deadline_ticks; c.max_attempts = h->max_attempts;
+    p->hctx.b = &h->builder; p->hctx.g = g;
+    w_hooks(&p->hctx, &c);
+    h->builder.max_attempts = h->max_attempts;
+    c.tick_ms = 1; c.resend_ticks = h->resend_ticks; c.deadline_ticks = h->deadline_ticks;
     c.status_ticks = h->status_ticks; c.unfinished_ticks = h->unfinished_ticks;
     p->incarnation++;
     p->fill = 0x9e3779b97f4a7c15ull * (g + 1) ^ p->incarnation << 40;
@@ -195,6 +204,7 @@ static gz_status_t h_start(harness_t *h, uint32_t g)
     gz_storage_reader_t r = {h_next, h_rewind, &h->p[g], h->p[g].incarnation, 0, {NULL, 0}};
     gz_action_list_init(&list, h_slots, 512, h_bytes, sizeof h_bytes);
     gz_status_t st = gz_sign_start(h->p[g].e, &r, &list, &more);
+    w_keys_wiped(h->p[g].e);
     h_fold64(h, 0x5747u); h_fold64(h, g); h_fold64(h, (uint64_t)st);
     if (st == GZ_OK) h_apply(h, g, &list); else h->errors++;
     h_snapshot(h);
@@ -244,22 +254,18 @@ static gz_status_t h_deliver(harness_t *h, size_t i, int keep)
 {
     h_msg_t m = h->q[i];
     gz_event_t ev;
-    memset(&ev, 0, sizeof ev);
-    ev.kind = GZ_EVENT_MESSAGE_RECEIVED; gz_sign_link_set_peer(&ev.u.message.link, m.from);
-    ev.u.message.records.data = m.b; ev.u.message.records.len = m.len;
+    gz_status_t st = GZ_OK;
     if (!keep) memmove(h->q + i, h->q + i + 1, (h->nq-- - i - 1) * sizeof *h->q);
-    gz_status_t st = h_event(h, m.to, &ev);
+    if (w_msg_event(&h->builder, m.from, m.to, m.b, m.len, &ev)) st = h_event(h, m.to, &ev);
     if (!keep) free(m.b);
     return st;
 }
 
-/* Inject a message as if `from` had sent it. */
+/* Inject a message (an envelope) as if `from` had sent it, on its link. */
 static gz_status_t h_inject(harness_t *h, uint32_t from, uint32_t to, const uint8_t *b, size_t len)
 {
     gz_event_t ev;
-    memset(&ev, 0, sizeof ev);
-    ev.kind = GZ_EVENT_MESSAGE_RECEIVED; gz_sign_link_set_peer(&ev.u.message.link, from);
-    ev.u.message.records.data = b; ev.u.message.records.len = len;
+    if (!w_msg_event(&h->builder, from, to, b, len, &ev)) return GZ_OK;
     return h_event(h, to, &ev);
 }
 
@@ -268,7 +274,9 @@ static gz_status_t h_connect(harness_t *h, uint32_t g, uint32_t peer)
 {
     gz_event_t ev;
     memset(&ev, 0, sizeof ev);
-    ev.kind = GZ_EVENT_PEER_CONNECTED; gz_sign_link_set_peer(&ev.u.peer.link, peer);
+    ev.kind = GZ_EVENT_PEER_CONNECTED;
+    memcpy(ev.u.peer.link.local.key, w_ckey(&h->builder, g), 33);
+    memcpy(ev.u.peer.link.remote.key, w_ckey(&h->builder, peer), 33);
     return h_event(h, g, &ev);
 }
 
@@ -293,6 +301,14 @@ static void h_ticks(harness_t *h, int n)
         for (uint32_t g = 0; g < h->n; g++) h_tick(h, g);
         h_flush(h, 100000);
     }
+}
+
+/* The host alone ticks past its step timeout: a Complete round still waiting for acks fails (a host's
+ * Complete round holds its slot until then); what that sends is lost. */
+static void h_host_settle(harness_t *h)
+{
+    for (uint32_t t = 0; t <= h->p[0].e->cfg.deadline_ticks; t++) h_tick(h, 0);
+    while (h->nq) h_drop_msg(h, 0);
 }
 
 static gz_status_t h_begin(harness_t *h, uint8_t tiers, uint32_t members, uint8_t flags)

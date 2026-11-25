@@ -37,6 +37,8 @@
     signing_now: "Gazpacho is signing right now. Try again in a few seconds.",
     chain_in_doubt: "Gazpacho cannot trust its view of the chain right now, so it will not do this. See Connections.",
     node_busy: "Gazpacho is still saving your last request. Nothing is lost. Try again: the same request is never done twice.",
+    view_pending: "It was done; Gazpacho is still catching up on showing it. Try again: the same request is answered, never done twice.",
+    coins_unknown: "Gazpacho cannot tell right now whether the wallet's coins cover this. Try again in a moment.",
     node_stopped: "Gazpacho's node stopped and is starting again from its saved files. Try again in a moment.",
     internal: "Something went wrong inside Gazpacho. Nothing was done.",
     bad_value: "One of the values is outside what Gazpacho accepts.",

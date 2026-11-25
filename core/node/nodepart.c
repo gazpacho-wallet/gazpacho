@@ -110,6 +110,15 @@ gz_status_t np_command_result(gz_action_list_t *out, gz_bytes_t cmd, uint16_t st
 gz_status_t np_command_result_p(gz_action_list_t *out, gz_bytes_t cmd, uint16_t status, const char *error,
                                 const char *params)
 {
+    return np_command_result_o(out, cmd, status, error, params, NULL);
+}
+
+/* ... and the object it acted on (6: a lobby's local id), when made: the
+ * program answers the call with that object as its view holds it (W12;
+ * review of #79, L: put in when the result is made, never written in after). */
+gz_status_t np_command_result_o(gz_action_list_t *out, gz_bytes_t cmd, uint16_t status, const char *error,
+                                const char *params, const char *object)
+{
     uint8_t buf[400], st2[2];
     size_t at = 0;
     gz_bytes_t rid;
@@ -123,6 +132,8 @@ gz_status_t np_command_result_p(gz_action_list_t *out, gz_bytes_t cmd, uint16_t 
     if (st == GZ_OK) st = gz_rec_put(buf, sizeof buf, &at, GZ_RESULT_REC_STATUS, st2, 2);
     if (st == GZ_OK && error)
         st = gz_rec_put(buf, sizeof buf, &at, GZ_RESULT_REC_ERROR, (const uint8_t *)error, cstr_len(error));
+    if (st == GZ_OK && object && object[0])
+        st = gz_rec_put(buf, sizeof buf, &at, GZ_RESULT_REC_OBJECT, (const uint8_t *)object, cstr_len(object));
     if (st == GZ_OK && params)
         st = gz_rec_put(buf, sizeof buf, &at, GZ_RESULT_REC_PARAMS, (const uint8_t *)params, cstr_len(params));
     if (st != GZ_OK) return st;
@@ -291,6 +302,15 @@ static size_t guard_record(const gz_node_t *c, uint8_t *buf)
     gz_put_u32(buf + at + 4, p->highest_index);
     gz_put_u64(buf + at + 8, p->rounds_started);
     return at + 16;
+}
+
+/* The guard record for the batch of a round_started (journal.md 8.3; the
+ * signing engine's guard hook): one more round started, a new counter. */
+size_t np_guard_for_round(gz_node_t *c, uint8_t *buf)
+{
+    c->np.guard_counter++;
+    c->np.rounds_started++;
+    return guard_record(c, buf);
 }
 
 static int find_epoch(uint32_t (*list)[2], uint32_t n, uint32_t epoch)
@@ -632,6 +652,9 @@ gz_status_t np_peer(gz_node_t *c, const gz_event_t *ev, gz_action_list_t *out)
     } else {
         int s = gz_route_member_slot_of_link(c, &ev->u.peer.link);
         if (s >= 0) st = gz_c_bracket(c, ENG_SLOT0 + s, ev, out);
+        /* Then the signing engine: the reconnect step of its rounds on this link (hello first, then saved
+         * round_partial_sigs and round_status_request: contract v2 rule 6). It matches the link itself. */
+        if (st == GZ_OK && c->sign_on && ev->kind == GZ_EVENT_PEER_CONNECTED) st = gz_c_bracket(c, ENG_SIGN, ev, out);
     }
     return st == GZ_OK ? to_tests(c, ev, out) : st;
 }
@@ -774,7 +797,8 @@ gz_status_t np_message(gz_node_t *c, const gz_event_t *ev, gz_action_list_t *out
         return gz_c_bracket(c, ENG_SLOT0 + r.slot, ev, out);
     }
     case RT_SIGNING:
-        return node_only(c, out, DROP_NO_ENGINE, ev->u.message.kind, NULL); /* P4.3 */
+        if (!c->sign_on) return node_only(c, out, DROP_NO_ENGINE, ev->u.message.kind, NULL);
+        return gz_c_bracket(c, ENG_SIGN, ev, out);
     case RT_DISCOVERY: return gz_dq_message(c, ev, out);
     case RT_TEST:   return gz_c_bracket(c, r.eng, ev, out);
     case RT_LISTING: return limited_hello(c, conn, ev, 0, out);
