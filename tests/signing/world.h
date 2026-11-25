@@ -91,7 +91,12 @@ static int w_party_of(const uint8_t ckey[33])
 
 static void w_tag32(const char *tag, uint8_t out[32]) { w_secret(tag, 0, out); }
 static void w_chain(uint8_t out[32]) { w_tag32("test/chain", out); }
-static void w_outer(uint8_t out[32]) { w_tag32("test/outer", out); }   /* the scope of every message */
+static uint32_t g_w_lobby;   /* tests: 0 the world's lobby, else another one's (its scope differs) */
+static void w_outer(uint8_t out[32])                                     /* the scope of every message */
+{
+    w_tag32("test/outer", out);
+    out[0] ^= (uint8_t)g_w_lobby; out[1] ^= (uint8_t)(g_w_lobby >> 8);
+}
 static void w_terms(uint8_t out[32]) { w_tag32("test/terms", out); }
 
 /* ---- test parameters ----
