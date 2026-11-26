@@ -97,6 +97,17 @@ static int ls_sign(void *ctx, uint32_t which, const uint8_t msg[32], uint8_t sig
     return 0;                                         /* RULE-NODE:LS_NO_FACTORY */
 }
 
+/* K1 stage 3: the member's factory public key, asked by its lobby when the seat's first ready is built
+ * (messages.md 6.4 BD2: at the slot's index plus one, under the slot's epoch, which the resume checked is
+ * the current one), and never before. */
+static int ls_factory_pub(void *ctx, uint8_t pub[33])
+{
+    const slot_t *s = ctx;
+    const gz_node_t *c = s->node;
+    if (s->host || !c->cfg.keys.pub) return 0;
+    return c->cfg.keys.pub(c->cfg.keys.ctx, s->key_epoch, s->key_index + 1, pub) == 1;
+}
+
 /* The signing gate (12.2): none with AUTO, the node-wide gate with
  * WHEN_UNLOCKED, the slot's own with AT_JOIN. Memory only; closed at a start. */
 static int ls_may_answer(void *ctx, const uint8_t scope[32])
@@ -203,6 +214,7 @@ int gz_ls_init(gz_node_t *c, int i)
     gz_lobby_signing_t sg;
     uint8_t ck[33], fk[33];
     s->node = c;
+    memset(&cr, 0, sizeof cr);                        /* every hook not set below is none (factory_pub: host) */
     cr.verify = ls_verify;
     cr.point_ok = ls_point_ok;
     cr.sign = ls_sign;
@@ -221,9 +233,10 @@ int gz_ls_init(gz_node_t *c, int i)
     }
 #endif
     if (!c->cfg.keys.pub || !c->cfg.crypto.verify || !c->cfg.crypto.point_ok || !c->cfg.crypto.sign) return 0;
-    if (c->cfg.keys.pub(c->cfg.keys.ctx, s->key_epoch, s->key_index, ck) != 1 ||
-        c->cfg.keys.pub(c->cfg.keys.ctx, s->key_epoch, s->key_index + 1, fk) != 1)
-        return 0;
+    if (c->cfg.keys.pub(c->cfg.keys.ctx, s->key_epoch, s->key_index, ck) != 1) return 0;
+    /* The host's own factory key is its lobby's from the open. A member's is derived at its seat's first
+     * ready (K1 stage 3, ls_factory_pub); its join needs none. */
+    if (s->host && c->cfg.keys.pub(c->cfg.keys.ctx, s->key_epoch, s->key_index + 1, fk) != 1) return 0;
     if (s->host) {
         gz_lobby_host_config_t hc;
         memset(&hc, 0, sizeof hc);
@@ -243,7 +256,7 @@ int gz_ls_init(gz_node_t *c, int i)
     memcpy(mc.scope, s->scope, 32);
     memcpy(mc.host_key, s->host_key.key, 33);
     memcpy(mc.ckey, ck, 33);
-    memcpy(mc.factory_key, fk, 33);
+    cr.factory_pub = ls_factory_pub;                  /* mc.factory_key stays zero: no key before the first ready */
     memcpy(mc.address, s->address, s->address_len);
     mc.address_len = s->address_len;
     mc.key_epoch = s->key_epoch;
@@ -858,6 +871,14 @@ static gz_status_t gate_closed_inline(gz_node_t *c, int eng, gz_action_list_t *o
     return gz_lobby_member_gate_closed(&c->slots[eng - ENG_SLOT0].lobby.m, out);
 }
 
+/* BD5 (review B of #98, L-2): a member whose factory key is not its seat's (another passphrase or seed)
+ * is unreadied, as by the person, so that its seat is not chosen again at each check until the person
+ * readies again with the right one. */
+static gz_status_t bd5_unready_inline(gz_node_t *c, int eng, gz_action_list_t *out)
+{
+    return gz_lobby_member_unready(&c->slots[eng - ENG_SLOT0].lobby.m, out);
+}
+
 static gz_status_t gate_opened_inline(gz_node_t *c, int eng, gz_action_list_t *out)
 {
     return gz_lobby_member_gate_opened(&c->slots[eng - ENG_SLOT0].lobby.m, out);
@@ -1058,10 +1079,71 @@ gz_status_t gz_ls_left_out_note(gz_node_t *c, int i, gz_action_list_t *out)
     put_s(text, sizeof text, &at, "attention lobby-left-out scope=");
     put_h(text, sizeof text, &at, s->scope);
     put_s(text, sizeof text, &at, s->host ? " role=host" : " role=member");
-    put_s(text, sizeof text, &at, " why=keys_unavailable");
+    put_s(text, sizeof text, &at, s->stale ? " why=stale_epoch" : " why=keys_unavailable");
     if ((st = gz_c_node_bracket_begin(c, out)) != GZ_OK) return st;
     if ((st = np_log(c, out, text)) != GZ_OK) return st;
     return gz_c_node_bracket_end(c, out);
+}
+
+/* BD2 (messages.md 6.4; review A of PR 95, M1): a member slot whose saved epoch is not the node's current
+ * one (a restore from the words since its pair was chosen) is stale. */
+int gz_ls_stale(const gz_node_t *c, int i)
+{
+    const slot_t *s = &c->slots[i];
+    return s->kind == SLOT_KIND_LOBBY && s->state == SLOT_OPEN && !s->host &&
+           s->key_epoch != (c->np.have_epoch ? c->np.epoch : 0);
+}
+
+/* A stale seat at its resume step: never resumed. Its engine is dropped before it connects, derives a
+ * factory key or sends anything (leave included); the slot is left out, keeping its scope, and the person
+ * is told. Joining the lobby again makes a new slot with a new pair of the current epoch (cmd_join), which
+ * closes this one. */
+gz_status_t gz_ls_stale_out(gz_node_t *c, int i, gz_action_list_t *out)
+{
+    slot_t *s = &c->slots[i];
+    gate_close(c, s);
+    memset(&s->lobby, 0, sizeof s->lobby);
+    s->state = SLOT_LEFT_OUT;
+    s->stale = 1;
+    c->np.skipped_slots++;
+    (void)out;                                        /* the person is told at the slot's own resume step */
+    return GZ_OK;
+}
+
+/* The stale slot `i` ends as the person joins its lobby again: slot_closed (state 6, Cancelled for this
+ * member as its own leave would be; reason GZ_LS_CLOSED_STALE, journal.md 9) in a batch of its own before
+ * the new slot's, so that a later start frees it before the new slot_opened. It no longer counts as left
+ * out (review A of #98, L1 and L2). */
+static gz_status_t stale_close(gz_node_t *c, int i, gz_action_list_t *out)
+{
+    slot_t *s = &c->slots[i];
+    uint8_t rec[32], v[4], state = GZ_LOBBY_CANCELLED;
+    size_t at = 0;
+    char text[128];
+    gz_status_t st;
+    gz_record_t r;
+    gz_put_u32(v, s->serial);
+    if (gz_rec_put(rec, sizeof rec, &at, 2, v, 4) != GZ_OK || gz_rec_put(rec, sizeof rec, &at, 4, &state, 1) != GZ_OK)
+        return gz_c_bug(c, ENG_NODE);
+    gz_put_u16(v, GZ_LS_CLOSED_STALE);
+    if (gz_rec_put(rec, sizeof rec, &at, 6, v, 2) != GZ_OK) return gz_c_bug(c, ENG_NODE);
+    r.type = GZ_RECORD_SLOT_CLOSED;
+    r.bytes.data = rec;
+    r.bytes.len = at;
+    if (c->np.skipped_slots) c->np.skipped_slots--;
+    gz_action_t a = {.kind = GZ_ACTION_SAVE};
+    a.u.save.records = &r;
+    a.u.save.n_records = 1;
+    if ((st = gz_action_list_add(out, &a)) != GZ_OK) return st;
+    c->owner[out->count - 1 - c->base] = (int8_t)ENG_NODE;
+    text[0] = 0;
+    at = 0;
+    put_s(text, sizeof text, &at, "slot-closed scope=");
+    put_h(text, sizeof text, &at, s->scope);
+    put_s(text, sizeof text, &at, " why=stale_epoch");
+    if ((st = np_log(c, out, text)) != GZ_OK) return st;
+    memset(s, 0, sizeof *s);
+    return GZ_OK;
 }
 
 static gz_status_t sign_arm(gz_node_t *c, gz_action_list_t *out);
@@ -1115,6 +1197,20 @@ gz_status_t gz_ls_after(gz_node_t *c, int i, gz_action_list_t *out)
             gate_close(c, s);
             st = gz_c_slot_inline(c, ENG_SLOT0 + i, gate_closed_inline, out);
         }
+    }
+    if (st == GZ_OK && !s->host && s->bd5_mismatch) {
+        s->bd5_mismatch = 0;
+        if (s->lobby.m.ready && !s->lobby.m.ended) st = gz_c_slot_inline(c, ENG_SLOT0 + i, bd5_unready_inline, out);
+    }
+    if (st == GZ_OK && !s->host && s->lobby.m.factory_fresh) {
+        char text[128];
+        size_t at = 0;
+        s->lobby.m.factory_fresh = 0;
+        text[0] = 0;
+        put_s(text, sizeof text, &at, "factory-key scope=");
+        put_h(text, sizeof text, &at, s->scope);
+        put_s(text, sizeof text, &at, " at=first-ready");
+        st = np_log(c, out, text);
     }
     if (st == GZ_OK) st = state_line(c, s, out);
     if (st == GZ_OK) st = gz_view_slot(c, i, 0, out); /* its view, after the step's saves (rule 8) */
@@ -1711,7 +1807,8 @@ static gz_status_t cmd_join(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
             return np_command_result_p(out, cmd, 409, "confirm_mismatch", p);
         }
     }
-    if (left_out_by_scope(c, scope.data) >= 0) return np_command_result(out, cmd, 503, "no_key"); /* H1 */
+    int stale_i = left_out_by_scope(c, scope.data);
+    if (stale_i >= 0 && !c->slots[stale_i].stale) return np_command_result(out, cmd, 503, "no_key"); /* H1 */
     if (gz_route_slot_by_scope(c, scope.data) >= 0) return np_command_result(out, cmd, 409, "lobby_exists");
     if ((i = free_slot(c)) < 0) return np_command_result(out, cmd, 409, "too_many_lobbies");
     if (c->np.highest_index >= GZ_LS_KEY_INDEX_MAX) return np_command_result(out, cmd, 503, "no_key");   /* the next index would not load (#87, L1) */
@@ -1745,6 +1842,10 @@ static gz_status_t cmd_join(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
         s->gate_have = 1;                      /* bound to the values the person saw (26, checked above) */
         memcpy(s->gate_digest, seen.data, 32);
     }
+    /* BD2: a stale seat is given up only now that the join is taken (review A of #98, L1); the new slot
+     * has a new pair of the current epoch, so the host sees a new contribution key (BD1 would refuse a new
+     * factory key under the old one). */
+    if (stale_i >= 0 && (st = stale_close(c, stale_i, out)) != GZ_OK) return st;
     if ((st = slot_begin(c, i, cond, out)) != GZ_OK) {
         gz_ls_wipe32(s->gate_secret);         /* nothing of the gate outlives a failed join (L-4) */
         s->gate_have = 0;
@@ -1870,8 +1971,9 @@ gz_status_t gz_ls_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action
     default: return np_command_result(out, cmd, 404, "unknown_command");
     }
     /* A lobby left out at this start: its keys are not given (H1). */
-    if (arg(cmd, 12, 32, &scope) && lobby_slot_by_scope(c, scope.data) < 0 && left_out_by_scope(c, scope.data) >= 0)
-        return np_command_result(out, cmd, 503, "no_key");
+    if (arg(cmd, 12, 32, &scope) && lobby_slot_by_scope(c, scope.data) < 0 && (i = left_out_by_scope(c, scope.data)) >= 0)
+        return c->slots[i].stale ? np_command_result(out, cmd, 409, "seat_lost")   /* BD2: nothing sent, leave included */
+                                 : np_command_result(out, cmd, 503, "no_key");
     if (!arg(cmd, 12, 32, &scope) || (i = lobby_slot_by_scope(c, scope.data)) < 0 || c->slots[i].host != want_host)
         return np_command_result(out, cmd, 404, "no_such_lobby");
     slot_t *s = &c->slots[i];

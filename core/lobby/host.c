@@ -611,6 +611,23 @@ static gz_status_t join_refused(gz_lobby_host_t *h, gz_lobby_conn_t *c, int inva
                    : send_status(h, c, GZ_SEAT_REFUSED, 0, 0, h->state, out);   /* closed, full, or a limit */
 }
 
+/* A ready refused as invalid (BD1, a binding that does not verify): lobby_status with reason 5 and the
+ * seat's own state, which is kept (messages.md 6.4; review A of #95, L1). Counted towards the close
+ * (review A, F8) on the connection and on the seat, for the lobby's life (memory only): the seat's third
+ * closes its connection, and so does each one after it, on any connection, so reconnecting buys nothing
+ * (review B of #95, L-2; B of #98, L-3). Only the seat's owner can send them (record 240 is its
+ * contribution key's). */
+static gz_status_t ready_refused(gz_lobby_host_t *h, gz_lobby_conn_t *c, gz_lobby_seat_t *s, gz_action_list_t *out)
+{
+    int n = ++c->bad_joins;
+    if (s->bad_readies < 255) s->bad_readies++;
+    if (n >= GZ_LOBBY_BAD_JOINS || s->bad_readies >= GZ_LOBBY_BAD_JOINS) {
+        c->closed = 1;
+        return gz_la_refuse(out, &c->link);
+    }
+    return send_status(h, c, s->state, 1, 5, h->state, out);
+}
+
 static gz_status_t on_join(gz_lobby_host_t *h, gz_lobby_conn_t *c, const gz_lobby_msg_t *m,
                            gz_action_list_t *out)
 {
@@ -683,12 +700,12 @@ static gz_status_t on_ready(gz_lobby_host_t *h, gz_lobby_conn_t *c, const gz_lob
     uint8_t b[32];
     gz_lobby_binding(h->scope, m->factory_key, c->key, b);
     if (has_fkey(s)) {
-        if (memcmp(s->fkey, m->factory_key, 33) != 0) return join_refused(h, c, 1, out);   /* RULE-LOBBY:FKEY_FIXED */
+        if (memcmp(s->fkey, m->factory_key, 33) != 0) return ready_refused(h, c, s, out);   /* RULE-LOBBY:FKEY_FIXED */
         /* Record 14 is verified in every ready (messages.md 6.4): one whose bytes differ but verify over the
          * same binding is taken, and the first saved is kept; one that does not verify is refused, reason 5,
          * the seat keeping its state (review H1, L6). */
         if (h->crypto.verify(h->crypto.ctx, c->key, b, m->bind_by_contribution) != 1)
-            return join_refused(h, c, 1, out);                                              /* RULE-LOBBY:BIND_C */
+            return ready_refused(h, c, s, out);                                             /* RULE-LOBBY:BIND_C */
     } else {
         int bad = !h->crypto.point_ok(h->crypto.ctx, m->factory_key) ||
                   memcmp(m->factory_key, h->me.factory_key, 33) == 0 || memcmp(m->factory_key, h->terms.host_key, 33) == 0 ||
@@ -699,8 +716,8 @@ static gz_status_t on_ready(gz_lobby_host_t *h, gz_lobby_conn_t *c, const gz_lob
                 bad = 1;                                                            /* RULE-LOBBY:FKEY_EVER */
         }
         if (!bad && h->crypto.verify(h->crypto.ctx, c->key, b, m->bind_by_contribution) != 1) bad = 1;   /* RULE-LOBBY:BIND_C */
-        /* Refused as invalid, reason 5, and counted towards the close of the connection (review A, F8). */
-        if (bad) return join_refused(h, c, 1, out);
+        /* Refused as invalid, reason 5, the seat's state kept, and counted towards the close (review A, F8). */
+        if (bad) return ready_refused(h, c, s, out);
         fix = 1;                                      /* fixed with the first ready taken, and saved with it */
     }
     len = gz_la_env(m->kind, m->scope, m->records, m->records_len, env, sizeof env);
@@ -983,6 +1000,8 @@ gz_status_t gz_lobby_host_restore(gz_lobby_host_t *h, const gz_record_t *rec)
             if (f.v[5]) memcpy(s->bind_c, f.v[5], 64); else memset(s->bind_c, 0, 64);
         }
         if (f.v[6][0] > GZ_SEAT_REFUSED) return GZ_ERR_CORRUPT; /* damaged storage (review B, L4) */
+        /* BD6: a Ready or Chosen seat has its factory key; one without is damaged storage (review A of #95, L3). */
+        if ((f.v[6][0] == GZ_SEAT_READY || f.v[6][0] == GZ_SEAT_CHOSEN) && !f.v[3]) return GZ_ERR_CORRUPT;
         s->state = f.v[6][0];
         s->min_members = (uint16_t)gz_lw_get(f.v[7], 2);
         s->ready_version = (uint32_t)gz_lw_get(f.v[8], 4);

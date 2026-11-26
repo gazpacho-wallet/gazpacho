@@ -244,7 +244,9 @@ closing-newcomer-unseated	core/node/nodepart.c	    int seat = s >= 0 || gz_route
 refused-ready-keeps-gate	core/node/lobbyslot.c	    if (refused && opened && s->state == SLOT_OPEN) gate_close(c, s);\n	
 ls-left-out-is-corrupt	core/node/lobbyslot.c	        c->np.skipped_slots++;\n        return GZ_OK;	        c->np.skipped_slots++;\n        return GZ_ERR_CORRUPT;	2
 ls-left-out-place-free	core/node/lobbyslot.c	        memset(&s->lobby, 0, sizeof s->lobby);\n        s->state = SLOT_LEFT_OUT;	        memset(s, 0, sizeof *s);
-ls-left-out-rejoin	core/node/lobbyslot.c	    if (left_out_by_scope(c, scope.data) >= 0) return np_command_result(out, cmd, 503, "no_key"); /* H1 */\n	
+ls-left-out-rejoin	core/node/lobbyslot.c	    if (stale_i >= 0 && !c->slots[stale_i].stale) return np_command_result(out, cmd, 503, "no_key"); /* H1 */\n	
+ls-factory-at-init	core/node/lobbyslot.c	    cr.factory_pub = ls_factory_pub;	    cr.factory_pub = NULL; memcpy(mc.factory_key, ck, 33);
+bd5-no-compare	core/node/signslot.c	sg_same(pub, c->slots[slot].lobby.m.factory_key, 33);	1;
 ls-left-out-not-told	core/node/composite.c	        if (c->slots[i].state == SLOT_LEFT_OUT) return gz_ls_left_out_note(c, i, out);\n	
 ls-unknown-field-taken	core/node/lobbyslot.c	        if (!(t & 1) && (t >= 64 || !(known & (1u << (t / 2))))) return 0;\n	
 ls-index-wraps	core/node/lobbyslot.c	 ||\n        gz_get_u32(index.data) > GZ_LS_KEY_INDEX_MAX)	)
@@ -417,3 +419,5 @@ funds-blocked-never-cleared	core/node/lobbyslot.c	    s->funds_blocked = r != 0;
 set-aside-zero-taken	core/node/lobbyslot.c	    if (gz_fund_set_aside_sat(&s->lobby.h.terms) == 0) {	    if (0) {
 # equivalent set-aside-zero-taken: unreachable. gz_lobby_host_open's adopt refuses target + standbys above GZ_LOBBY_MAX_SEATS (32), so for any terms it accepts the fundability check (core/tree check_fundable, up to min(target, GZ_TREE_MAX_MEMBERS = 256)) has checked every count from the minimum to the target: each has a tree whose funding amount is above a positive bound, and gz_fund_set_aside_sat, their largest, is never 0. test_set_aside_zero shows target-300 terms refused before it. Equivalent while the seat cap stays under 257 (review A of #55 asked for the test; the guard stays as defence in depth)
 join-key-early	core/node/lobbyslot.c	        if (memcmp(m->frozen ? m->frozen_digest : m->current_digest, s->gate_digest, 32) == 0 &&\n            c->cfg.keys.secret	        if (1 &&\n            c->cfg.keys.secret
+keys-old-epoch	core/node/signslot.c	    if (!host && epoch != (c->np.have_epoch ? c->np.epoch : 0)) return 0;	    if (0) return 0;
+stale-marked-late	core/node/composite.c	        if (!c->stale_marked) {	        if (0) {

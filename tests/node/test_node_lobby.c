@@ -148,11 +148,16 @@ static void wkey(int ident, uint32_t epoch, uint32_t index, lt_key_t *k)
 
 static void whost(lt_key_t *k) { lt_key(k, "node 0 host key"); }
 
+/* Every public key the key port gave, per node (K1 stage 3: when a factory key is derived). */
+static struct { uint32_t epoch, index; } PUB_LOG[NN][256];
+static int NPUB[NN];
+
 static int w_pub(void *ctx, uint32_t epoch, uint32_t index, uint8_t pub[33])
 {
     lt_key_t k;
     int n = node_of(ctx);
     if (PUB_FAIL[n] || (BAD_INDEX[n] && index == BAD_INDEX[n])) return 0;
+    if (NPUB[n] < 256) { PUB_LOG[n][NPUB[n]].epoch = epoch; PUB_LOG[n][NPUB[n]].index = index; NPUB[n]++; }
     wkey(IDENT[n], epoch, index, &k);
     memcpy(pub, k.pub, 33);
     return 1;
@@ -520,12 +525,33 @@ static void w_node(int n, int ident, gz_member_signing_t signing, uint32_t outco
  * engine's here. */
 static secp256k1_context *TCTX;
 static void *TMEM[NN];          /* one engine memory per node, the scratch node included */
+/* The secret behind w_pub's key at (epoch, index), so that a key the engine derives is the one the lobby
+ * saved (BD5); SECRET_SKEW[n]: another seed or passphrase than at the first ready (a different key). */
+static int SECRET_SKEW[NN];
 static int W_SECRET_FAIL;       /* the key port gives no secret (a signer away) */
+/* Every secret the key port gave, per node: its epoch (review A of #98, M1). */
+static uint32_t SEC_EPOCH[NN][256];
+static int NSEC[NN];
+static int secrets_at(int n, int from, uint32_t epoch)
+{
+    int c = 0;
+    for (int k = from; k < NSEC[n] && k < 256; k++) c += SEC_EPOCH[n][k] == epoch;
+    return c;
+}
 static int w_secret(void *ctx, uint32_t epoch, uint32_t index, uint8_t sec[32])
 {
-    (void)ctx; (void)epoch;
+    tr_sha256_t h;
+    char l[80];
+    const char *pre = "gazpacho test key: ";
+    int n = node_of(ctx);
     if (W_SECRET_FAIL) return 0;
-    memset(sec, (int)(index % 200u) + 1, 32);
+    if (NSEC[n] < 256) SEC_EPOCH[n][NSEC[n]++] = epoch;
+    snprintf(l, sizeof l, "node %d epoch %u index %u%s", IDENT[n], (unsigned)epoch, (unsigned)index,
+             SECRET_SKEW[n] ? " skewed" : "");
+    tr_sha256_init(&h);
+    tr_sha256_write(&h, (const uint8_t *)pre, strlen(pre));
+    tr_sha256_write(&h, (const uint8_t *)l, strlen(l));
+    tr_sha256_done(&h, sec);
     return 1;
 }
 
@@ -565,6 +591,8 @@ static void w_reset(void)
     for (size_t k = 0; k < NQ; k++) free(Q[k].rec);
     NQ = 0;
     NSENT = 0;
+    memset(NPUB, 0, sizeof NPUB);
+    memset(NSEC, 0, sizeof NSEC);
     memset(C, 0, sizeof C);
     memset(NT, 0, sizeof NT);
     memset(ALIVE, 0, sizeof ALIVE);
@@ -2241,10 +2269,15 @@ static void test_key_skip(void)
     BAD_INDEX[0] = h0 + 1;               /* the contribution key */
     CHECK(host_open(&t, 0) == 200 && slot(0, &t) && slot(0, &t)->key_index == h0 + 3);
     h1 = N[1].n->np.highest_index;
-    BAD_INDEX[1] = h1 + 2;               /* the factory key */
-    CHECK(member_join(1, &t) == 200 && slot(1, &t) && slot(1, &t)->key_index == h1 + 3);
+    BAD_INDEX[1] = h1 + 2;               /* the member's factory key */
+    /* K1 stage 3: a member derives its factory key at its first ready, not at the join, so the join takes
+     * the pair (its contribution key is good); at the first ready the factory key cannot be had: no ready,
+     * no seat_key, nothing signed (a 2^-127 case; the person leaves and joins again on a new pair). */
+    CHECK(member_join(1, &t) == 200 && slot(1, &t) && slot(1, &t)->key_index == h1 + 1);
     w_run(2000, 100);
-    CHECK(slot(1, &t)->lobby.m.joined && host_state(&t) == GZ_LOBBY_OPEN);
+    CHECK(slot(1, &t) && slot(1, &t)->lobby.m.joined && !slot(1, &t)->lobby.m.ready &&
+          h_records_of(&N[1], GZ_REC_SEAT_KEY) == 0 && host_state(&t) == GZ_LOBBY_OPEN);
+    BAD_INDEX[1] = 0;
     /* The skipped indexes are never used later. */
     BAD_INDEX[0] = 0;
     CHECK(host_open(&u, 0) == 200 && slot(0, &u)->key_index > slot(0, &t)->key_index + 1);
@@ -4414,6 +4447,216 @@ static void test_ready_over_limit(void)
     w_free(1);
 }
 
+/* ---- K1 stage 3 (docs/notes/k1-join-binding-check.md 6 items 1 and 4; spec/messages.md 6.4 BD2, BD3) ---- */
+
+/* Public keys node `n` was given at (epoch, index), from PUB_LOG entry `from` on. */
+static int pubs_at(int n, int from, uint32_t epoch, uint32_t index)
+{
+    int c = 0;
+    for (int k = from; k < NPUB[n] && k < 256; k++) c += PUB_LOG[n][k].epoch == epoch && PUB_LOG[n][k].index == index;
+    return c;
+}
+
+/* The bytes of the last saved record of `type` at node `n`; NULL if none. */
+static const gz_record_t *last_rec(int n, uint32_t type)
+{
+    const gz_record_t *r = NULL;
+    for (size_t i = 0; i < N[n].n_batches; i++)
+        for (size_t k = 0; k < N[n].batches[i].n; k++)
+            if (N[n].batches[i].recs[k].type == type) r = &N[n].batches[i].recs[k];
+    return r;
+}
+
+/* Stage 3: the member derives its factory key at the seat's first ready, never at the slot's start or at
+ * the join. An AT_JOIN member joins locked: its contribution key is derived, its factory key is not, and
+ * the lobby holds none. Its ready with the passphrase derives it, and seat_key saves exactly that key. */
+static void test_k1_factory_at_first_ready(void)
+{
+    terms_t t;
+    uint8_t zero[33] = {0};
+    lt_key_t f;
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    w_node(1, 1, GZ_MEMBER_SIGNING_AT_JOIN, GZ_TEST_SIGN_FUNDING);
+    w_node(2, 2, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    for (int n = 0; n <= 2; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 4, 4, 3100);
+    CHECK(host_open(&t, 0) == 200);
+    int from = NPUB[1];
+    CHECK(member_join(1, &t) == 200 && member_join(2, &t) == 200);
+    w_run(4000, 100);
+    slot_t *s = slot(1, &t);
+    CHECK(s && s->lobby.m.joined && member_ready(1, &t) == 0);
+    if (!s) { w_free(2); return; }
+    uint32_t e = s->key_epoch, i = s->key_index;
+    CHECK(pubs_at(1, from, e, i) >= 1);                              /* the contribution key, for the join */
+    CHECK(pubs_at(1, from, e, i + 1) == 0);                          /* no factory key before the first ready */
+    CHECK(memcmp(s->lobby.m.factory_key, zero, 33) == 0 && h_records_of(&N[1], GZ_REC_SEAT_KEY) == 0);
+    CHECK(scope_cmd(1, GZ_CMD_LOBBY_READY, &t, 1) == 200);
+    w_run(2000, 100);
+    s = slot(1, &t);
+    CHECK(s && member_ready(1, &t) == 1 && pubs_at(1, from, e, i + 1) >= 1);
+    wkey(IDENT[1], e, i + 1, &f);
+    {
+        const gz_record_t *r = last_rec(1, GZ_REC_SEAT_KEY);
+        const uint8_t *v;
+        size_t vn;
+        CHECK(r && lt_rec_field(r->bytes.data, r->bytes.len, 4, &v, &vn) == 1 && vn == 33 && memcmp(v, f.pub, 33) == 0);
+        CHECK(s && memcmp(s->lobby.m.factory_key, f.pub, 33) == 0);
+    }
+    /* the host fixed the same key for the seat */
+    {
+        slot_t *h = slot(0, &t);
+        int found = 0;
+        for (uint16_t k = 0; h && k < h->lobby.h.n_seats; k++) found += memcmp(h->lobby.h.seats[k].fkey, f.pub, 33) == 0;
+        CHECK(found == 1);
+    }
+    no_errors(2);
+    w_free(2);
+}
+
+/* Stage 3, review B of PR 95 L-4: the lobby's signing hook cannot sign with the factory key at all, on the
+ * member's slot or the host's: the call is refused and the key port is never asked. */
+static void test_k1_ls_sign_no_factory(void)
+{
+    terms_t t;
+    uint8_t msg[32], sig[64];
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    w_node(1, 1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    for (int n = 0; n <= 1; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 4, 3, 3110);
+    CHECK(host_open(&t, 0) == 200 && member_join(1, &t) == 200);
+    w_run(3000, 100);
+    slot_t *m = slot(1, &t), *h = slot(0, &t);
+    CHECK(m && h);
+    if (!m || !h) { w_free(1); return; }
+    memset(msg, 0x42, sizeof msg);
+    int before = SIGNS[1];
+    CHECK(m->lobby.m.crypto.sign(m->lobby.m.crypto.ctx, GZ_LOBBY_KEY_FACTORY, msg, sig) == 0 && SIGNS[1] == before);
+    CHECK(h->lobby.h.crypto.sign(h->lobby.h.crypto.ctx, GZ_LOBBY_KEY_FACTORY, msg, sig) == 0);
+    /* the contribution key still signs (the ready) */
+    CHECK(m->lobby.m.crypto.sign(m->lobby.m.crypto.ctx, GZ_LOBBY_KEY_CONTRIBUTION, msg, sig) == 1 && SIGNS[1] == before + 1);
+    no_errors(1);
+    w_free(1);
+}
+
+/* The left-out slot of node `n` for `t`'s scope (stale or keys away); NULL if none. */
+static slot_t *left_out(int n, const terms_t *t)
+{
+    for (int i = 0; i < GZ_NODE_MAX_SLOTS; i++)
+        if (N[n].n->slots[i].state == SLOT_LEFT_OUT && memcmp(N[n].n->slots[i].scope, t->scope, 32) == 0)
+            return &N[n].n->slots[i];
+    return NULL;
+}
+
+/* BD2 and review A of PR 95, M1 (messages.md test 64): after a restore from the words the node has a new
+ * epoch, and a seat of the old one is stale. It is never resumed: nothing is connected, derived or sent
+ * for it, leave included; the person is told. Joining again is a new slot with a new pair of the current
+ * epoch (a new contribution key, so BD1 at the host sees a new seat), and the old slot is closed in that
+ * batch, so a later start loads both. */
+static void test_k1_stale_epoch(void)
+{
+    terms_t t;
+    uint8_t oldc[33];
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    w_node(1, 1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    w_node(2, 2, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    for (int n = 0; n <= 2; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 4, 4, 3120);
+    CHECK(host_open(&t, 0) == 200 && member_join(1, &t) == 200 && member_join(2, &t) == 200);
+    w_run(4000, 100);
+    slot_t *s = slot(1, &t);
+    CHECK(s && member_ready(1, &t) == 1 && h_records_of(&N[1], GZ_REC_SEAT_KEY) == 1 && host_ready(&t) == 2);
+    if (!s) { w_free(2); return; }
+    uint32_t e0 = s->key_epoch;
+    memcpy(oldc, s->lobby.m.ckey, 33);
+    /* a restore from the words: a new epoch */
+    N[1].restored = 1;
+    size_t log0 = N[1].n_log, sent0 = NSENT;
+    int pub0 = NPUB[1], signs0 = SIGNS[1];
+    CHECK(w_restart(1) == GZ_OK);
+    N[1].restored = 0;
+    CHECK(N[1].n->np.epoch != e0);
+    w_run(4000, 100);
+    CHECK(slot(1, &t) == NULL && left_out(1, &t) != NULL);           /* never resumed */
+    CHECK(said(1, log0, "why=stale_epoch") >= 1);                    /* the person is told */
+    CHECK(sent_count(1, sent0, GZ_KIND_JOIN) == 0 && sent_count(1, sent0, GZ_KIND_READY) == 0 &&
+          sent_count(1, sent0, GZ_KIND_LEAVE) == 0 && sent_count(1, sent0, GZ_KIND_HELLO) == 0);
+    {
+        int connects = 0;
+        for (size_t k = log0; k < N[1].n_log; k++) connects += N[1].log[k].a.kind == GZ_ACTION_CONNECT;
+        CHECK(connects == 0);
+    }
+    /* no factory key under e0, and nothing signed (the contribution key's public key is still read back at
+     * load, to check seat_key's binding, before the epoch is known to be old) */
+    CHECK(left_out(1, &t) && pubs_at(1, pub0, e0, left_out(1, &t)->key_index + 1) == 0 && SIGNS[1] == signs0);
+    /* leave: nothing is sent for the stale seat */
+    sent0 = NSENT;
+    CHECK(scope_cmd(1, GZ_CMD_LOBBY_LEAVE, &t, 0) != 200);
+    w_run(1000, 100);
+    CHECK(sent_count(1, sent0, GZ_KIND_LEAVE) == 0);
+    /* joining again: a new slot, a new pair of the current epoch; the old slot closes only now, as given up
+     * (state 6, reason stale epoch), and no longer counts as left out (review A of #98, L1 and L2) */
+    uint32_t skipped = N[1].n->np.skipped_slots;
+    CHECK(member_join(1, &t) == 200);
+    {
+        const gz_record_t *r = last_rec(1, GZ_RECORD_SLOT_CLOSED);
+        gz_bytes_t b, v;
+        CHECK(r != NULL);
+        if (r) {
+            b.data = r->bytes.data; b.len = r->bytes.len;
+            CHECK(gz_rec_find(b, 4, &v) == 1 && v.len == 1 && v.data[0] == GZ_LOBBY_CANCELLED);
+            CHECK(gz_rec_find(b, 6, &v) == 1 && v.len == 2 && gz_get_u16(v.data) == 0x0bd2);   /* stale epoch */
+        }
+        CHECK(N[1].n->np.skipped_slots + 1 == skipped);
+    }
+    w_run(4000, 100);
+    s = slot(1, &t);
+    CHECK(s && left_out(1, &t) == NULL && s->key_epoch == N[1].n->np.epoch && memcmp(s->lobby.m.ckey, oldc, 33) != 0);
+    /* the host sees a new seat, Ready; the old one stays Ready there, since the stale member sends nothing
+     * for it, not even a leave (BD2) */
+    CHECK(member_ready(1, &t) == 1 && host_ready(&t) == 3);
+    /* a later start loads the closed old slot and the new one */
+    CHECK(w_restart(1) == GZ_OK);
+    w_run(3000, 100);
+    s = slot(1, &t);
+    CHECK(s && left_out(1, &t) == NULL && s->key_epoch == N[1].n->np.epoch && memcmp(s->lobby.m.ckey, oldc, 33) != 0);
+    no_errors(2);
+    w_free(2);
+}
+
+/* BD5 (messages.md 6.4, test 61; review B of PR 95): the factory key the signing engine is given is compared
+ * with seat_key. With another seed or passphrase than at the first ready the hook gives no factory key (the
+ * engine then aborts with reason 12 before any nonce, and the lobby keeps the seat); with the right one, it
+ * does. The contribution key alone is unaffected. */
+static void test_k1_bd5_mismatch(void)
+{
+    terms_t t;
+    uint8_t d[32];
+    secp256k1_keypair f, kc;
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node_engine(1, 1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    for (int n = 0; n <= 1; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 4, 3, 3130);
+    CHECK(host_open(&t, 0) == 200 && member_join(1, &t) == 200);
+    w_run(3000, 100);
+    slot_t *s = slot(1, &t);
+    CHECK(s && N[1].n->sign_on && s->lobby.m.seat_key_saved && member_ready(1, &t) == 1);
+    if (!s) { w_free(1); return; }
+    gz_terms_current_digest(t.current, t.cn, d);
+    CHECK(gz_sg_keys(N[1].n, t.scope, d, &f, &kc) == 1);             /* the seat's own key */
+    SECRET_SKEW[1] = 1;
+    CHECK(gz_sg_keys(N[1].n, t.scope, d, &f, &kc) == 0);             /* another key: refused */
+    CHECK(gz_sg_keys(N[1].n, t.scope, d, NULL, &kc) == 1);           /* the contribution key alone: given */
+    SECRET_SKEW[1] = 0;
+    CHECK(gz_sg_keys(N[1].n, t.scope, d, &f, &kc) == 1 && slot(1, &t) == s && s->lobby.m.joined);
+    no_errors(1);
+    w_free(1);
+}
+
 /* The signing engine runs only with a secp256k1 context (node.h): a node
  * given the engine's memory but no context starts without it, and never
  * reaches the engine with a NULL context (mutant sg-init-without-secp). */
@@ -4478,32 +4721,101 @@ static void test_funds_auto_start(void)
     w_free(3);
 }
 
-/* Review B of PR 95, L-4: the lobby's signing hook cannot sign with the factory key at all, on the
- * member's slot or the host's: the call is refused and the key port is never asked. */
-static void test_k1_ls_sign_no_factory(void)
+/* Review B of #98: the host's factory key is the pair's second key (key_index + 1), never the first, which
+ * is its contribution role's index (mutant ls-factory-key-is-contribution). */
+static void test_k1_host_factory_index(void)
 {
     terms_t t;
-    uint8_t msg[32], sig[64];
+    lt_key_t f, c0;
     w_reset();
     w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
-    w_node(1, 1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
-    for (int n = 0; n <= 1; n++) CHECK(w_start(n) == GZ_OK);
-    make_terms(&t, 4, 3, 3110);
+    CHECK(w_start(0) == GZ_OK);
+    make_terms(&t, 4, 3, 3140);
+    CHECK(host_open(&t, 0) == 200);
+    slot_t *h = slot(0, &t);
+    CHECK(h != NULL);
+    if (!h) { w_free(0); return; }
+    wkey(IDENT[0], h->key_epoch, h->key_index + 1, &f);
+    wkey(IDENT[0], h->key_epoch, h->key_index, &c0);
+    CHECK(memcmp(h->lobby.h.cfg.factory_key, f.pub, 33) == 0 && memcmp(h->lobby.h.cfg.factory_key, c0.pub, 33) != 0);
+    no_errors(0);
+    w_free(0);
+}
+
+/* Review B of #98, L-2: after a BD5 mismatch the seat is unreadied, as by the person, so that it is not
+ * chosen and aborted again at every check; the person readies again once the passphrase is right. */
+static void test_k1_bd5_unready(void)
+{
+    terms_t t;
+    uint8_t d[32];
+    secp256k1_keypair f, kc;
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node_engine(1, 1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node(2, 2, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    for (int n = 0; n <= 2; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 4, 3, 3150);
     CHECK(host_open(&t, 0) == 200 && member_join(1, &t) == 200);
     w_run(3000, 100);
-    slot_t *m = slot(1, &t), *h = slot(0, &t);
-    CHECK(m && h);
-    if (!m || !h) { w_free(1); return; }
-    memset(msg, 0x42, sizeof msg);
-    int before = SIGNS[1];
-    CHECK(m->lobby.m.crypto.sign(m->lobby.m.crypto.ctx, GZ_LOBBY_KEY_FACTORY, msg, sig) == 0 && SIGNS[1] == before);
-    CHECK(h->lobby.h.crypto.sign(h->lobby.h.crypto.ctx, GZ_LOBBY_KEY_FACTORY, msg, sig) == 0);
-    /* the contribution key still signs (the ready) */
-    CHECK(m->lobby.m.crypto.sign(m->lobby.m.crypto.ctx, GZ_LOBBY_KEY_CONTRIBUTION, msg, sig) == 1 && SIGNS[1] == before + 1);
+    slot_t *s = slot(1, &t);
+    CHECK(s && member_ready(1, &t) == 1 && host_ready(&t) == 1);
+    if (!s) { w_free(2); return; }
+    gz_terms_current_digest(t.current, t.cn, d);
+    SECRET_SKEW[1] = 1;
+    size_t sent0 = NSENT;
+    CHECK(gz_sg_keys(N[1].n, t.scope, d, &f, &kc) == 0 && s->bd5_mismatch);
+    /* the slot's next step (here: the host's status as member 2 joins) unreadies it */
+    CHECK(member_join(2, &t) == 200);
+    w_run(3000, 100);
+    CHECK(member_ready(1, &t) == 0 && s->lobby.m.user_unready && !s->bd5_mismatch);
+    CHECK(sent_count(1, sent0, GZ_KIND_UNREADY) >= 1 && host_ready(&t) == 1);         /* member 2's alone */
+    SECRET_SKEW[1] = 0;
+    CHECK(scope_cmd(1, GZ_CMD_LOBBY_READY, &t, 0) == 200);                   /* the person readies again */
+    w_run(2000, 100);
+    CHECK(member_ready(1, &t) == 1 && host_ready(&t) == 2 && slot(1, &t) == s);
+    no_errors(2);
+    w_free(2);
+}
+
+/* Review A of #98, M1 (BD2 at the signing resume): after a restore from the words, the signing engine gives
+ * no key of the old epoch for the stale seat's scope, and holds no round of it; nothing is derived under
+ * the old epoch. */
+static void test_k1_stale_keys(void)
+{
+    terms_t t, u;
+    uint8_t d[32];
+    secp256k1_keypair f, kc;
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node_engine(1, 1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    for (int n = 0; n <= 1; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 4, 3, 3160);
+    make_terms(&u, 4, 3, 3161);
+    CHECK(host_open(&t, 0) == 200 && member_join(1, &t) == 200);
+    CHECK(host_open(&u, 0) == 200 && member_join(1, &u) == 200);
+    w_run(3000, 100);
+    /* lobby u ends for the member (its leave): an ended lobby's keys are kept for its rounds */
+    CHECK(scope_cmd(1, GZ_CMD_LOBBY_LEAVE, &u, 0) == 200);
+    w_run(2000, 100);
+    CHECK(slot(1, &u) == NULL && gz_sg_keys(N[1].n, u.scope, NULL, NULL, &kc) == 1);
+    slot_t *s = slot(1, &t);
+    CHECK(s && member_ready(1, &t) == 1);
+    if (!s) { w_free(1); return; }
+    gz_terms_current_digest(t.current, t.cn, d);
+    uint32_t e0 = s->key_epoch;
+    CHECK(gz_sg_keys(N[1].n, t.scope, d, &f, &kc) == 1);             /* the control: the current epoch's */
+    N[1].restored = 1;
+    CHECK(w_restart(1) == GZ_OK);
+    N[1].restored = 0;
+    CHECK(N[1].n->np.epoch != e0 && left_out(1, &t) != NULL);
+    int sec0 = NSEC[1];
+    CHECK(gz_sg_keys(N[1].n, t.scope, d, &f, &kc) == 0 && gz_sg_keys(N[1].n, t.scope, NULL, NULL, &kc) == 0);
+    CHECK(gz_sg_keys(N[1].n, u.scope, NULL, NULL, &kc) == 0);         /* the ended lobby's entry: old epoch, none */
+    CHECK(secrets_at(1, sec0, e0) == 0);                              /* nothing derived under the old epoch */
+    CHECK(!gz_sign_holds_scope(N[1].n->sign, t.scope));
     no_errors(1);
     w_free(1);
 }
-
 
 int main(int argc, char **argv)
 {
@@ -4568,6 +4880,12 @@ int main(int argc, char **argv)
     test_gate_refused_ready();
     test_hostile(events, seed);
     test_ready_over_limit();
+    test_k1_factory_at_first_ready();
     test_k1_ls_sign_no_factory();
+    test_k1_stale_epoch();
+    test_k1_bd5_mismatch();
+    test_k1_host_factory_index();
+    test_k1_bd5_unready();
+    test_k1_stale_keys();
     return check_done();
 }
