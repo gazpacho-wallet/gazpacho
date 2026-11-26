@@ -167,6 +167,9 @@ int gz_sg_keys(void *ctx, const uint8_t scope[32], const uint8_t *terms_digest, 
      * given, for a slot or an ended lobby's entry alike: nothing is derived under a saved epoch that a
      * restore has replaced. (The restore batch runs before the signing engine resumes.) */
     if (!host && epoch != (c->np.have_epoch ? c->np.epoch : 0)) return 0;                /* RULE-NODE:KEYS_CURRENT_EPOCH */
+    /* ... and none before the restore batch has drawn the new epoch: while a restored journal loads (the
+     * signing engine checks a saved round's key against the hook's, S5) every epoch it names is old. */
+    if (!host && c->restored && !c->resume_restore_done) return 0;                       /* RULE-NODE:KEYS_NOT_BEFORE_RESTORE */
     if (kc) {
         /* the host's long-term key, or the member's contribution key of the lobby */
         int got = host ? (c->cfg.keys.host_secret && c->cfg.keys.host_secret(c->cfg.keys.ctx, sec) == 1)

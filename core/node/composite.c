@@ -167,6 +167,9 @@ static gz_status_t load(gz_node_t *c, const gz_storage_reader_t *storage)
         c->fenced = 1;
     }
     storage->rewind(storage->ctx);
+    /* Known before the walk: a restored journal's keys are of an epoch the restore batch replaces, so no
+     * member key is given while it loads (signslot.c, gz_sg_keys). */
+    c->restored = storage->restored;
     if (c->sign_on) gz_sign_load_begin(c->sign);
     while (storage->next(storage->ctx, &batch)) {
         if (!id_after(previous, batch.id) || batch.id.sequence == 0 || batch.id.incarnation > storage->incarnation)
@@ -186,7 +189,6 @@ static gz_status_t load(gz_node_t *c, const gz_storage_reader_t *storage)
         if (st != GZ_OK) return st;
     }
     c->loaded = 1;
-    c->restored = storage->restored;
     if (c->restored) np_guard_file(c, storage->guard);
     return GZ_OK;
 }
