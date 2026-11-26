@@ -350,9 +350,11 @@ static void release_locked(void *ctx, const uint8_t *tx, size_t len)
 
 /* The factory of a plan has ended (funding.h, forget): its slot and coins are
  * freed; an index it took is kept, as on any release (M-1, review B of PR 101). */
-static void w_forget(void *ctx, const uint8_t *tx, size_t len)
+static void w_forget(void *ctx, const uint8_t *tx, size_t len, const uint8_t *spent, size_t n_in)
 {
     gzp_wport_t *w = ctx;
+    (void)spent;   /* step 1: every coin freed */
+    (void)n_in;
     pthread_mutex_lock(&w->mu);
     release_locked(ctx, tx, len);
     pthread_mutex_unlock(&w->mu);

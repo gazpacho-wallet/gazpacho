@@ -190,8 +190,11 @@ typedef struct {
                       const uint8_t script[34], uint64_t amount);
     /* Optional (may be NULL): the factory of this plan has ended (live,
      * dead or failed); the wallet frees what it holds for it (M-1, review B
-     * of PR 101). A plan it does not hold is ignored. */
-    void (*forget)(void *ctx, const uint8_t *tx, size_t tx_len);
+     * of PR 101). spent[i] is 1 for each of the plan's n_in inputs now spent
+     * on chain (all of a live funding's; a dead one's spent elsewhere), whose
+     * coin leaves the wallet's list (F-1, review B of PR 101, round 2); 0 for
+     * an input still the wallet's. A plan it does not hold is ignored. */
+    void (*forget)(void *ctx, const uint8_t *tx, size_t tx_len, const uint8_t *spent, size_t n_in);
     void *ctx;
 } gz_wallet_port_t;
 

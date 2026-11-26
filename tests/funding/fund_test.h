@@ -88,7 +88,9 @@ typedef struct {
     int p2wpkh_prev, p2wsh_change;      /* L-1: a plan the engine must refuse */
     int noted;                 /* note_tx calls, and the tag of the last one's output 0 */
     int adopted_prev;          /* adopt_plan calls, and the last one's number of spent outputs */
-    int forgot;                /* forget calls */
+    int forgot;                /* forget calls; the last one's inputs, how many told spent, and input 0's */
+    size_t forgot_n, forgot_spent;
+    uint8_t forgot_spent0;
     size_t last_n_prev;
     uint8_t noted_tag;
     unsigned next_plan;
@@ -252,12 +254,16 @@ static inline int ftw_adopt_plan(void *ctx, const uint8_t *tx, size_t len, const
 }
 
 /* The factory of a plan has ended (M-1, review B of PR 101). */
-static inline void ftw_forget(void *ctx, const uint8_t *tx, size_t len)
+static inline void ftw_forget(void *ctx, const uint8_t *tx, size_t len, const uint8_t *spent, size_t n_in)
 {
     ft_wallet_t *w = (ft_wallet_t *)ctx;
     (void)tx;
     (void)len;
     w->forgot++;
+    w->forgot_n = n_in;
+    w->forgot_spent = 0;
+    for (size_t i = 0; i < n_in; i++) w->forgot_spent += spent[i] ? 1 : 0;
+    w->forgot_spent0 = n_in ? spent[0] : 0;
 }
 
 /* Holds a plan again after a restart, if its outputs are the factory's and
