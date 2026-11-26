@@ -68,20 +68,24 @@ gz_chain_result gz_esplora_create(const gz_esplora_config *cfg, const gz_http *h
 
 /*
  * The package-endpoint probe (plan S12, step 1). Sends GZ_ESPLORA_PROBE_BODY,
- * which is not JSON and so cannot be read as a list of transactions, to the
- * package endpoint: nothing can be broadcast. A server with the endpoint
- * refuses it with 400; one without answers 404 (or 405).
+ * an empty JSON array: valid JSON, but no package (Bitcoin Core takes 2 to
+ * 25 transactions), so nothing can be broadcast. First to
+ * GZ_ESPLORA_PROBE_CONTROL_PATH, a path no server has, which must answer 404
+ * or 405: some web frameworks read a body before they route it and answer
+ * 400 on any path, and a 400 at the package path proves nothing from them.
+ * Then to the package paths: a server with the endpoint refuses `[]` with
+ * 400; one without answers 404 (or 405).
  */
-#define GZ_ESPLORA_PROBE_BODY "gazpacho package probe: not a package"
-/* A path no Esplora server has, asked first with the same body: it must
- * answer 404 or 405, or a 400 elsewhere would prove nothing. */
+#define GZ_ESPLORA_PROBE_BODY "[]"
 #define GZ_ESPLORA_PROBE_CONTROL_PATH "/txs/gazpacho-probe-no-such-path"
 #define GZ_ESPLORA_PROBE_PATH_MAX 40
 
 typedef struct gz_package_probe {
   /* GZ_CHAIN_OK: the endpoint is there (400 to the probe), at `path`.
    * GZ_CHAIN_UNSUPPORTED: 404 or 405 at every path tried.
-   * GZ_CHAIN_REJECTED: another 4xx; cannot tell (the words are in `reason`).
+   * GZ_CHAIN_REJECTED: cannot tell: the control path did not answer 404 or
+   *   405 (`path` is the control path), or a package path answered another
+   *   4xx. The words are in `reason`.
    * GZ_CHAIN_MALFORMED: a 2xx or other status to a body that is no package.
    * GZ_CHAIN_UNREACHABLE, GZ_CHAIN_TOO_LARGE: as for any request. */
   gz_chain_result result;
@@ -92,8 +96,10 @@ typedef struct gz_package_probe {
 } gz_package_probe;
 
 /* Probes one Esplora backend made by gz_esplora_create (anything else is
- * GZ_CHAIN_INVALID_ARG and nothing is sent). Tries the same paths, in the
- * same order, as gz_chain_broadcast_package. `out` is filled whatever the
+ * GZ_CHAIN_INVALID_ARG and nothing is sent). After the control path, tries
+ * the same paths, in the
+ * same order and with the same rule against sending twice after a time-out,
+ * as gz_chain_broadcast_package. `out` is filled whatever the
  * result and out->result equals the return value. Safe on every network:
  * the body is never a transaction. */
 gz_chain_result gz_esplora_probe_package(const gz_chain *c, gz_package_probe *out);

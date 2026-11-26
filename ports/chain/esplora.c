@@ -435,6 +435,9 @@ bool gz_es_parse_package(const char *s, size_t len, const uint8_t parent[GZ_HASH
             tok_text(s, fv, error);
             have_error = true;
           } else if (gz_json_str_eq(s, fk, "other-wtxid")) {
+            /* the wtxid of the copy the server has: a hash, nothing else */
+            uint8_t other[GZ_HASH_LEN];
+            if (fv->type != GZ_JSON_STRING || !tok_hash(s, fv, other)) return false;
             have_other = true;
           }
           k = fv->next;
@@ -526,6 +529,9 @@ typedef struct esplora {
   uint8_t *buf; /* the one response buffer, cfg.max_response_bytes long */
   bool has_last;
   uint64_t last_ms; /* when the previous request started */
+  /* The last POST ended unanswered after it may have reached the server (a
+   * time-out or a 5xx): it must not be sent again anywhere. */
+  bool last_maybe_acted;
 } esplora;
 
 static bool is_blank(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
@@ -553,6 +559,7 @@ static gz_chain_result es_request_as(esplora *es, bool post, const char *content
   if (w < 0 || (size_t)w >= sizeof url) return GZ_CHAIN_INVALID_ARG;
   if (cap > es->cfg.max_response_bytes) cap = es->cfg.max_response_bytes;
   *status = 0;
+  es->last_maybe_acted = false;
   *len = 0;
 
   for (uint32_t attempt = 0; attempt < es->cfg.max_attempts; attempt++) {
@@ -587,7 +594,10 @@ static gz_chain_result es_request_as(esplora *es, bool post, const char *content
       *len = resp.len;
       if (resp.status == 429) continue; /* refused before doing anything: safe to repeat */
       if (resp.status >= 500 && resp.status <= 599) {
-        if (post) break; /* see below */
+        if (post) {
+          es->last_maybe_acted = true; /* see below */
+          break;
+        }
         continue;
       }
       return GZ_CHAIN_OK;
@@ -596,7 +606,10 @@ static gz_chain_result es_request_as(esplora *es, bool post, const char *content
     /* A broadcast that timed out or drew a 5xx may have been acted on. Sending
      * it again could turn an accepted transaction into an "already known"
      * refusal, so it is not repeated; the caller sees "unreachable". */
-    if (post && hr != GZ_HTTP_E_CONNECT) break;
+    if (post && hr != GZ_HTTP_E_CONNECT) {
+      es->last_maybe_acted = true;
+      break;
+    }
   }
   return GZ_CHAIN_UNREACHABLE;
 }
@@ -971,7 +984,8 @@ static gz_chain_result es_broadcast_package(void *ctx, const uint8_t *parent, si
 
   gz_chain_result r = GZ_CHAIN_UNSUPPORTED;
   /* a path that keeps answering "busy" (429) or cannot be reached does not
-   * keep the other from being tried; only when neither has an endpoint is
+   * keep the other from being tried (one that timed out or drew a 5xx does:
+   * the server may have acted on it); only when neither has an endpoint is
    * the answer GZ_CHAIN_UNSUPPORTED */
   bool unreachable = false;
   for (size_t i = 0; i < ES_PACKAGE_PATHS; i++) {
@@ -979,6 +993,8 @@ static gz_chain_result es_broadcast_package(void *ctx, const uint8_t *parent, si
                       body_len, ES_CAP_PACKAGE, &status, &len);
     if (r == GZ_CHAIN_OK && status != 404 && status != 405) break;
     if (r != GZ_CHAIN_OK && r != GZ_CHAIN_UNREACHABLE) break;
+    /* timed out or 5xx: the server may have acted, so not sent again */
+    if (r == GZ_CHAIN_UNREACHABLE && es->last_maybe_acted) break;
     if (r == GZ_CHAIN_UNREACHABLE) unreachable = true;
     r = unreachable ? GZ_CHAIN_UNREACHABLE : GZ_CHAIN_UNSUPPORTED;
   }
@@ -1220,8 +1236,8 @@ gz_chain_result gz_esplora_create(const gz_esplora_config *cfg, const gz_http *h
   return GZ_CHAIN_OK;
 }
 
-/* The S12 probe. The body is fixed text that is not JSON, so a server can
- * only refuse it: nothing it could broadcast ever leaves this machine. */
+/* The S12 probe. The body is `[]`, valid JSON but no package (Core takes 2
+ * to 25 transactions): nothing it could broadcast ever leaves this machine. */
 gz_chain_result gz_esplora_probe_package(const gz_chain *c, gz_package_probe *out) {
   if (out == NULL) return GZ_CHAIN_INVALID_ARG;
   memset(out, 0, sizeof *out);
@@ -1232,7 +1248,24 @@ gz_chain_result gz_esplora_probe_package(const gz_chain *c, gz_package_probe *ou
   long status = 0;
   size_t len = 0;
   bool unreachable = false;
-  gz_chain_result r = GZ_CHAIN_UNSUPPORTED;
+  /* First a path no server has. Some web frameworks read a POST body before
+   * they route it, and answer 400 on any path; a 400 at the package path
+   * proves something only if this path answers 404 or 405. */
+  snprintf(out->path, sizeof out->path, "%s", GZ_ESPLORA_PROBE_CONTROL_PATH);
+  gz_chain_result r =
+      es_request_as(es, true, "application/json", GZ_ESPLORA_PROBE_CONTROL_PATH,
+                    (const uint8_t *)body, sizeof body - 1, ES_CAP_PACKAGE, &status, &len);
+  out->server_status = status;
+  if (r != GZ_CHAIN_OK) {
+    out->result = r;
+    return r;
+  }
+  if (status != 404 && status != 405) {
+    reason_from_body(es, len, out->reason);
+    out->result = GZ_CHAIN_REJECTED; /* cannot tell */
+    return out->result;
+  }
+  r = GZ_CHAIN_UNSUPPORTED;
   /* the same paths, in the same order, with the same rules as a package */
   for (size_t i = 0; i < ES_PACKAGE_PATHS; i++) {
     snprintf(out->path, sizeof out->path, "%s", es_package_paths[i]);
@@ -1240,6 +1273,8 @@ gz_chain_result gz_esplora_probe_package(const gz_chain *c, gz_package_probe *ou
                       sizeof body - 1, ES_CAP_PACKAGE, &status, &len);
     if (r == GZ_CHAIN_OK && status != 404 && status != 405) break;
     if (r != GZ_CHAIN_OK && r != GZ_CHAIN_UNREACHABLE) break;
+    /* timed out or 5xx: the server may have acted, so not sent again */
+    if (r == GZ_CHAIN_UNREACHABLE && es->last_maybe_acted) break;
     if (r == GZ_CHAIN_UNREACHABLE) unreachable = true;
     r = unreachable ? GZ_CHAIN_UNREACHABLE : GZ_CHAIN_UNSUPPORTED;
   }
@@ -1247,7 +1282,7 @@ gz_chain_result gz_esplora_probe_package(const gz_chain *c, gz_package_probe *ou
   if (r == GZ_CHAIN_OK) {
     reason_from_body(es, len, out->reason);
     if (status == 400) {
-      r = GZ_CHAIN_OK; /* refused as unreadable: the endpoint is there */
+      r = GZ_CHAIN_OK; /* refused as no package, where 404 was due: it is there */
     } else if (status >= 400 && status <= 499) {
       r = GZ_CHAIN_REJECTED; /* refused for some other reason: cannot tell */
     } else {
