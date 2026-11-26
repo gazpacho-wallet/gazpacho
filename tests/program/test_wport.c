@@ -2000,10 +2000,10 @@ static void test_adopt_without_change(void)
     r.net = GZT_NET_SIGNET;
     r.funding_script = factory;
     r.funding_script_len = 34;
-    r.amount = 500000 - 200;   /* what is left after the fee is below dust: no change */
+    r.amount = 500000 - 100;   /* what is left after the fee is below dust: no change */
     r.change_index = 7;
     r.fee.rate.sat_per_kvb = 100;
-    r.fee.ceiling.sat_per_kvb = 10000;
+    r.fee.ceiling.sat_per_kvb = 1000;   /* the port's own policy: ten times the rate (adopt checks it) */
     memset(aux, 3, 32);
     {
         gzw_xprv m;   /* the test seed's master: the port keeps none */
@@ -2017,7 +2017,7 @@ static void test_adopt_without_change(void)
     prev[0].amount = k.amount;
     prev[0].script_len = 34;
     memcpy(prev[0].script, k.script, 34);
-    CHECK(b.port.adopt_plan && b.port.adopt_plan(b.port.ctx, tx, len, prev, 1, factory, 500000 - 200, 100) == 1);
+    CHECK(b.port.adopt_plan && b.port.adopt_plan(b.port.ctx, tx, len, prev, 1, factory, 500000 - 100, 100) == 1);
     CHECK(b.port.spend_back(b.port.ctx, f.info.txid, 0, 1000, sb, sizeof sb, &sbl) == 1);
     (void)sl;
     gzt_funding_wipe(&f);
