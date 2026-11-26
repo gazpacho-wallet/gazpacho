@@ -13,16 +13,19 @@
 static secp256k1_context *secp;
 
 /* M1, messages.md section 11. */
-static const char *M1 =
+static const char *M1 =   /* messages.md 11, regenerated for BD (K1): records 12 and 14, 281 bytes */
     "ce37677a6601001675e970b6d95c7de97bf35f67033e2c9f55de1ea54beecb8431419659f0a424f2"
     "022075e970b6d95c7de97bf35f67033e2c9f55de1ea54beecb8431419659f0a424f2"
     "040400000001"
     "0620d1db6ddfd5a2c12ae197036f285457ae6ceaf468c2a47fb71691dde4b1153942"
-    "f0407eb07e7116d893db0aa57ca3c88fd1b7c67aeb5a0772923c08a4f10350197cbc"
-    "08c19ce8d566df618ab0df88d9773f5089c63b83d4fc99636a5ba7f433762627";
-static const char *M1_HASH = "683a9673360b942f37224c92dfeb58765fc9085e14bae4c6120b46c5be42f8d0";
+    "0c210223a26c411e719d542783e3bb05fa00a467fb73227d495ab89734fef0ecec3974"
+    "0e4020e17a88512a7899a72ecfa56bc456a12a71012cc2a1f2b5b77bc2c4143b3eb8"
+    "676168a973998b2fdb71d2d8284b9a9e0adf8f2927815ae965398cf4c8184813"
+    "f040c9aeb5be67136054edb4f5870f539aaf15cf2b4e9e4f6b3da9055cc6294c13fc"
+    "28bd272cb8dad7914e7283c1057bd7514d8657ebbf4a9b23852ccc5b0980ca55";
+static const char *M1_HASH = "35296630cb14a6dec24fa4750eda07d6fcd7c20978537e5d68e079360c5d1994";
 static const char *M1_KEY = "024322bd904fa9770421b0b48f08e961d473f3ee9a36a5bc85fa3cac30fa2e15ae";
-static const char *M3_HEAD = "80200004" "0020c3a082d0fcb768d76999f4f8ad672f7110fbef6a13a1697686c7073961c842f1" "fd0400ae";
+static const char *M3_HEAD = "80200004" "0020c3a082d0fcb768d76999f4f8ad672f7110fbef6a13a1697686c7073961c842f1" "fd0400fd0113";
 static const char *M0 = "80200002fd020020c3a082d0fcb768d76999f4f8ad672f7110fbef6a13a1697686c7073961c842f1";
 static const char *M2_TID = "fcb2c91358d5559e25feace2ed8a1562324ec95032f4c514435b5bd2f152a668";
 static const char *T1_DIGEST = "75e970b6d95c7de97bf35f67033e2c9f55de1ea54beecb8431419659f0a424f2";
@@ -50,17 +53,18 @@ static int hex_eq(const uint8_t *p, size_t n, const char *h)
 
 static void test_vectors(void)
 {
-    uint8_t m1[200], out[400], h[32], key[33];
+    uint8_t m1[300], out[400], h[32], key[33];
     size_t n = unhex(M1, m1, sizeof m1), on;
     gz_env_msg_t m;
     gz_env_record_t rec[8];
     int nr;
-    CHECK(n == 180);
+    CHECK(n == 281);
     /* M1 reads as a ready (kind 22) for lobby T1, at the host. */
     CHECK(gz_env_read(m1, n, GZ_ENV_AT_HOST, &m, NULL) == GZ_ENV_DELIVER);
     CHECK(m.kind == GZ_ENV_KIND_READY && hex_eq(m.scope, 32, T1_DIGEST));
     nr = gz_env_records(m.records, m.records_len, rec, 8);
-    CHECK(nr == 4 && rec[0].type == 2 && rec[1].type == 4 && rec[2].type == 6 && rec[3].type == 240);
+    CHECK(nr == 6 && rec[0].type == 2 && rec[1].type == 4 && rec[2].type == 6 && rec[3].type == 12 && rec[4].type == 14 &&
+          rec[5].type == 240);
     CHECK(gz_env_msg_hash(secp, &m, h) && hex_eq(h, 32, M1_HASH));
     unhex(M1_KEY, key, 33);
     CHECK(gz_env_verify(secp, &m, key));
@@ -71,8 +75,8 @@ static void test_vectors(void)
     CHECK(on == n && memcmp(out, m1, n) == 0);
     /* M3: M1 through the bLIP-56 adapter, and back. */
     CHECK(gz_env_blip56_wrap(m1, n, out, sizeof out, &on) == 0);
-    CHECK(on == 216 && hex_eq(out, 42, M3_HEAD) && memcmp(out + 42, m1 + 6, 174) == 0);
-    CHECK(gz_env_blip56_unwrap(out, on, msg, sizeof msg, &n) == 0 && n == 180 && memcmp(msg, m1, 180) == 0);
+    CHECK(on == 319 && hex_eq(out, 44, M3_HEAD) && memcmp(out + 44, m1 + 6, 275) == 0);
+    CHECK(gz_env_blip56_unwrap(out, on, msg, sizeof msg, &n) == 0 && n == 281 && memcmp(msg, m1, 281) == 0);
     /* An adapter message with another protocol id, or without TLV 1024. */
     out[10] ^= 1;
     CHECK(gz_env_blip56_unwrap(out, on, msg, sizeof msg, &n) != 0);
@@ -131,8 +135,8 @@ typedef struct {
 static const tkind TK[] = {
     {16, 2, 0, {{0}}},
     {18, 1, 4, {{2, 1, 4096, 0, 1}, F(4, 64, 1), {6, 1, 1024, 0, 1}, F(8, 64, 1)}},
-    {20, 2, 4, {F(2, 33, 1), F(4, 64, 1), F(6, 64, 1), {7, 1, 32, 0, 0}}},
-    {22, 2, 6, {F(2, 32, 1), F(4, 4, 1), F(6, 32, 1), F(8, 32, 0), F(11, 2, 0), S}},
+    {20, 2, 1, {{7, 1, 32, 0, 0}}},                                       /* BD: no keys in a join */
+    {22, 2, 8, {F(2, 32, 1), F(4, 4, 1), F(6, 32, 1), F(8, 32, 0), F(11, 2, 0), F(12, 33, 1), F(14, 64, 1), S}},
     {24, 2, 1, {F(1, 2, 0)}},
     {26, 2, 1, {F(1, 2, 0)}},
     {28, 1, 6, {F(2, 1, 1), F(4, 1, 1), F(6, 4, 1), F(8, 2, 1), F(10, 2, 1), F(13, 2, 0)}},
@@ -140,7 +144,7 @@ static const tkind TK[] = {
     {32, 1, 4, {F(2, 32, 1), F(4, 1, 1), F(6, 2, 1), S}},
     {34, 1, 2, {F(2, 2, 1), S}},
     {64, 1, 25, {F(2, 32, 1), F(4, 32, 1), F(6, 1, 1), F(7, 2, 0), F(8, 4, 1), F(10, 32, 1), F(12, 36, 1),
-                 F(14, 8, 1), F(16, 34, 1), {18, 60, 100000, 0, 1}, {20, 2, 1001, 194, 1}, {22, 1, 8, 4, 1},
+                 F(14, 8, 1), F(16, 34, 1), {18, 60, 100000, 0, 1}, {20, 2, 1001, 130, 1}, {22, 1, 8, 4, 1},
                  F(24, 4, 1), F(28, 1, 1), F(30, 8, 1), F(32, 4, 1), {34, 0, 4096, 36, 1}, F(36, 1, 1),
                  F(38, 1, 1), F(40, 2, 1), F(42, 2, 1), F(46, 32, 1), F(48, 4, 1), F(50, 4, 1), S}},
     {66, 2, 3, {F(2, 32, 1), F(4, 1, 1), {6, 1, 256, 134, 1}}},
@@ -295,12 +299,16 @@ static void test_special_records(void)
         for (g = 0; g < 4 + 10; g++) {
             const char *s = g < 4 ? good[g] : bad[g - 4];
             gz_tlv_writer_init(&w, body, sizeof body);
-            gz_tlv_put(&w, 2, v, 33);
-            gz_tlv_put(&w, 4, v, 64);
-            gz_tlv_put(&w, 6, v, 64);
             gz_tlv_put(&w, 7, (const uint8_t *)s, strlen(s));
             CHECK(gz_env_check(20, SCOPE, body, w.len, GZ_ENV_AT_HOST, NULL) == (g < 4 ? GZ_ENV_DELIVER : GZ_ENV_REFUSE));
         }
+        /* BD: a join of draft 2's form (records 2, 4 and 6, retired) is refused */
+        gz_tlv_writer_init(&w, body, sizeof body);
+        gz_tlv_put(&w, 2, v, 33);
+        gz_tlv_put(&w, 4, v, 64);
+        gz_tlv_put(&w, 6, v, 64);
+        gz_tlv_put(&w, 7, (const uint8_t *)"Ana", 3);
+        CHECK(gz_env_check(20, SCOPE, body, w.len, GZ_ENV_AT_HOST, NULL) == GZ_ENV_REFUSE);
     }
     /* round_all_nonces items: whole blocks, 1 to 256 items, at least one signer each. */
     {
@@ -362,7 +370,7 @@ static size_t mk(uint16_t kind, const uint8_t *scope, const char *records_hex, u
 
 static void test_read(void)
 {
-    uint8_t m1[200];
+    uint8_t m1[300];
     size_t n = unhex(M1, m1, sizeof m1);
     gz_env_msg_t m;
     const char *why;

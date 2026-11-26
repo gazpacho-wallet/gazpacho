@@ -186,8 +186,10 @@ env-msghash-before	ports/net/envelope.c	before = (size_t)(sig - 2 - m->records);
 env-verify-ignores	ports/net/envelope.c	return secp256k1_schnorrsig_verify(secp, sig, h, 32, &xk);	return 1;
 env-blip56-id-unchecked	ports/net/envelope.c	return rec->len == 32 && memcmp(rec->value, GZ_ENV_FACTORY_PROTOCOL_ID, 32) == 0;	return rec->len == 32;
 env-blip56-wrap-tag-kept	ports/net/envelope.c	gz_tlv_put(&w, 1024, native + 6, len - 6);	gz_tlv_put(&w, 1024, native + 2, len - 2);
-env-table-ready-sig-optional	ports/net/envelope.c	FIX(11, 2, 0), SIG};	FIX(11, 2, 0), FIX(240, 64, 0)};
-env-table-participants-min	ports/net/envelope.c	LIST(20, 194, 2, 1001, 1)	LIST(20, 194, 1, 1001, 1)
+env-table-ready-sig-optional	ports/net/envelope.c	FIX(14, 64, 1), SIG};	FIX(14, 64, 1), FIX(240, 64, 0)};
+env-table-participants-min	ports/net/envelope.c	LIST(20, 130, 2, 1001, 1)	LIST(20, 130, 1, 1001, 1)
+env-table-ready-fkey-optional	ports/net/envelope.c	FIX(12, 33, 1), FIX(14, 64, 1), SIG};	FIX(12, 33, 0), FIX(14, 64, 1), SIG};
+env-table-ready-bind-optional	ports/net/envelope.c	FIX(12, 33, 1), FIX(14, 64, 1), SIG};	FIX(12, 33, 1), FIX(14, 64, 0), SIG};
 env-table-abort-member-only	ports/net/envelope.c	K(GZ_ENV_KIND_ROUND_ABORT, DIR_EITHER, R_ABORT)	K(GZ_ENV_KIND_ROUND_ABORT, DIR_M2H, R_ABORT)
 env-table-part-either	ports/net/envelope.c	K(GZ_ENV_KIND_PART, DIR_H2M, R_PART)	K(GZ_ENV_KIND_PART, DIR_EITHER, R_PART)
 env-table-funded-gone	ports/net/envelope.c	K(GZ_ENV_KIND_FACTORY_FUNDED, DIR_H2M, R_ROUND_ID),	
