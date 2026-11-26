@@ -36,8 +36,8 @@ tests/signing/world.h	secp256k1_keypair_create	6
 # goes with S4's ECDH move.
 # program/store_unlock.c (PR 54, B3, in place of program/unlock_standin.c and
 # main.c's own use): set-up turns the words into the seed for the storage
-# layer outside the signer. At S4 the signer reads the seed only through its
-# seed source and does this step itself.
+# layer outside the signer: the seed source; reasoned exemption until 1.0.0's
+# separate signer process.
 program/main.c	gzw_bip32_master	1
 program/main.c	secp256k1_ec_seckey_verify	1
 program/store_unlock.c	gzw_phrase_to_seed	1
