@@ -718,6 +718,383 @@ static void test_broadcast_retry_rules(test_state *T) {
   fx_close(&x);
 }
 
+/* ---- packages (POST /txs/package) ---- */
+
+#define PKG_PATH BASE "/txs/package"
+#define PKG_PATH_V1 BASE "/v1/txs/package"
+#define PROBE_CONTROL BASE GZ_ESPLORA_PROBE_CONTROL_PATH
+
+/* A parent and a child that really spends it: transaction A and its
+ * recorded spender. */
+typedef struct pkg_pair {
+  uint8_t parent[1024], child[1024];
+  size_t parent_len, child_len;
+  uint8_t p[GZ_HASH_LEN], c[GZ_HASH_LEN];
+} pkg_pair;
+
+static void pkg_pair_load(pkg_pair *k) {
+  k->parent_len = load_raw("tx_a_hex.txt", k->parent, sizeof k->parent);
+  k->child_len = load_raw("tx_spender_hex.txt", k->child, sizeof k->child);
+  test_hash(TX_A, k->p);
+  test_hash(TX_SPENDER, k->c);
+}
+
+/* Bitcoin Core's submitpackage answer, as Esplora passes it on: entries keyed
+ * by wtxid (here the txid: these two have no witness), fees as decimals. */
+#define PKG_ENTRY_OK(id, extra)                                                                \
+  "\"" id "\":{\"txid\":\"" id "\",\"vsize\":61," extra "\"fees\":{\"base\":0.00000240,"       \
+  "\"effective-feerate\":0.00001412,\"effective-includes\":[\"" id "\"]}}"
+#define PKG_ENTRY_ERR(id, why) "\"" id "\":{\"txid\":\"" id "\",\"error\":\"" why "\"}"
+#define PKG_ANSWER(msg, entries) \
+  "{\"package_msg\":\"" msg "\",\"tx-results\":{" entries "},\"replaced-transactions\":[]}"
+#define PKG_SUCCESS PKG_ANSWER("success", PKG_ENTRY_OK(TX_A, "") "," PKG_ENTRY_OK(TX_SPENDER, ""))
+#define PKG_SEND(x, k, pr) \
+  gz_chain_broadcast_package(&(x).chain, (k).parent, (k).parent_len, (k).child, (k).child_len, (pr))
+
+static void test_package(test_state *T) {
+  fixture x;
+  pkg_pair k;
+  gz_package_result pr;
+  fx_open(&x);
+  pkg_pair_load(&k);
+
+  /* accepted: both in, each with its own txid; one request */
+  fake_set(&x.fake, true, PKG_PATH, 200, PKG_SUCCESS);
+  unsigned before = x.fake.requests;
+  CHECK_RESULT(PKG_SEND(x, k, &pr), GZ_CHAIN_OK);
+  CHECK(x.fake.requests == before + 1);
+  CHECK(pr.result == GZ_CHAIN_OK && pr.server_status == 200 && pr.reason[0] == '\0');
+  CHECK(pr.parent.result == GZ_CHAIN_OK && pr.child.result == GZ_CHAIN_OK);
+  CHECK(memcmp(pr.parent.txid, k.p, GZ_HASH_LEN) == 0);
+  CHECK(memcmp(pr.child.txid, k.c, GZ_HASH_LEN) == 0);
+  CHECK(!pr.parent.already_known && !pr.child.already_known);
+  /* the body is a JSON array of the two transactions in hex, parent first */
+  {
+    size_t ph, chl;
+    char *phex = test_read_data("tx_a_hex.txt", &ph);
+    char *chex = test_read_data("tx_spender_hex.txt", &chl);
+    while (ph > 0 && (phex[ph - 1] == '\n' || phex[ph - 1] == '\r')) ph--;
+    while (chl > 0 && (chex[chl - 1] == '\n' || chex[chl - 1] == '\r')) chl--;
+    char want[2100];
+    int w = snprintf(want, sizeof want, "[\"%.*s\",\"%.*s\"]", (int)ph, phex, (int)chl, chex);
+    CHECK(w > 0 && x.fake.last_body_len == (size_t)w);
+    CHECK(w > 0 && memcmp(x.fake.last_body, want, (size_t)w) == 0);
+    free(phex);
+    free(chex);
+  }
+
+  /* the parent was already in the server's mempool (other-wtxid) */
+  fake_set(&x.fake, true, PKG_PATH, 200,
+           PKG_ANSWER("success", PKG_ENTRY_OK(TX_A, "\"other-wtxid\":\"" TX_B "\",") ","
+                                     PKG_ENTRY_OK(TX_SPENDER, "")));
+  CHECK_RESULT(PKG_SEND(x, k, &pr), GZ_CHAIN_OK);
+  CHECK(pr.parent.already_known && !pr.child.already_known);
+
+  /* rejected, each transaction with the server's own words */
+  fake_set(&x.fake, true, PKG_PATH, 200,
+           PKG_ANSWER("transaction failed",
+                      PKG_ENTRY_ERR(TX_A, "min relay fee not met, 0 < 61") ","
+                          PKG_ENTRY_ERR(TX_SPENDER, "unevaluated")));
+  CHECK_RESULT(PKG_SEND(x, k, &pr), GZ_CHAIN_REJECTED);
+  CHECK(pr.result == GZ_CHAIN_REJECTED && pr.server_status == 200);
+  CHECK(strcmp(pr.reason, "transaction failed") == 0);
+  CHECK(pr.parent.result == GZ_CHAIN_REJECTED && pr.child.result == GZ_CHAIN_REJECTED);
+  CHECK(strcmp(pr.parent.reason, "min relay fee not met, 0 < 61") == 0);
+  CHECK(strcmp(pr.child.reason, "unevaluated") == 0);
+
+  /* the parent went in on its own, the child was refused: the pair is not in */
+  fake_set(&x.fake, true, PKG_PATH, 200,
+           PKG_ANSWER("transaction failed",
+                      PKG_ENTRY_OK(TX_A, "") ","
+                          PKG_ENTRY_ERR(TX_SPENDER, "bad-txns-inputs-missingorspent")));
+  CHECK_RESULT(PKG_SEND(x, k, &pr), GZ_CHAIN_REJECTED);
+  CHECK(pr.parent.result == GZ_CHAIN_OK && memcmp(pr.parent.txid, k.p, GZ_HASH_LEN) == 0);
+  CHECK(pr.child.result == GZ_CHAIN_REJECTED);
+  CHECK(strcmp(pr.child.reason, "bad-txns-inputs-missingorspent") == 0);
+
+  /* refused as a whole, in plain text (Esplora's 400 for an RPC error) */
+  const char *whole = "submitpackage RPC error: package topology disallowed";
+  fake_set(&x.fake, true, PKG_PATH, 400, whole);
+  CHECK_RESULT(PKG_SEND(x, k, &pr), GZ_CHAIN_REJECTED);
+  CHECK(pr.server_status == 400 && strcmp(pr.reason, whole) == 0);
+  CHECK(pr.parent.result == GZ_CHAIN_REJECTED && pr.child.result == GZ_CHAIN_REJECTED);
+
+  /* no endpoint at the documented path, one at mempool.space's */
+  fake_set(&x.fake, true, PKG_PATH, 404, "Not Found");
+  fake_set(&x.fake, true, PKG_PATH_V1, 200, PKG_SUCCESS);
+  CHECK_RESULT(PKG_SEND(x, k, &pr), GZ_CHAIN_OK);
+  CHECK(fake_hits(&x.fake, true, PKG_PATH_V1) == 1);
+
+  /* no endpoint anywhere: unsupported, a result of its own, not a refusal */
+  fake_set(&x.fake, true, PKG_PATH_V1, 404, "Not Found");
+  CHECK_RESULT(PKG_SEND(x, k, &pr), GZ_CHAIN_UNSUPPORTED);
+  CHECK(pr.parent.result == GZ_CHAIN_UNSUPPORTED && pr.child.result == GZ_CHAIN_UNSUPPORTED);
+  CHECK(pr.server_status == 404);
+  fake_set(&x.fake, true, PKG_PATH, 405, "Method Not Allowed");
+  CHECK_RESULT(PKG_SEND(x, k, &pr), GZ_CHAIN_UNSUPPORTED);
+  fake_set(&x.fake, true, PKG_PATH_V1, 405, "");
+  CHECK_RESULT(PKG_SEND(x, k, &pr), GZ_CHAIN_UNSUPPORTED);
+  fake_set(&x.fake, true, PKG_PATH_V1, 404, "");
+
+  /* oversized answers, as a success and as a refusal */
+  static char huge[20000];
+  memset(huge, ' ', sizeof huge - 1);
+  huge[sizeof huge - 1] = '\0';
+  huge[0] = '{';
+  fake_set(&x.fake, true, PKG_PATH, 200, huge);
+  CHECK_RESULT(PKG_SEND(x, k, &pr), GZ_CHAIN_TOO_LARGE);
+  CHECK(pr.parent.result == GZ_CHAIN_TOO_LARGE && pr.child.result == GZ_CHAIN_TOO_LARGE);
+  memset(huge, 'A', sizeof huge - 1);
+  fake_set(&x.fake, true, PKG_PATH, 400, huge);
+  CHECK_RESULT(PKG_SEND(x, k, &pr), GZ_CHAIN_TOO_LARGE);
+
+  /* a server that could not be reached */
+  x.fake.down = true;
+  CHECK_RESULT(PKG_SEND(x, k, &pr), GZ_CHAIN_UNREACHABLE);
+  CHECK(pr.server_status == 0);
+  x.fake.down = false;
+
+  /* bytes that are not a transaction, or one transaction twice, are never
+   * sent */
+  before = x.fake.requests;
+  CHECK_RESULT(gz_chain_broadcast_package(&x.chain, k.parent, k.parent_len - 1, k.child,
+                                          k.child_len, &pr),
+               GZ_CHAIN_INVALID_ARG);
+  CHECK_RESULT(gz_chain_broadcast_package(&x.chain, k.parent, k.parent_len, k.child, 3, &pr),
+               GZ_CHAIN_INVALID_ARG);
+  CHECK_RESULT(gz_chain_broadcast_package(&x.chain, k.parent, k.parent_len, k.parent,
+                                          k.parent_len, &pr),
+               GZ_CHAIN_INVALID_ARG);
+  CHECK(pr.result == GZ_CHAIN_INVALID_ARG && pr.child.result == GZ_CHAIN_INVALID_ARG);
+  CHECK(x.fake.requests == before);
+  fx_close(&x);
+}
+
+/* Answers that are not exactly a submitpackage result about the two
+ * transactions sent are malformed, never "accepted". */
+static void test_package_answer_strict(test_state *T) {
+  fixture x;
+  pkg_pair k;
+  gz_package_result pr;
+  fx_open(&x);
+  pkg_pair_load(&k);
+  static const char *const bad[] = {
+      "ok",
+      "",
+      "[]",
+      "{}",
+      /* no package message */
+      "{\"tx-results\":{" PKG_ENTRY_OK(TX_A, "") "," PKG_ENTRY_OK(TX_SPENDER, "") "}}",
+      /* the message is not a string */
+      "{\"package_msg\":1,\"tx-results\":{}}",
+      /* a key twice */
+      "{\"package_msg\":\"success\",\"package_msg\":\"success\",\"tx-results\":{" PKG_ENTRY_OK(
+          TX_A, "") "," PKG_ENTRY_OK(TX_SPENDER, "") "}}",
+      /* "success", but the child is not listed */
+      PKG_ANSWER("success", PKG_ENTRY_OK(TX_A, "")),
+      /* "success", with no results at all */
+      "{\"package_msg\":\"success\"}",
+      /* "success", but the child is listed with an error */
+      PKG_ANSWER("success", PKG_ENTRY_OK(TX_A, "") "," PKG_ENTRY_ERR(TX_SPENDER, "missing-inputs")),
+      /* a transaction that was not sent */
+      PKG_ANSWER("success", PKG_ENTRY_OK(TX_A, "") "," PKG_ENTRY_OK(TX_SPENDER, "") "," PKG_ENTRY_OK(
+                                TX_B, "")),
+      /* an entry with no txid */
+      PKG_ANSWER("success", PKG_ENTRY_OK(TX_A, "") "," PKG_ENTRY_OK(TX_SPENDER, "") ",\"" TX_B
+                                                                                   "\":{\"vsize\":61}"),
+      /* the parent listed twice, under two keys */
+      PKG_ANSWER("success", PKG_ENTRY_OK(TX_A, "") "," PKG_ENTRY_OK(TX_SPENDER, "") ",\"" TX_B
+                                                                                   "\":{\"txid\":\"" TX_A
+                                                                                   "\"}"),
+      /* a txid that is not a hash */
+      PKG_ANSWER("success", PKG_ENTRY_OK(TX_A, "") ",\"x\":{\"txid\":\"zz\"}"),
+      /* an error that is not a string */
+      PKG_ANSWER("transaction failed", "\"" TX_A "\":{\"txid\":\"" TX_A "\",\"error\":5}"),
+      /* an entry that is not an object */
+      PKG_ANSWER("success", "\"" TX_A "\":\"" TX_A "\""),
+      /* not "success", yet both transactions in without an error */
+      PKG_ANSWER("transaction failed", PKG_ENTRY_OK(TX_A, "") "," PKG_ENTRY_OK(TX_SPENDER, "")),
+      /* trailing bytes */
+      PKG_SUCCESS "x",
+      /* "other-wtxid" that is not a string, or not a hash */
+      PKG_ANSWER("success", PKG_ENTRY_OK(TX_A, "\"other-wtxid\":5,") "," PKG_ENTRY_OK(TX_SPENDER, "")),
+      PKG_ANSWER("success", PKG_ENTRY_OK(TX_A, "\"other-wtxid\":\"00\",") "," PKG_ENTRY_OK(TX_SPENDER, "")),
+      PKG_ANSWER("success", PKG_ENTRY_OK(TX_A, "\"other-wtxid\":null,") "," PKG_ENTRY_OK(TX_SPENDER, "")),
+  };
+  for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+    fake_set(&x.fake, true, PKG_PATH, 200, bad[i]);
+    gz_chain_result r = PKG_SEND(x, k, &pr);
+    CHECK(r == GZ_CHAIN_MALFORMED && pr.result == GZ_CHAIN_MALFORMED &&
+          pr.parent.result == GZ_CHAIN_MALFORMED && pr.child.result == GZ_CHAIN_MALFORMED);
+    if (r != GZ_CHAIN_MALFORMED) fprintf(stderr, "  answer %zu: %s\n", i, gz_chain_result_name(r));
+  }
+  /* statuses other than 200 and 4xx are not an answer */
+  fake_set(&x.fake, true, PKG_PATH, 201, PKG_SUCCESS);
+  CHECK_RESULT(PKG_SEND(x, k, &pr), GZ_CHAIN_MALFORMED);
+  fake_set(&x.fake, true, PKG_PATH, 302, "");
+  CHECK_RESULT(PKG_SEND(x, k, &pr), GZ_CHAIN_MALFORMED);
+  /* the words of a refusal are cleaned like any other */
+  fake_set(&x.fake, true, PKG_PATH, 400, "bad\x1b[31m package");
+  CHECK_RESULT(PKG_SEND(x, k, &pr), GZ_CHAIN_REJECTED);
+  CHECK(strcmp(pr.reason, "bad?[31m package") == 0);
+  fx_close(&x);
+}
+
+/* The answer cap is 16384 bytes: an answer of exactly that size is read, one
+ * byte more is too large. */
+static void test_package_answer_cap(test_state *T) {
+  fixture x;
+  pkg_pair k;
+  gz_package_result pr;
+  static char body[16386];
+  const char *ok = PKG_SUCCESS;
+  size_t ok_len = strlen(ok);
+  fx_open(&x);
+  pkg_pair_load(&k);
+  for (size_t size = 16384; size <= 16385; size++) {
+    /* the success answer, padded with spaces after its opening brace */
+    body[0] = '{';
+    memset(body + 1, ' ', size - ok_len);
+    memcpy(body + 1 + (size - ok_len), ok + 1, ok_len - 1);
+    body[size] = '\0';
+    CHECK(strlen(body) == size);
+    fake_set(&x.fake, true, PKG_PATH, 200, body);
+    CHECK_RESULT(PKG_SEND(x, k, &pr), size == 16384 ? GZ_CHAIN_OK : GZ_CHAIN_TOO_LARGE);
+    CHECK(x.fake.last_cap == 16384);
+    /* a refusal of the same sizes */
+    memset(body, 'A', size);
+    body[size] = '\0';
+    fake_set(&x.fake, true, PKG_PATH, 400, body);
+    CHECK_RESULT(PKG_SEND(x, k, &pr), size == 16384 ? GZ_CHAIN_REJECTED : GZ_CHAIN_TOO_LARGE);
+    if (size == 16384) CHECK(strlen(pr.reason) == GZ_REASON_MAX - 1);
+  }
+  fx_close(&x);
+}
+
+/* A package POST that timed out may have been acted on: it is not sent
+ * again, not even to the other path. One that never connected, or drew 429,
+ * was not looked at, and the other path is still tried. */
+static void test_package_not_reposted(test_state *T) {
+  fixture x;
+  pkg_pair k;
+  gz_package_result pr;
+  fx_open(&x);
+  pkg_pair_load(&k);
+  fake_set(&x.fake, true, PKG_PATH, 200, PKG_SUCCESS);
+  fake_set(&x.fake, true, PKG_PATH_V1, 404, "Not Found");
+
+  fake_once(&x.fake, true, PKG_PATH, GZ_HTTP_E_TIMEOUT, 0, "", 1);
+  unsigned first = fake_hits(&x.fake, true, PKG_PATH), second = fake_hits(&x.fake, true, PKG_PATH_V1);
+  unsigned before = x.fake.requests;
+  CHECK_RESULT(PKG_SEND(x, k, &pr), GZ_CHAIN_UNREACHABLE);
+  CHECK(x.fake.requests == before + 1);
+  CHECK(fake_hits(&x.fake, true, PKG_PATH_V1) == second); /* the other path was not asked */
+  CHECK(fake_hits(&x.fake, true, PKG_PATH) == first + 1);
+  CHECK(x.fake.last_timeout_ms == 15000);
+  CHECK(pr.server_status == 0 && pr.parent.result == GZ_CHAIN_UNREACHABLE);
+
+  /* the same after a 5xx */
+  fake_once(&x.fake, true, PKG_PATH, GZ_HTTP_OK, 502, "bad gateway", 1);
+  before = x.fake.requests;
+  CHECK_RESULT(PKG_SEND(x, k, &pr), GZ_CHAIN_UNREACHABLE);
+  CHECK(x.fake.requests == before + 1);
+  CHECK(fake_hits(&x.fake, true, PKG_PATH_V1) == second);
+
+  /* never connected on any try: nothing was sent, the other path is asked */
+  fake_once(&x.fake, true, PKG_PATH, GZ_HTTP_E_CONNECT, 0, "", 3);
+  before = x.fake.requests;
+  CHECK_RESULT(PKG_SEND(x, k, &pr), GZ_CHAIN_UNREACHABLE);
+  CHECK(x.fake.requests == before + 4);
+  CHECK(fake_hits(&x.fake, true, PKG_PATH_V1) == second + 1);
+
+  /* and the probe follows the same rule */
+  fake_set(&x.fake, true, PROBE_CONTROL, 404, "Not Found");
+  fake_once(&x.fake, true, PKG_PATH, GZ_HTTP_E_TIMEOUT, 0, "", 1);
+  gz_package_probe pp;
+  CHECK_RESULT(gz_esplora_probe_package(&x.chain, &pp), GZ_CHAIN_UNREACHABLE);
+  CHECK(fake_hits(&x.fake, true, PKG_PATH_V1) == second + 1);
+  fx_close(&x);
+}
+
+/* The S12 probe: `[]`, valid JSON but no package (Core takes 2 to 25
+ * transactions), so nothing can be broadcast. First to a path that cannot
+ * exist, which must answer 404 or 405; then 400 at a package path means the
+ * endpoint exists, 404 or 405 at both that it does not. */
+static void test_package_probe(test_state *T) {
+  fixture x;
+  gz_package_probe pp;
+  fx_open(&x);
+  const char *invalid = "submitpackage RPC error: Array must contain between 2 and 25 transactions.";
+
+  fake_set(&x.fake, true, PROBE_CONTROL, 404, "Not Found");
+  fake_set(&x.fake, true, PKG_PATH, 400, invalid);
+  unsigned before = x.fake.requests;
+  CHECK_RESULT(gz_esplora_probe_package(&x.chain, &pp), GZ_CHAIN_OK);
+  CHECK(x.fake.requests == before + 2);
+  CHECK(fake_hits(&x.fake, true, PROBE_CONTROL) == 1 && fake_hits(&x.fake, true, PKG_PATH) == 1);
+  CHECK(pp.result == GZ_CHAIN_OK && pp.server_status == 400);
+  CHECK(strcmp(pp.path, "/txs/package") == 0 && strcmp(pp.reason, invalid) == 0);
+  /* what was sent is the fixed probe body: an empty JSON array, which no
+   * server can read as transactions */
+  CHECK(strcmp(GZ_ESPLORA_PROBE_BODY, "[]") == 0);
+  CHECK(x.fake.last_body_len == 2 && memcmp(x.fake.last_body, "[]", 2) == 0);
+
+  /* A server that answers 400 on a path that cannot exist (it reads the
+   * body before it routes, or refuses every POST) says nothing about the
+   * package endpoint: cannot tell, and the package paths are not asked. */
+  fake_set(&x.fake, true, PROBE_CONTROL, 400, "bad request");
+  before = fake_hits(&x.fake, true, PKG_PATH);
+  CHECK_RESULT(gz_esplora_probe_package(&x.chain, &pp), GZ_CHAIN_REJECTED);
+  CHECK(pp.server_status == 400 && strcmp(pp.path, GZ_ESPLORA_PROBE_CONTROL_PATH) == 0);
+  CHECK(strcmp(pp.reason, "bad request") == 0);
+  CHECK(fake_hits(&x.fake, true, PKG_PATH) == before);
+  fake_set(&x.fake, true, PROBE_CONTROL, 200, "");
+  CHECK_RESULT(gz_esplora_probe_package(&x.chain, &pp), GZ_CHAIN_REJECTED);
+  CHECK(fake_hits(&x.fake, true, PKG_PATH) == before);
+  fake_set(&x.fake, true, PROBE_CONTROL, 405, "");
+  CHECK_RESULT(gz_esplora_probe_package(&x.chain, &pp), GZ_CHAIN_OK);
+  fake_set(&x.fake, true, PROBE_CONTROL, 404, "Not Found");
+
+  /* only at mempool.space's path */
+  fake_set(&x.fake, true, PKG_PATH, 404, "Not Found");
+  fake_set(&x.fake, true, PKG_PATH_V1, 400, invalid);
+  CHECK_RESULT(gz_esplora_probe_package(&x.chain, &pp), GZ_CHAIN_OK);
+  CHECK(strcmp(pp.path, "/v1/txs/package") == 0);
+
+  /* absent at both */
+  fake_set(&x.fake, true, PKG_PATH_V1, 404, "Not Found");
+  CHECK_RESULT(gz_esplora_probe_package(&x.chain, &pp), GZ_CHAIN_UNSUPPORTED);
+  CHECK(pp.server_status == 404);
+  fake_set(&x.fake, true, PKG_PATH, 405, "");
+  CHECK_RESULT(gz_esplora_probe_package(&x.chain, &pp), GZ_CHAIN_UNSUPPORTED);
+
+  /* a server that says it took a body that is not a package is not right */
+  fake_set(&x.fake, true, PKG_PATH, 200, "{\"package_msg\":\"success\"}");
+  CHECK_RESULT(gz_esplora_probe_package(&x.chain, &pp), GZ_CHAIN_MALFORMED);
+  /* another refusal says nothing about the endpoint: kept with its words */
+  fake_set(&x.fake, true, PKG_PATH, 403, "forbidden");
+  CHECK_RESULT(gz_esplora_probe_package(&x.chain, &pp), GZ_CHAIN_REJECTED);
+  CHECK(pp.server_status == 403 && strcmp(pp.reason, "forbidden") == 0);
+  /* oversized */
+  static char huge[20000];
+  memset(huge, 'A', sizeof huge - 1);
+  huge[sizeof huge - 1] = '\0';
+  fake_set(&x.fake, true, PKG_PATH, 400, huge);
+  CHECK_RESULT(gz_esplora_probe_package(&x.chain, &pp), GZ_CHAIN_TOO_LARGE);
+  /* down */
+  x.fake.down = true;
+  CHECK_RESULT(gz_esplora_probe_package(&x.chain, &pp), GZ_CHAIN_UNREACHABLE);
+  x.fake.down = false;
+
+  /* only an Esplora backend can be probed */
+  gz_chain none;
+  memset(&none, 0, sizeof none);
+  CHECK_RESULT(gz_esplora_probe_package(&none, &pp), GZ_CHAIN_INVALID_ARG);
+  CHECK_RESULT(gz_esplora_probe_package(NULL, &pp), GZ_CHAIN_INVALID_ARG);
+  CHECK_RESULT(gz_esplora_probe_package(&x.chain, NULL), GZ_CHAIN_INVALID_ARG);
+  fx_close(&x);
+}
+
 /* ---- fee estimates ---- */
 
 static const gz_fee_estimate *find_fee(const gz_fee_estimates *f, uint16_t target) {
@@ -1774,6 +2151,11 @@ int main(void) {
   RUN(test_merkle_parser_strict);
   RUN(test_broadcast);
   RUN(test_broadcast_retry_rules);
+  RUN(test_package);
+  RUN(test_package_answer_strict);
+  RUN(test_package_answer_cap);
+  RUN(test_package_not_reposted);
+  RUN(test_package_probe);
   RUN(test_fee_estimates);
   RUN(test_retries_and_backoff);
   RUN(test_rate_limit);

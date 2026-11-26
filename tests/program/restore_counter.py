@@ -29,7 +29,7 @@ def main():
     shutil.rmtree(work, ignore_errors=True)
     logs = os.path.join(work, "logs")
     os.makedirs(logs)
-    common = ["--no-chain", "--no-interface", "--reconnect-ms", "100",
+    common = ["--test-standin-store", "--no-chain", "--no-interface", "--reconnect-ms", "100",
               "--test-pings", str(PINGS), "--test-ping-ms", "30"]
     procs = []
     runs = [0]

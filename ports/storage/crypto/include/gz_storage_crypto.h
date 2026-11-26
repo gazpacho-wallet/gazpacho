@@ -191,6 +191,8 @@ void gz_sc_vault_ids(const gz_sc_vault_t *v, uint8_t chain[32], uint8_t vault_id
 /* 1 if msk equals the vault's MSK (constant time). 4.6's "check" on the
  * public API is gz_sc_check (gz_storage_files.h) or gz_sc_keyfile_check. */
 int gz_sc_vault_same_msk(const gz_sc_vault_t *v, const uint8_t msk[32]);
+/* 1 if a and b hold the same MSK (sodium_memcmp), chain and vault_id. */
+int gz_sc_vault_same(const gz_sc_vault_t *a, const gz_sc_vault_t *b);
 /* Copies the seed out (into guarded memory the caller owns), for the node. */
 gz_sc_err_t gz_sc_vault_seed(const gz_sc_vault_t *v, uint8_t seed[64]);
 
@@ -464,6 +466,9 @@ int gz_sc_attempts_decode(const uint8_t chain[32], const uint8_t *data, size_t l
 uint64_t gz_sc_attempts_wait(const gz_sc_attempts_t *a, uint64_t now_s); /* 0: may try now */
 void gz_sc_attempts_wrong(gz_sc_attempts_t *a, uint64_t now_s);
 void gz_sc_attempts_right(gz_sc_attempts_t *a, uint64_t now_s);
+/* An attempt counted before its check turned out wrong: its delay runs from
+ * now, the larger of the two kept (12.3). */
+void gz_sc_attempts_rearm(gz_sc_attempts_t *a, uint64_t now_s);
 
 /* ---- the socket token folder (12.2) -------------------------------------- */
 /* gazpacho-<first 16 hex digits of SHA-256(data_dir)> under $XDG_RUNTIME_DIR,

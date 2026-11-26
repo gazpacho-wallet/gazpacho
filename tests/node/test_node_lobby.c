@@ -1814,6 +1814,86 @@ static void test_gate_refused_ready(void)
     w_free(1);
 }
 
+/* The host sets the lobby's values again (the same values, a new version):
+ * every member's current digest changes. */
+static int host_set_same_values(const terms_t *t)
+{
+    slot_t *s = slot(0, t);
+    uint8_t vals[8 * GZ_TERMS_MAX_ADJ];
+    size_t n;
+    if (!s) return -1;
+    n = s->lobby.h.values.n_values;
+    for (size_t k = 0; k < n; k++) gz_put_u64(vals + 8 * k, s->lobby.h.values.val[k].value);
+    h_arg_t a[2] = {{12, t->scope, 32}, {14, vals, 8 * n}};
+    return w_cmd(0, GZ_CMD_LOBBY_SET_VALUES, a, 2);
+}
+
+/* The AT_JOIN gate is bound to the terms the person saw (RULE-NODE:GATE_DIGEST;
+ * kills sg-gate-digest-off and sg-refused-ready-rebinds, which no test reached
+ * before #89's CI ran these mutants).
+ *
+ * Why the existing tests missed them. test_at_join_key_hook readies for the
+ * shown values and then for other values, but the second ready is refused at
+ * its own digest check (RULE-NODE:READY_SEEN_DIGEST), before the gate is
+ * touched; and the lobby's current terms never change behind an open gate,
+ * so the gate's own compare in ls_may_answer is never asked a question it
+ * could answer wrongly. A refused ready that had rebound the gate (the only
+ * way to reach the restore) needs a ready for the current values that the
+ * lobby itself refuses; no test made one.
+ *
+ * 1. The member readies for the values shown: the gate opens for that digest.
+ * 2. The host sets new values (a new version): the gate does not answer for
+ *    them. The member is not ready, and no factory key exists for them.
+ * 3. A ready for the new values that the lobby refuses (it is made to refuse
+ *    by marking the member not joined, a state the lobby refuses a ready in):
+ *    the gate keeps the digest it had, not the refused ready's.
+ * 4. The person readies for the new values: the gate opens for them. */
+static void test_gate_bound_to_terms(void)
+{
+    terms_t t;
+    uint8_t d[32], d2[32];
+    secp256k1_keypair f, kc;
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node_engine(1, 1, GZ_MEMBER_SIGNING_AT_JOIN, GZ_TEST_SIGN_UNFINISHED);
+    w_node(2, 2, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node(3, 3, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    for (int n = 0; n <= 3; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 4, 4, 5000);
+    CHECK(host_open(&t, 0) == 200);
+    for (int n = 1; n <= 3; n++) CHECK(member_join(n, &t) == 200);
+    w_run(4000, 100);
+    slot_t *s = slot(1, &t);
+    CHECK(s && N[1].n->sign_on && s->lobby.m.have_terms);
+    if (!s) { w_free(3); return; }
+    memcpy(d, s->lobby.m.current_digest, 32);
+    /* 1 */
+    CHECK(ready_seen(1, &t, d) == 200 && s->gate_open && s->gate_have && memcmp(s->gate_digest, d, 32) == 0);
+    w_run(1000, 100);
+    CHECK(member_ready(1, &t) == 1 && host_ready(&t) == 3);
+    /* 2 */
+    CHECK(host_set_same_values(&t) == 200);
+    w_run(2000, 100);
+    memcpy(d2, s->lobby.m.current_digest, 32);
+    CHECK(memcmp(d2, d, 32) != 0);                          /* the member has the new values */
+    CHECK(host_ready(&t) == 2);                             /* the gate does not answer for them: the other two re-ready, not this one */
+    CHECK(memcmp(s->gate_digest, d, 32) == 0);              /* still bound to what the person saw */
+    CHECK(gz_sg_keys(N[1].n, t.scope, d2, &f, &kc) == 0);   /* no factory key for the new values */
+    /* 3 */
+    s->lobby.m.joined = 0;
+    CHECK(ready_seen(1, &t, d2) == 409);
+    s->lobby.m.joined = 1;
+    CHECK(s->gate_have && memcmp(s->gate_digest, d, 32) == 0);   /* the refused ready did not rebind */
+    CHECK(gz_sg_keys(N[1].n, t.scope, d2, &f, &kc) == 0);
+    /* 4 */
+    CHECK(ready_seen(1, &t, d2) == 200 && memcmp(s->gate_digest, d2, 32) == 0);
+    w_run(1000, 100);
+    CHECK(member_ready(1, &t) == 1 && gz_sg_keys(N[1].n, t.scope, d2, &f, &kc) == 1);
+    CHECK(gz_sg_keys(N[1].n, t.scope, d, &f, &kc) == 0);    /* and none for the old values */
+    no_errors(3);
+    w_free(3);
+}
+
 /* ---- 7. a slot left out at a start keeps its place (review B of PR 44, H1) ---------- */
 
 /* The key port cannot give a slot's keys at a start, and gives them again
@@ -4957,6 +5037,77 @@ static void test_k1_stale_keys(void)
     w_free(1);
 }
 
+
+/* The real engine's begin at the host refuses with no chain tip (review of
+ * #89, L1; kills sg-begin-no-tip). The host runs the signing engine itself
+ * (outcome 0: no stand-in); the members need none, since the host stops
+ * before any proposal. Nothing in this world gives the host a tip. */
+static void test_begin_needs_tip(void)
+{
+    terms_t t;
+    w_reset();
+    w_node_engine(0, 0, GZ_MEMBER_SIGNING_AUTO, 0);
+    for (int n = 1; n <= 3; n++) w_node(n, n, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    for (int n = 0; n <= 3; n++) CHECK(w_start(n) == GZ_OK);
+    CHECK(N[0].n->sign_on && N[0].n->tip == 0);
+    make_terms(&t, 3, 3, 11);   /* three members fill it (target and minimum count members); the deadline within the run */
+    CHECK(host_open(&t, 0) == 200);
+    for (int n = 1; n <= 3; n++) CHECK(member_join(n, &t) == 200);
+    w_run(4000, 100);
+    CHECK(host_ready(&t) == 3);
+    w_run(60000, 500);   /* to the deadline: the ready window, the start, the hand-off to the engine */
+    CHECK(said(0, 0, "sign-begin-refused-no-tip") >= 1);
+    if (!said(0, 0, "sign-begin-refused-no-tip")) {   /* what the host said instead, to see why */
+        printf("  host state %d; its sign- lines:\n", host_state(&t));
+        for (size_t i = 0; i < N[0].n_log; i++)
+            if (N[0].log[i].a.kind == GZ_ACTION_NOTIFY && strstr(N[0].log[i].text, "sign")) printf("    %s\n", N[0].log[i].text);
+    }
+    w_free(3);
+}
+
+/* A key port that hands out a host key to anyone who asks: a member's node
+ * must still never take one (test_keys_own_role_only). */
+static int w_any_host_secret(void *ctx, uint8_t sec[32])
+{
+    (void)ctx;
+    memset(sec, 0x42, 32);
+    return 1;
+}
+
+/* gz_sg_keys answers only for a scope of this node's own role (review of #89,
+ * L1; kills sg-keys-any-role). Load never keys a lobby of the other role (a
+ * slot_opened of the other role is left out and wiped before its slot_closed
+ * could key it), so the check is a second guard: the test forges the keyed
+ * entry of an ended lobby with the other role directly. */
+static void test_keys_own_role_only(void)
+{
+    terms_t t;
+    secp256k1_keypair f, kc;
+    np_keyed_t *e;
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node_engine(1, 1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    for (int n = 0; n <= 1; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 3, 3, 5200);
+    e = &N[1].n->np.keyed[0];
+    memset(e, 0, sizeof *e);
+    e->used = 1;
+    e->seq = ++N[1].n->np.keyed_seq;
+    memcpy(e->scope, t.scope, 32);
+    e->epoch = 0;
+    e->index = 1;
+    e->host = 0;   /* the member's own role: the keys are given (the control) */
+    CHECK(gz_sg_keys(N[1].n, t.scope, NULL, NULL, &kc) == 1);
+    /* a host's ended lobby on a member: none, even though this port would hand
+     * out a host key (without the role check, gz_sg_keys would take it) */
+    N[1].n->cfg.keys.host_secret = w_any_host_secret;
+    e->host = 1;
+    CHECK(gz_sg_keys(N[1].n, t.scope, NULL, NULL, &kc) == 0);
+    CHECK(gz_sg_keys(N[1].n, t.scope, NULL, &f, &kc) == 0);
+    N[1].n->cfg.keys.host_secret = NULL;
+    memset(e, 0, sizeof *e);
+    w_free(1);
+}
 int main(int argc, char **argv)
 {
     unsigned long events = argc > 1 ? strtoul(argv[1], NULL, 10) : 20000;
@@ -5021,6 +5172,9 @@ int main(int argc, char **argv)
     test_sign_needs_secp();
     test_timer_of_ended_lobby();
     test_gate_refused_ready();
+    test_gate_bound_to_terms();
+    test_begin_needs_tip();
+    test_keys_own_role_only();
     test_hostile(events, seed);
     test_ready_over_limit();
     test_k1_factory_at_first_ready();

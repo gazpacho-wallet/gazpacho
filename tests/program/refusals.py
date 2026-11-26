@@ -55,7 +55,7 @@ def main():
                  logs)
         procs.append(p)
         check(p.wait_for(r"ready incarnation=1") is not None and p.stop() == 0, "a fresh host starts and stops")
-        os.chmod(os.path.join(kd, "transport.key"), 0o644)
+        os.chmod(os.path.join(kd, "keys.gzk"), 0o644)  # the key file (S6); transport.key is gone
         code, out = run(exe, "--data-dir", kd, "--role", "host", "--listen", "127.0.0.1:0", *base)
         check(code == 4 and "chmod 600" in out, "a key file open to others is refused (exit %s)" % code)
 
