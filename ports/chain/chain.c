@@ -448,7 +448,7 @@ gz_chain_result gz_chain_broadcast(const gz_chain *c, const uint8_t *raw, size_t
 gz_chain_result gz_chain_broadcast_package(const gz_chain *c, const uint8_t *parent,
                                            size_t parent_len, const uint8_t *child,
                                            size_t child_len, gz_package_result *out) {
-  uint8_t txid[GZ_HASH_LEN];
+  uint8_t txid[GZ_HASH_LEN], child_txid[GZ_HASH_LEN];
   if (out != NULL) {
     memset(out, 0, sizeof *out);
     out->result = out->parent.result = out->child.result = GZ_CHAIN_INVALID_ARG;
@@ -456,7 +456,9 @@ gz_chain_result gz_chain_broadcast_package(const gz_chain *c, const uint8_t *par
   if (!usable(c) || parent == NULL || child == NULL || out == NULL) return GZ_CHAIN_INVALID_ARG;
   if (parent_len > GZ_TX_MAX_BYTES || child_len > GZ_TX_MAX_BYTES) return GZ_CHAIN_INVALID_ARG;
   if (!gz_txid_from_raw(parent, parent_len, txid)) return GZ_CHAIN_INVALID_ARG;
-  if (!gz_txid_from_raw(child, child_len, txid)) return GZ_CHAIN_INVALID_ARG;
+  if (!gz_txid_from_raw(child, child_len, child_txid)) return GZ_CHAIN_INVALID_ARG;
+  /* one transaction twice is not a parent and its child */
+  if (memcmp(txid, child_txid, GZ_HASH_LEN) == 0) return GZ_CHAIN_INVALID_ARG;
   gz_chain_result r = GZ_CHAIN_UNSUPPORTED;
   if (c->ops->broadcast_package != NULL) {
     r = c->ops->broadcast_package(c->ctx, parent, parent_len, child, child_len, out);

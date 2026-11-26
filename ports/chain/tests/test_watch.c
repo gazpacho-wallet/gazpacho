@@ -588,6 +588,17 @@ static void test_package(test_state *T) {
   SEQ(go(&f), "broadcast #4 unreachable tries=1 package parent=unreachable child=unreachable");
   SEQ(go(&f), "");
   SEQ(go(&f), "broadcast #4 unreachable final tries=3 package parent=unreachable child=unreachable");
+  /* A server whose answer contradicts itself ("success", listing only the
+   * parent) has not taken the package: malformed, which the worker treats
+   * as no answer and tries again, never as a refusal or as acceptance
+   * (review L1 of #109). */
+  f.net.view[0].package = SIM_PKG_LIE;
+  CHECK(send_pair(&f, 5, SIM_T, SIM_K) == GZ_CHAINW_OK);
+  (void)gz_watch_step(f.e);
+  CHECK(f.rec.n == 1 && f.rec.ev[0].broadcast.detail == GZ_CHAIN_MALFORMED);
+  CHECK(f.rec.n == 1 && !f.rec.ev[0].broadcast.final && f.rec.ev[0].broadcast.package);
+  st_join(&f.rec, f.line, sizeof f.line);
+  SEQ(f.line, "broadcast #5 unreachable tries=1 package parent=unreachable child=unreachable");
   fx_close(&f);
 }
 
@@ -674,18 +685,18 @@ static void test_package_calls(test_state *T) {
                    "\",\"vsize\":110},\"w2\":{\"txid\":\"" B64 "\",\"fees\":{\"base\":0.1}}},"
                    "\"replaced-transactions\":[]}";
   CHECK(gz_es_parse_package(ok, strlen(ok), a, b, &pk) && pk.accepted);
-  /* "success" without one of our transactions listed is not acceptance */
+  /* "success" without one of our transactions listed contradicts itself:
+   * refused as malformed, never acceptance (plan P2) */
   const char *one = "{\"package_msg\":\"success\",\"tx-results\":{\"w1\":{\"txid\":\"" A64 "\"}}}";
-  CHECK(gz_es_parse_package(one, strlen(one), a, b, &pk) && !pk.accepted && pk.parent_listed &&
-        !pk.child_listed);
+  CHECK(!gz_es_parse_package(one, strlen(one), a, b, &pk));
   const char *err = "{\"package_msg\":\"transaction failed\",\"tx-results\":{\"w1\":{\"txid\":\"" A64
                     "\",\"error\":\"too-long-mempool-chain\"},\"w2\":{\"txid\":\"" B64 "\"}}}";
   CHECK(gz_es_parse_package(err, strlen(err), a, b, &pk) && !pk.accepted && pk.parent_failed &&
         !pk.child_failed && strcmp(pk.parent_error, "too-long-mempool-chain") == 0);
-  /* an error on a transaction beats "success" */
+  /* "success" with an error on a transaction contradicts itself too */
   const char *mixed = "{\"package_msg\":\"success\",\"tx-results\":{\"w1\":{\"txid\":\"" A64
                       "\",\"error\":\"x\"},\"w2\":{\"txid\":\"" B64 "\"}}}";
-  CHECK(gz_es_parse_package(mixed, strlen(mixed), a, b, &pk) && !pk.accepted);
+  CHECK(!gz_es_parse_package(mixed, strlen(mixed), a, b, &pk));
   /* a transaction already in the mempool is listed with "other-wtxid" */
   const char *known = "{\"package_msg\":\"success\",\"tx-results\":{\"w1\":{\"txid\":\"" A64
                       "\",\"other-wtxid\":\"" B64 "\"},\"w2\":{\"txid\":\"" B64 "\"}}}";
@@ -694,11 +705,14 @@ static void test_package_calls(test_state *T) {
   /* the same for the child, and for a child listed without its parent */
   const char *child_error = "{\"package_msg\":\"success\",\"tx-results\":{\"w1\":{\"txid\":\"" A64
                             "\"},\"w2\":{\"txid\":\"" B64 "\",\"error\":\"x\"}}}";
-  CHECK(gz_es_parse_package(child_error, strlen(child_error), a, b, &pk) && !pk.accepted &&
-        pk.child_failed && !pk.parent_failed);
+  CHECK(!gz_es_parse_package(child_error, strlen(child_error), a, b, &pk));
   const char *only_child = "{\"package_msg\":\"success\",\"tx-results\":{\"w2\":{\"txid\":\"" B64 "\"}}}";
-  CHECK(gz_es_parse_package(only_child, strlen(only_child), a, b, &pk) && !pk.accepted &&
-        pk.child_listed && !pk.parent_listed);
+  CHECK(!gz_es_parse_package(only_child, strlen(only_child), a, b, &pk));
+  /* the child refused and the parent in, as Core says it */
+  const char *child_failed = "{\"package_msg\":\"transaction failed\",\"tx-results\":{\"w1\":{\"txid\":\"" A64
+                             "\"},\"w2\":{\"txid\":\"" B64 "\",\"error\":\"x\"}}}";
+  CHECK(gz_es_parse_package(child_failed, strlen(child_failed), a, b, &pk) && !pk.accepted &&
+        pk.child_failed && !pk.parent_failed && pk.parent_listed);
   const char *bad[] = {"", "[]", "{}", "{\"tx-results\":{}}", "{\"package_msg\":1}",
                        "{\"package_msg\":\"success\",\"tx-results\":[]}",
                        "{\"package_msg\":\"success\",\"tx-results\":{\"w\":1}}",

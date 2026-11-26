@@ -326,9 +326,15 @@ static void into_mempool(sim_view *v, const uint8_t id[GZ_HASH_LEN]) {
 
 static size_t package_json(const uint8_t parent[GZ_HASH_LEN], const uint8_t child[GZ_HASH_LEN],
                            bool ok, bool parent_known, char *out, size_t cap) {
-  char p[65], c[65];
+  char p[65], c[65], pk[96], ck[96];
   sim_hex(parent, p);
   sim_hex(child, c);
+  /* "other-wtxid" is a wtxid; these transactions' own ids stand in for it */
+  pk[0] = ck[0] = '\0';
+  if (parent_known) {
+    snprintf(pk, sizeof pk, "\"other-wtxid\":\"%s\",", p);
+    snprintf(ck, sizeof ck, "\"other-wtxid\":\"%s\",", c);
+  }
   if (ok)
     return (size_t)snprintf(
         out, cap,
@@ -336,14 +342,23 @@ static size_t package_json(const uint8_t parent[GZ_HASH_LEN], const uint8_t chil
         "\"fees\":{\"base\":0.00000000}},\"%s\":{\"txid\":\"%s\",\"vsize\":61,%s\"fees\":{\"base\":"
         "0.00000100,\"effective-feerate\":0.00000819,\"effective-includes\":[\"%s\",\"%s\"]}}},"
         "\"replaced-transactions\":[]}",
-        p, p, parent_known ? "\"other-wtxid\":\"00\"," : "", c, c,
-        parent_known ? "\"other-wtxid\":\"00\"," : "", p, c);
+        p, p, pk, c, c, ck, p, c);
   return (size_t)snprintf(
       out, cap,
       "{\"package_msg\":\"transaction failed\",\"tx-results\":{\"%s\":{\"txid\":\"%s\",\"error\":"
       "\"min relay fee not met, 0 < 61\"},\"%s\":{\"txid\":\"%s\",\"error\":"
       "\"bad-txns-inputs-missingorspent\"}},\"replaced-transactions\":[]}",
       p, p, c, c);
+}
+
+/* "success", listing the parent only: an answer that contradicts itself. */
+static size_t package_lie_json(const uint8_t parent[GZ_HASH_LEN], char *out, size_t cap) {
+  char p[65];
+  sim_hex(parent, p);
+  return (size_t)snprintf(out, cap,
+                          "{\"package_msg\":\"success\",\"tx-results\":{\"%s\":{\"txid\":\"%s\","
+                          "\"vsize\":61}},\"replaced-transactions\":[]}",
+                          p, p);
 }
 
 /* The two hex strings of ["..",".."], decoded. */
@@ -421,7 +436,7 @@ static bool honest(sim_view *v, bool post, const char *path, const uint8_t *body
         return true;
       }
       bool here = (first && (v->package == SIM_PKG_OK || v->package == SIM_PKG_FAIL ||
-                             v->package == SIM_PKG_KNOWN)) ||
+                             v->package == SIM_PKG_KNOWN || v->package == SIM_PKG_LIE)) ||
                   (second && (v->package == SIM_PKG_OK_V1 || v->package == SIM_PKG_BUSY_FIRST));
       if (!here) {
         *status = 404;
@@ -431,6 +446,10 @@ static bool honest(sim_view *v, bool post, const char *path, const uint8_t *body
       if (!package_body(body, body_len, parent, child)) {
         *status = 400;
         *len = (size_t)snprintf(out, cap, "invalid package");
+        return true;
+      }
+      if (v->package == SIM_PKG_LIE) {
+        *len = package_lie_json(parent, out, cap);
         return true;
       }
       if (v->package != SIM_PKG_FAIL) {
