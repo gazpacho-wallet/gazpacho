@@ -2,6 +2,12 @@
 
 Specification draft 2, 2026-11-12, amended 2026-11-17 (BD: the binding moves to `ready`; the amendment is not itself reviewed). Status: draft 1 brought fully in line with `signing-round.md` and `safety-rule.md` draft 4 after the third, joint review (`docs/reviews/spec-review-3.md`). Draft 2 has not itself been reviewed. Written for slice 1 (form a factory on signet). It gives the exact encoding of every message of `signing-round.md` section 4 for the creation round, and the lobby's messages. Items marked **(open)** are listed at the end. Draft 1's "(prov.)" marks are gone: every one is now settled by `signing-round.md` draft 4. Values marked **proposed, owner to confirm** are Slice 1 choices the owner has not objected to and has not yet confirmed.
 
+## Changes, 2026-11-26: cancel reason 5
+
+| Change | Where |
+|---|---|
+| `cancel` reason 5, "the host could not fund it by the deadline": the start rule asked for a ready check at or after the deadline and the host's wallet was short, or could not tell. Before, such a lobby ended with reason 2 (the host's choice), which told members the host walked away. Pre-launch, no old client reads reason 2 for it (review B of #106, L-1). Vector M4 | 6.10, 11 |
+
 ## Changes, 2026-11-17: BD, the binding moves from `join` to `ready`
 
 **Naming.** BD is the binding decision of 2026-11-17, and BD1 to BD6 are its rules. The binding check called them K1 and K1-1 to K1-6; they were renamed so as not to clash with K1 of `docs/DECISIONS-WITHOUT-OWNER.md` (the chain lag limits) or with the journal's vectors J1 to J6.
@@ -479,7 +485,7 @@ Member with role 1: waits for `round_propose`, up to the terms' step timeout. Me
 
 | Type | Field | Size | Required |
 |---|---|---|---|
-| 2 | `reason` | `u16` | Yes. 1 deadline below the minimum, 2 host's choice, 3 signing failed within its time budget, 4 the funding did not confirm: the host's funding deadline passed, or a funding input was spent elsewhere and buried (step P4.5) |
+| 2 | `reason` | `u16` | Yes. 1 deadline below the minimum, 2 host's choice, 3 signing failed within its time budget, 4 the funding did not confirm: the host's funding deadline passed, or a funding input was spent elsewhere and buried (step P4.5), 5 the host could not fund it by the deadline: the start rule asked for a ready check at or after the deadline and the host's wallet was short, or could not tell (vector M4) |
 | 240 | `sig` | 64 | Yes. Host's long-term key |
 
 Ends the lobby. Signed so that a member's history can show the host's own reason. The member saves the end, erases any secret nonces, and keeps every round identifier it saved (they stay refused). Duplicate: ignore.
@@ -925,6 +931,16 @@ fd0400 fd0113                TLV 1024, length 275: M1 without its type and tag
 ```
 
 M2's two parts are 65,134 and 11,934 bytes through the adapter. `supported_factory_protocols` naming only our id is 40 bytes: `8020 0002 fd0200 20 c3a082d0…61c842f1`.
+
+**M4. The host's `cancel` of T1's lobby with reason 5**, the host could not fund it by the deadline (6.10). Signed by the host's test key; 110 bytes:
+
+```
+signed hash = e3b33a2a4d8309214228413c8639024f972669984f877500f67cf9bed5a0c6a7
+ce37 677a6601 0022 75e970b6d95c7de97bf35f67033e2c9f55de1ea54beecb8431419659f0a424f2
+0202 0005
+f040 82dd1591760bcd62361b9608ac5e7cd35901f41ba229b2efb4890409d1856c7bd2
+     1470570b9fcdd2aa050d1c79b1d253971d3d9371581f6009aa705d395aaf38
+```
 
 ## 12. Tests
 

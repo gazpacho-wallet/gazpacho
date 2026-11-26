@@ -422,8 +422,10 @@ typedef struct {
     int (*paused)(void *ctx);
     /* 1 if the host's wallet can fund this lobby now (local-api.md 15.2): asked
      * before the start rule's ready check, the automatic start. 0: no check;
-     * the lobby stays Open and is asked again at its next seat event, or when
-     * its node asks the rule again (a tip). NULL: always. With seat_ctx. */
+     * before the deadline the lobby stays Open and is asked again at its next
+     * seat event, or when its node asks the rule again (a tip); at or after
+     * it the lobby is cancelled, reason 5, the host could not fund it by the
+     * deadline (review B of #55, M-2; messages.md 6.10). NULL: always. With seat_ctx. */
     int (*funds_ok)(void *ctx);
     void *seat_ctx;
     /* The most tree transactions its signer signs (0: no limit): terms whose target needs more do not
@@ -496,6 +498,11 @@ gz_status_t gz_lobby_host_listing(gz_lobby_host_t *h, const gz_link_t *link, gz_
 int gz_lobby_host_round_ok(const gz_lobby_host_t *h);
 /* The pause changed (cfg.paused): the start rule is applied again. */
 gz_status_t gz_lobby_host_pause_changed(gz_lobby_host_t *h, gz_action_list_t *out);
+/* 1 if the start rule asks for a ready check now: Open, not paused, and the
+ * rule's CHECK at this time and these seats. A query; it changes nothing. The
+ * rule itself is applied only at some seat events (a leave does not apply
+ * it), so the node asks this to end a wait for funds that no start needs. */
+int gz_lobby_host_start_due(const gz_lobby_host_t *h);
 /* Host commands. A command refused now gives GZ_NOTE_COMMAND_REFUSED.
  * gz_lobby_host_set_values returns GZ_ERR_ARGUMENT, with nothing appended
  * or changed, for values outside the terms' ranges. */

@@ -4722,6 +4722,145 @@ static void test_funds_auto_start(void)
     w_free(3);
 }
 
+/* A tip event to node n at this height: the funds recheck's trigger. */
+static void w_tip(int n, uint32_t height)
+{
+    gz_event_t ev;
+    memset(&ev, 0, sizeof ev);
+    ev.kind = GZ_EVENT_CHAIN;
+    ev.u.chain.kind = GZ_CHAIN_NEW_TIP;
+    ev.u.chain.height = height;
+    CHECK(w_event(n, &ev) == GZ_OK);
+}
+
+/* Review B of #55, second pass, M-2: a lobby that waits for the host's funds when its
+ * deadline comes ends there, cancel reason 5, the host could not fund it by the deadline
+ * (messages.md 6.10; review B of #106, L-1). It ends in the deadline second itself, not a
+ * second later (L-2, mutant funds-deadline-strict). No ready check starts later when the
+ * coins come back: a factory never starts after the date its members agreed it would start by. */
+static void test_funds_blocked_past_deadline(void)
+{
+    terms_t t;
+    char id[GZ_LOCAL_ID_MAX + 1], aid[GZ_LOCAL_ID_MAX + 8];
+    wview_t *w;
+    gz_bytes_t v;
+    w_world(3, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    make_terms(&t, 3, 3, 0);                                       /* its deadline is ten minutes away */
+    CHECK(host_open(&t, 0) == 200 && slot(0, &t));
+    if (!slot(0, &t)) { w_free(3); return; }
+    snprintf(id, sizeof id, "%s", lid(0, &t));
+    snprintf(aid, sizeof aid, "att_%s", id + 4);
+    FUNDS[0] = 1;                                                  /* the coins dropped since the open */
+    for (int n = 1; n <= 3; n++) CHECK(member_join(n, &t) == 200);
+    w_run(4000, 100);
+    CHECK(host_ready(&t) == 3 && host_state(&t) == GZ_LOBBY_OPEN && slot(0, &t)->funds_blocked);   /* before its deadline */
+    {
+        uint64_t dl_ms = (uint64_t)slot(0, &t)->lobby.h.terms.deadline * 1000;
+        uint64_t to = dl_ms - 1000;                                /* a second before the deadline */
+        CHECK(dl_ms > NOW + 2000 && (to - NOW) % 100 == 0);
+        w_run((to - NOW) / 1000 * 1000, 1000);
+        w_run(to - NOW, 100);                                      /* exactly there, no step past it */
+        CHECK(NOW == to);
+        CHECK(host_state(&t) == GZ_LOBBY_OPEN && slot(0, &t)->funds_blocked);
+        w_run(1500, 100);                                          /* the deadline second itself, still short: it ends */
+    }
+    CHECK(host_state(&t) == -1 && h_records_of(&N[0], GZ_REC_FREEZE) == 0);
+    w = view_of(0, GZ_VIEW_HOST_LOBBY, id);
+    CHECK(w && vf8(w, GZ_VHL_STAGE) == GZ_LOBBY_CANCELLED && vf(w, GZ_VHL_END_REASON, &v) && gz_get_u16(v.data) == 5);
+    w = view_of(0, GZ_VIEW_ATTENTION, aid);
+    CHECK(!w || w->gone);
+    FUNDS[0] = 0;                                                  /* the coins come back: nothing starts */
+    w_tip(0, 1001);
+    w_run(2000, 100);
+    CHECK(host_state(&t) == -1 && h_records_of(&N[0], GZ_REC_FREEZE) == 0);
+    no_errors(3);
+    w_free(3);
+}
+
+/* ... and its Low: the wait for funds ends when the rule stops asking for a start. A pause,
+ * then a member leaving below the target: each time funds_blocked and host_funds_short
+ * clear, and a tip asks the wallet nothing. */
+static void test_funds_blocked_clears(void)
+{
+    terms_t t;
+    char aid[GZ_LOCAL_ID_MAX + 8];
+    wview_t *w;
+    w_world(3, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    make_terms(&t, 3, 3, 3805);
+    CHECK(host_open(&t, 0) == 200 && slot(0, &t));
+    if (!slot(0, &t)) { w_free(3); return; }
+    snprintf(aid, sizeof aid, "att_%s", lid(0, &t) + 4);
+    FUNDS[0] = 1;
+    for (int n = 1; n <= 3; n++) CHECK(member_join(n, &t) == 200);
+    w_run(4000, 100);
+    CHECK(host_ready(&t) == 3 && host_state(&t) == GZ_LOBBY_OPEN && slot(0, &t)->funds_blocked);
+    w = view_of(0, GZ_VIEW_ATTENTION, aid);
+    CHECK(w && !w->gone && vf8(w, GZ_VAT_CODE) == GZ_ATT_HOST_FUNDS_SHORT);
+    /* the host pauses: no start is asked for, so nothing waits for funds */
+    CHECK(w_pause(0, 1, "FundsBlockPauseOn1") == 200);
+    w_run(1000, 100);
+    CHECK(host_state(&t) == GZ_LOBBY_OPEN && !slot(0, &t)->funds_blocked);
+    w = view_of(0, GZ_VIEW_ATTENTION, aid);
+    CHECK(w && w->gone);
+    FUNDS_ASKED[0] = 0;
+    w_tip(0, 1001);
+    w_run(500, 100);
+    CHECK(FUNDS_ASKED[0] == 0);
+    /* resumed, the target asks again and waits again */
+    CHECK(w_pause(0, 0, "FundsBlockPauseOff") == 200);
+    w_run(1000, 100);
+    CHECK(host_state(&t) == GZ_LOBBY_OPEN && slot(0, &t)->funds_blocked && FUNDS_ASKED[0] != 0);
+    w = view_of(0, GZ_VIEW_ATTENTION, aid);
+    CHECK(w && !w->gone && vf8(w, GZ_VAT_CODE) == GZ_ATT_HOST_FUNDS_SHORT);
+    /* a member leaves: below the target before the deadline, the rule waits */
+    {
+        h_arg_t s3[1] = {{12, t.scope, 32}};
+        CHECK(w_req(3, GZ_CMD_LOBBY_LEAVE, "FundsBlockLeave001", "/api/v1/lobbies/x/leave", 1, s3, 1) == 200);
+    }
+    w_run(2000, 100);
+    CHECK(host_state(&t) == GZ_LOBBY_OPEN && host_ready(&t) == 2 && !slot(0, &t)->funds_blocked);
+    w = view_of(0, GZ_VIEW_ATTENTION, aid);
+    CHECK(w && w->gone);
+    FUNDS_ASKED[0] = 0;
+    w_tip(0, 1002);
+    w_run(500, 100);
+    CHECK(FUNDS_ASKED[0] == 0 && host_state(&t) == GZ_LOBBY_OPEN);
+    no_errors(3);
+    w_free(3);
+}
+
+/* The wait for funds also ends when the funds come back but no ready check can start: the host's
+ * key will not sign the check, so the lobby stays Open with a start still due. Only the funds
+ * answer itself clears the wait then (ls_funds_ok; mutant funds-blocked-never-cleared): the
+ * attention item host_funds_short goes, and the lobby waits for its key, not for coins. */
+static void test_funds_ok_without_start(void)
+{
+    terms_t t;
+    char aid[GZ_LOCAL_ID_MAX + 8];
+    wview_t *w;
+    w_world(3, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    make_terms(&t, 3, 3, 3807);
+    CHECK(host_open(&t, 0) == 200 && slot(0, &t));
+    if (!slot(0, &t)) { w_free(3); return; }
+    snprintf(aid, sizeof aid, "att_%s", lid(0, &t) + 4);
+    FUNDS[0] = 1;
+    for (int n = 1; n <= 3; n++) CHECK(member_join(n, &t) == 200);
+    w_run(4000, 100);
+    CHECK(host_ready(&t) == 3 && host_state(&t) == GZ_LOBBY_OPEN && slot(0, &t)->funds_blocked);
+    w = view_of(0, GZ_VIEW_ATTENTION, aid);
+    CHECK(w && !w->gone && vf8(w, GZ_VAT_CODE) == GZ_ATT_HOST_FUNDS_SHORT);
+    FUNDS[0] = 0;                                                  /* the coins are back ... */
+    SIGN_FAIL[0] = 1;                                              /* ... but the host's key will not sign */
+    w_tip(0, 1001);
+    w_run(1000, 100);
+    SIGN_FAIL[0] = 0;
+    CHECK(host_state(&t) == GZ_LOBBY_OPEN && h_records_of(&N[0], GZ_REC_FREEZE) == 0);   /* no check started */
+    CHECK(slot(0, &t) && !slot(0, &t)->funds_blocked);
+    w = view_of(0, GZ_VIEW_ATTENTION, aid);
+    CHECK(w && w->gone);
+    w_free(3);
+}
+
 /* Review B of #98: the host's factory key is the pair's second key (key_index + 1), never the first, which
  * is its contribution role's index (mutant ls-factory-key-is-contribution). */
 static void test_k1_host_factory_index(void)
@@ -4835,6 +4974,9 @@ int main(int argc, char **argv)
     test_set_aside_zero();
     test_funds_no_wallet_start();
     test_funds_auto_start();
+    test_funds_blocked_past_deadline();
+    test_funds_blocked_clears();
+    test_funds_ok_without_start();
     test_two_lobbies();
     test_cancel_and_tombstone();
     test_refusals();

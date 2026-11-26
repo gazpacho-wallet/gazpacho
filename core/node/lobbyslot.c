@@ -132,7 +132,7 @@ static int ls_may_answer(void *ctx, const uint8_t scope[32])
     }
 }
 
-static int ls_funds_ok(void *ctx);   /* the host lobby's funds hook, below */
+static int ls_funds_ok(void *ctx);   /* the host lobby's funds hooks, below */
 
 #ifdef GZ_TEST_KINDS
 static gz_status_t ss_begin(void *ctx, const gz_lobby_handoff_t *h, gz_action_list_t *out);
@@ -1198,6 +1198,12 @@ gz_status_t gz_ls_after(gz_node_t *c, int i, gz_action_list_t *out)
             st = gz_c_slot_inline(c, ENG_SLOT0 + i, gate_closed_inline, out);
         }
     }
+    /* The wait for funds ends once no start is due (review B of #55, the Low): paused, or
+     * the rule no longer CHECK. The host engine applies its rule only at some seat events,
+     * and a leave below the target is not one of them, so the slot asks after every step
+     * (gz_lobby_host_start_due); this is the one place the wait is cleared. */
+    if (st == GZ_OK && s->host && s->funds_blocked && !gz_lobby_host_start_due(&s->lobby.h))
+        s->funds_blocked = 0;
     if (st == GZ_OK && !s->host && s->bd5_mismatch) {
         s->bd5_mismatch = 0;
         if (s->lobby.m.ready && !s->lobby.m.ended) st = gz_c_slot_inline(c, ENG_SLOT0 + i, bd5_unready_inline, out);
