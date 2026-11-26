@@ -422,9 +422,6 @@ typedef struct {
      * it the lobby is cancelled, reason 5, the host could not fund it by the
      * deadline (review B of #55, M-2; messages.md 6.10). NULL: always. With seat_ctx. */
     int (*funds_ok)(void *ctx);
-    /* The rule applied and asked for no start (paused, or not CHECK): nothing
-     * waits for funds now. NULL: not told. With seat_ctx. */
-    void (*funds_idle)(void *ctx);
     void *seat_ctx;
     /* The most tree transactions its signer signs (0: no limit): terms whose target needs more do not
      * open (terms.md 7, gz_terms_policy_t.max_tree_nodes). */

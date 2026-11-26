@@ -340,8 +340,6 @@ static gz_status_t apply_rule(gz_lobby_host_t *h, int at_deadline, gz_action_lis
     counts(h, &j, &r, &rc);
     rule = gz_lobby_start_rule(h->terms.target, h->terms.minimum, h->terms.deadline, now_ms(h) / 1000, rc);
     paused = h->cfg.paused && h->cfg.paused(h->cfg.seat_ctx);
-    /* No start asked for: nothing waits for the host's funds (review B of #55, the Low). */
-    if ((paused || rule != GZ_RULE_CHECK) && h->cfg.funds_idle) h->cfg.funds_idle(h->cfg.seat_ctx);
     /* Paused (local-api.md 11.3): no ready check; at the deadline the lobby
      * is cancelled, the host's choice. */
     if (paused) return now_ms(h) / 1000 >= h->terms.deadline ? end_lobby(h, 2, out) : GZ_OK;

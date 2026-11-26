@@ -122,7 +122,6 @@ static int ls_may_answer(void *ctx, const uint8_t scope[32])
 }
 
 static int ls_funds_ok(void *ctx);   /* the host lobby's funds hooks, below */
-static void ls_funds_idle(void *ctx);
 
 #ifdef GZ_TEST_KINDS
 static gz_status_t ss_begin(void *ctx, const gz_lobby_handoff_t *h, gz_action_list_t *out);
@@ -235,7 +234,6 @@ int gz_ls_init(gz_node_t *c, int i)
         hc.seat_room = ls_seat_room;
         hc.paused = ls_paused;
         hc.funds_ok = ls_funds_ok;
-        hc.funds_idle = ls_funds_idle;
         hc.seat_ctx = s;
         return gz_lobby_host_init(&s->lobby.h, &c->ports, &cr, &sg, &hc) == GZ_OK;
     }
@@ -1118,9 +1116,10 @@ gz_status_t gz_ls_after(gz_node_t *c, int i, gz_action_list_t *out)
             st = gz_c_slot_inline(c, ENG_SLOT0 + i, gate_closed_inline, out);
         }
     }
-    /* The wait for funds ends once no start is due (review B of #55, the Low): the host
-     * engine applies its rule only at some seat events, and a leave below the target is
-     * not one of them, so the slot asks after every step. */
+    /* The wait for funds ends once no start is due (review B of #55, the Low): paused, or
+     * the rule no longer CHECK. The host engine applies its rule only at some seat events,
+     * and a leave below the target is not one of them, so the slot asks after every step
+     * (gz_lobby_host_start_due); this is the one place the wait is cleared. */
     if (st == GZ_OK && s->host && s->funds_blocked && !gz_lobby_host_start_due(&s->lobby.h))
         s->funds_blocked = 0;
     if (st == GZ_OK) st = state_line(c, s, out);
@@ -1582,15 +1581,6 @@ static int ls_funds_ok(void *ctx)
     int r = funds_ask(c, self, gz_ls_set_aside(s), &s->funds_need, &s->funds_have);
     s->funds_blocked = r != 0;
     return r == 0;
-}
-
-/* ... and when the rule asks for no start (paused, or not CHECK): the wait is
- * over, so host_funds_short goes and the tip recheck stops (review B of #55,
- * the Low). */
-static void ls_funds_idle(void *ctx)
-{
-    slot_t *s = ctx;
-    s->funds_blocked = 0;
 }
 
 static gz_status_t funds_recheck_inline(gz_node_t *c, int eng, gz_action_list_t *out)
