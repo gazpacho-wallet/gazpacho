@@ -126,7 +126,7 @@ static void fields_inside(const gz_lobby_msg_t *m, const uint8_t *rec, size_t n)
     MUST(m->records == rec && m->records_len == n && m->signed_len <= n);
     MUST(inside(rec, n, m->sig, 64) && inside(rec, n, m->outer, m->outer_len) && inside(rec, n, m->outer_sig, 64) &&
          inside(rec, n, m->current, m->current_len) && inside(rec, n, m->current_sig, 64) &&
-         inside(rec, n, m->factory_key, 33) && inside(rec, n, m->bind_by_factory, 64) &&
+         inside(rec, n, m->factory_key, 33) &&
          inside(rec, n, m->bind_by_contribution, 64) && inside(rec, n, m->check_id, 32) &&
          inside(rec, n, m->outer_digest, 32) && inside(rec, n, m->current_digest, 32) &&
          inside(rec, n, m->display_name, m->display_name_len));
@@ -277,12 +277,9 @@ static size_t env_offer(uint8_t *buf, size_t cap)
 static size_t env_join(uint8_t *buf, size_t cap)
 {
     gz_lobby_enc_t e;
-    uint8_t b[32], sf[64], sc[64];
-    gz_lobby_binding(SCOPE, MEM.key[3].pub, MEM.key[2].pub, b);
-    lt_sign(&MEM, 3, b, sf); lt_sign(&MEM, 2, b, sc);
+    /* K1: a join carries no factory key and no binding, only the optional name */
     gz_lobby_enc_start(&e, buf, cap, GZ_KIND_JOIN, SCOPE);
-    gz_lobby_enc_record(&e, 2, MEM.key[3].pub, 33); gz_lobby_enc_record(&e, 4, sf, 64);
-    gz_lobby_enc_record(&e, 6, sc, 64); gz_lobby_enc_record(&e, 7, (const uint8_t *)"name", 4);
+    gz_lobby_enc_record(&e, 7, (const uint8_t *)"name", 4);
     return gz_lobby_enc_done(&e);
 }
 
@@ -294,14 +291,14 @@ void lobby_fuzz_corpus(void (*add)(const uint8_t *b, size_t n))
     gz_lobby_enc_t e;
     gz_lobby_crypto_t hc, mc;
     gz_lr_t w;
-    uint8_t cd[32], s1[64], s2[64], b[32], sf[64], sc[64], ev[200];
+    uint8_t cd[32], s1[64], s2[64], b[32], sc[64], ev[200];
     size_t rn, kn, sn, cn, jn, ln;
     setup();
     hc = lt_crypto(&HOST); mc = lt_crypto(&MEM);
     gz_terms_current_digest(T2, T2N, cd);
     lt_sign(&HOST, 1, SCOPE, s1); lt_sign(&HOST, 1, cd, s2);
     gz_lobby_binding(SCOPE, MEM.key[3].pub, MEM.key[2].pub, b);
-    lt_sign(&MEM, 3, b, sf); lt_sign(&MEM, 2, b, sc);
+    lt_sign(&MEM, 2, b, sc);                              /* K1: the contribution key's binding only */
     /* the terms records and the messages: 12 inputs */
     add(T1, T1N); add(T2, T2N);
     gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_HELLO, SCOPE); add(buf, gz_lobby_enc_done(&e));
@@ -310,6 +307,7 @@ void lobby_fuzz_corpus(void (*add)(const uint8_t *b, size_t n))
     gz_lobby_enc_start(&e, ready, sizeof ready, GZ_KIND_READY, SCOPE);
     gz_lobby_enc_record(&e, 2, SCOPE, 32); gz_lobby_enc_u32(&e, 4, 1); gz_lobby_enc_record(&e, 6, cd, 32);
     gz_lobby_enc_record(&e, 8, cd, 32); gz_lobby_enc_u16(&e, 11, 3);
+    gz_lobby_enc_record(&e, 12, MEM.key[3].pub, 33); gz_lobby_enc_record(&e, 14, sc, 64);   /* K1 */
     rn = gz_lobby_enc_sign(&e, &mc, 2); add(ready, rn);
     gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_UNREADY, SCOPE); gz_lobby_enc_u16(&e, 1, 3); add(buf, gz_lobby_enc_done(&e));
     gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_LEAVE, SCOPE); gz_lobby_enc_u16(&e, 1, 3); add(buf, gz_lobby_enc_done(&e));
@@ -333,8 +331,8 @@ void lobby_fuzz_corpus(void (*add)(const uint8_t *b, size_t n))
     gz_lr_start(&w, rec, sizeof rec, SCOPE);
     gz_lr_put(&w, 4, T2, T2N); gz_lr_put(&w, 6, s2, 64);
     add(rec, gz_lr_done(&w));                                                      /* terms_version */
-    add(rec, lt_rec_seat(rec, sizeof rec, SCOPE, MEM.key[2].pub, MEM.key[3].pub, sf, sc, GZ_SEAT_READY, 3, 1, 1, ready, rn));
-    add(rec, lt_rec_seat(rec, sizeof rec, SCOPE, MEM.key[2].pub, MEM.key[3].pub, sf, sc, GZ_SEAT_JOINED, 0, 0, 1, NULL, 0));
+    add(rec, lt_rec_seat(rec, sizeof rec, SCOPE, MEM.key[2].pub, MEM.key[3].pub, sc, GZ_SEAT_READY, 3, 1, 1, ready, rn));
+    add(rec, lt_rec_seat(rec, sizeof rec, SCOPE, MEM.key[2].pub, MEM.key[3].pub, sc, GZ_SEAT_JOINED, 0, 0, 1, NULL, 0));
     add(rec, lt_rec_freeze(rec, sizeof rec, SCOPE, cd, 1, cd, check, kn));
     add(rec, lt_rec_ended(rec, sizeof rec, SCOPE, GZ_LOBBY_CANCELLED, 1, cancel, cn));
     add(rec, lt_rec_ended(rec, sizeof rec, SCOPE, 0, 2, NULL, 0));                  /* a member's own leave */

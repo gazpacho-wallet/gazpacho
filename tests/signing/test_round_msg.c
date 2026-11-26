@@ -78,7 +78,6 @@ static void prop_make(prop_t *x, size_t n_participants)
     for (size_t i = 0; i < n_participants; i++) {
         fill(x->parts[i].factory_key, 33, (uint8_t)(1 + i));
         fill(x->parts[i].contribution_key, 33, (uint8_t)(40 + i));
-        fill(x->parts[i].bind_by_factory, 64, (uint8_t)(80 + i));
         fill(x->parts[i].bind_by_contribution, 64, (uint8_t)(120 + i));
     }
     fill(x->funding_tx, sizeof x->funding_tx, 9);

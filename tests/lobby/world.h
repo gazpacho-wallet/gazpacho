@@ -136,7 +136,7 @@ static inline gz_status_t w_begin(void *ctx, const gz_lobby_handoff_t *h, gz_act
         const gz_lobby_participant_t *p = &h->participants[i];
         uint8_t b[32];
         gz_lobby_binding(h->scope, p->factory_key, p->contribution_key, b);
-        if (!lt_verify(NULL, p->factory_key, b, p->bind_by_factory) || !lt_verify(NULL, p->contribution_key, b, p->bind_by_contribution))
+        if (!lt_verify(NULL, p->contribution_key, b, p->bind_by_contribution))   /* K1: the contribution key's only */
             x->bindings_ok = 0;
         memcpy(x->participants[i], p->contribution_key, 33);
         memcpy(x->factory[i], p->factory_key, 33);

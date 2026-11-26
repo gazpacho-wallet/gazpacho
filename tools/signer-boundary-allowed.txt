@@ -29,7 +29,9 @@ program/executor.c	host_secret	1
 # (no key before the terms, none for other values, every byte wiped at a lock).
 tests/node/test_node_lobby.c	gate_secret	3
 tests/node/test_node_lobby.c	hook:secret	1
-tests/node/test_node_lobby.c	hook:sign	2
+# K1 (#95, review B L-4), growth: test_k1_ls_sign_no_factory asks the slots' signing hook to sign with
+# the factory key (member, host: refused) and the contribution key (signs) (2 -> 5)
+tests/node/test_node_lobby.c	hook:sign	5
 tests/signing/world.h	secp256k1_keypair_create	6
 # ---- END S3
 
@@ -56,11 +58,14 @@ program/unlock_standin.c	gzw_phrase_to_seed	1
 # to wallet/tx/tests/test_tx_funding_port.c (12 to 14) after #71's list.
 core/gazpacho/include/gazpacho/node.h	hook:sign	1
 core/gazpacho/include/gazpacho/ports.h	hook:secret	1
-core/lobby/host.c	hook:sign	5
+# K1 (#95): the host no longer signs its binding with the factory key (5 -> 4)
+core/lobby/host.c	hook:sign	4
 core/lobby/include/gazpacho/lobby.h	hook:sign	1
-core/lobby/member.c	hook:sign	2
+# K1 (#95): the join is unsigned; the factory key signs nothing (2 -> 1)
+core/lobby/member.c	hook:sign	1
 core/lobby/wire.c	hook:sign	1
-core/node/lobbyslot.c	hook:sign	4
+# K1 (#95, review B L-4): ls_sign refuses the factory key, its branch gone (4 -> 3)
+core/node/lobbyslot.c	hook:sign	3
 core/node/lobbyslot.c	ls_sign	2
 core/signing/signing.c	secp256k1_musig_nonce_gen	1
 core/signing/signing.c	secp256k1_musig_partial_sign	1
@@ -90,7 +95,12 @@ tests/funding/regtest_harness.c	gzw_bip32_master	1
 tests/lobby/lobby_test.h	hook:sign	1
 tests/lobby/lobby_test.h	secp256k1_keypair_create	1
 tests/lobby/lobby_test.h	secp256k1_schnorrsig_sign32	1
-tests/lobby/test_lobby.c	hook:sign	2
+# K1 (#95), growth: test_k1_member counts what each key signs through the hook (k1_sign: the factory
+# key must sign nothing) (2 -> 3)
+tests/lobby/test_lobby.c	hook:sign	3
+# K1 (#95), growth: review H1's tests make a second valid binding signature (k1_sign_aux, other aux
+# randomness) to show the host accepts it and keeps the first (0 -> 1)
+tests/lobby/test_lobby.c	secp256k1_schnorrsig_sign32	1
 tests/lobby/test_lobby_hostile.c	hook:sign	1
 tests/lobby/test_lobby_vectors.c	hook:sign	5
 tests/net/fuzz_noise.c	secp256k1_ec_pubkey_create	1
@@ -102,7 +112,8 @@ tests/net/test_peers.c	static_key	1
 tests/net/test_testkind.c	secp256k1_ec_pubkey_create	1
 tests/net/test_testkind.c	static_key	1
 tests/net/test_wipes.c	secp256k1_ec_pubkey_create	1
-tests/node/test_node_lobby.c	secp256k1_schnorrsig_sign32	3
+# K1 (#95): the outsider join signs no binding (3 -> 1)
+tests/node/test_node_lobby.c	secp256k1_schnorrsig_sign32	1
 tests/program/silent_peer.c	secp256k1_ec_seckey_verify	1
 tests/program/test_net.c	gzp_net_sign	2
 tests/regtest/tree_regtest.c	factory_sign_all	1
