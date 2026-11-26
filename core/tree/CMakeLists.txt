@@ -64,6 +64,13 @@ add_executable(tree_regtest ${PROJECT_SOURCE_DIR}/tests/regtest/tree_regtest.c)
 target_link_libraries(tree_regtest PRIVATE gazpacho_tree_import)
 target_compile_options(tree_regtest PRIVATE ${GZ_NEW_CODE_WARNINGS})
 
+# A large tree (128 to 512 members) with the test keys, signed, for the
+# mass-exit run (tools/regtest-mass-exit.py; Slice 1.5 plan P8, test R6).
+# Not a CTest test either: it needs a regtest bitcoind.
+add_executable(tree_massexit ${PROJECT_SOURCE_DIR}/tests/regtest/tree_massexit.c)
+target_link_libraries(tree_massexit PRIVATE gazpacho_tree_import)
+target_compile_options(tree_massexit PRIVATE ${GZ_NEW_CODE_WARNINGS})
+
 # Fuzz targets: the terms decoder (both records, with the canonical round
 # trip as the property) and the transaction reader. Plain driver by default,
 # libFuzzer with -DGZ_LIBFUZZER=ON (docs/notes/ci.md).

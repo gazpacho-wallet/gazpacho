@@ -1,0 +1,182 @@
+name: Regtest mass exit
+# Slice 1.5 plan, P8 and test R6 (docs/SLICE-1.5-PLAN.md): every member of a
+# large factory publishes its own exit path at once against a full mempool,
+# on a real Bitcoin Core regtest node (tools/regtest-mass-exit.py, with the
+# tree from tests/regtest/tree_massexit). Never a required check.
+#
+#   nightly (main):       128 and 256 members (owner, 2026-11-26). 256 is the
+#                         wallet's real maximum. 512 is out of scope: the
+#                         wallet refuses more than 256 members, and the
+#                         imported tree builder writes out of bounds from
+#                         257 on until factory_set_level_arity repairs it.
+#                         It returns when the wallet supports it and the
+#                         import is fixed upstream (docs/notes/r6-mass-exit.md)
+#   on demand:            gh workflow run regtest-mass-exit.yml -R gazpacho-wallet/gazpacho \
+#                           -r <branch> -f members="128 256" -f fill=2
+#   pull requests that touch the harness, the tree, the exit engine, the
+#   sweep, the chain port or the program tests (plan 1.3): the smoke set,
+#                         4 and 16 members against a full mempool, and 4
+#                         with no filler and exit.md 6.2's anchor-only children
+#
+# Bitcoin Core is downloaded, never built: the exact pinned version, its
+# SHA256SUMS signed by at least three pinned guix.sigs builder keys, and the
+# tarball's pinned hash, as #57's deep-checks.yml does. When #57 merges, this
+# becomes its "regtest-paths" suite (plan 1.3).
+on:
+  schedule:
+    - cron: "41 3 * * *"
+  workflow_dispatch:
+    inputs:
+      members:
+        description: "Member counts, space-separated (3 to 256, the wallet's maximum)"
+        default: "128 256"
+      fill:
+        description: "Filler rate in sat/vB (0: no filler, anchor-only children)"
+        default: "2"
+  pull_request:
+    paths:
+      - tools/regtest-mass-exit.py
+      - tests/regtest/tree_massexit.c
+      - .github/workflows/regtest-mass-exit.yml
+      - core/tree/**
+      - core/exit/**
+      - core/superscalar/**
+      - program/sweep*
+      - ports/chain/**
+      - tests/program/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: regtest-mass-exit-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: Which trees
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          MEMBERS: ${{ inputs.members }}
+          FILL: ${{ inputs.fill }}
+        run: |
+          set -eu
+          case "$EVENT" in
+            schedule) list="128:2 256:2" ;;
+            pull_request) list="4:2 16:2 4:0" ;;
+            workflow_dispatch)
+              printf '%s' "$MEMBERS" | grep -Eqx '[0-9]+( [0-9]+)*' || { echo "::error::members: numbers separated by spaces"; exit 1; }
+              printf '%s' "$FILL" | grep -Eqx '[0-9]+(\.[0-9]+)?' || { echo "::error::fill: a number"; exit 1; }
+              list=; for m in $MEMBERS; do list="$list $m:$FILL"; done ;;
+            *) echo "::error::unexpected event $EVENT"; exit 1 ;;
+          esac
+          for x in $list; do
+            m=${x%%:*}
+            [ "$m" -ge 3 ] && [ "$m" -le 256 ] || { echo "::error::members out of 3..256 (R6 sizes, docs/notes/r6-mass-exit.md): $m"; exit 1; }
+          done
+          json=$(for x in $list; do printf '{"members":%s,"fill":"%s"}\n' "${x%%:*}" "${x#*:}"; done | paste -sd, -)
+          echo "matrix={\"include\":[$json]}" >> "$GITHUB_OUTPUT"
+          echo "trees: $list"
+
+  mass-exit:
+    name: mass exit (${{ matrix.members }} members, fill ${{ matrix.fill }} sat/vB)
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      CORE_VERSION: "29.1"
+      CORE_TARBALL: bitcoin-29.1-x86_64-linux-gnu.tar.gz
+      # From the release's SHA256SUMS; checked again against the signed file below.
+      CORE_SHA256: 2dddeaa8c0626ec446b6f21b64c0f3565a1e7e67ff0b586d25043cbd686c9455
+      # Signatures from at least this many distinct builder keys of guix.sigs.
+      CORE_MIN_SIGNERS: 3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The builders' keys (bitcoin-core/guix.sigs, pinned commit of 2026-10-30)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: bitcoin-core/guix.sigs
+          ref: fdc0f9635ca5bee7dd46c51f3bcf3afca83b2d5d
+          path: guix.sigs
+          sparse-checkout: builder-keys
+          persist-credentials: false
+      - name: Download Bitcoin Core and verify it
+        run: |
+          set -eu
+          sudo apt-get install -y gnupg
+          d="$RUNNER_TEMP/core"; mkdir -p "$d"; cd "$d"
+          base="https://bitcoincore.org/bin/bitcoin-core-$CORE_VERSION"
+          curl -fsSL --proto '=https' -o SHA256SUMS "$base/SHA256SUMS"
+          curl -fsSL --proto '=https' -o SHA256SUMS.asc "$base/SHA256SUMS.asc"
+          curl -fsSL --proto '=https' -o "$CORE_TARBALL" "$base/$CORE_TARBALL"
+          # 1. The signatures: a fresh keyring holding only the builders' keys.
+          export GNUPGHOME="$RUNNER_TEMP/gnupg"; mkdir -m 700 "$GNUPGHOME"
+          for k in "$GITHUB_WORKSPACE"/guix.sigs/builder-keys/*.gpg; do gpg --batch --quiet --import "$k" 2>/dev/null || echo "could not import $(basename "$k")"; done
+          gpg --batch --status-fd 1 --verify SHA256SUMS.asc SHA256SUMS > gpg-status.txt 2> gpg-log.txt || true
+          cat gpg-log.txt
+          if grep -q '^\[GNUPG:\] BADSIG' gpg-status.txt; then echo "::error::a bad signature on SHA256SUMS"; exit 1; fi
+          # A good signature (GOODSIG, not an expired or revoked key) followed by its VALIDSIG; count primary keys.
+          awk '/^\[GNUPG:\] GOODSIG /{g=1; next} /^\[GNUPG:\] VALIDSIG /{if (g) print $NF; g=0; next} /^\[GNUPG:\] (EXPKEYSIG|REVKEYSIG|ERRSIG|NO_PUBKEY) /{g=0}' \
+            gpg-status.txt | sort -u > signers.txt
+          n=$(wc -l < signers.txt)
+          echo "good signatures from $n distinct builder keys:"; cat signers.txt
+          if [ "$n" -lt "$CORE_MIN_SIGNERS" ]; then echo "::error::only $n good builder signatures, $CORE_MIN_SIGNERS needed"; exit 1; fi
+          # 2. The signed file names the hash pinned above, and the tarball has it.
+          line=$(grep -E "^[0-9a-f]{64}  $CORE_TARBALL\$" SHA256SUMS)
+          [ "${line%% *}" = "$CORE_SHA256" ] || { echo "::error::SHA256SUMS does not hold the pinned hash"; exit 1; }
+          echo "$CORE_SHA256  $CORE_TARBALL" | sha256sum --check --strict
+          tar xzf "$CORE_TARBALL"
+          "bitcoin-$CORE_VERSION/bin/bitcoind" -version | head -n 1
+      - name: Build tree_massexit (CI's gcc-off build)
+        uses: ./.github/actions/gz-build
+        with:
+          config: gcc-off
+          targets: tree_massexit
+          save-cache: "false"
+      - name: Every member exits at once (tools/regtest-mass-exit.py)
+        env:
+          MEMBERS: ${{ matrix.members }}
+          FILL: ${{ matrix.fill }}
+        run: |
+          set -eu
+          tool=$(find build -type f -name tree_massexit -perm -u+x | head -n 1)
+          [ -n "$tool" ] || { echo "::error::tree_massexit was not built"; exit 1; }
+          out="$RUNNER_TEMP/out"; mkdir -p "$out"
+          python3 -I -u tools/regtest-mass-exit.py "$RUNNER_TEMP/core/bitcoin-$CORE_VERSION/bin" \
+            "$RUNNER_TEMP/regtest-data" "$tool" --members "$MEMBERS" --fill "$FILL" --out "$out" 2>&1 \
+            | tee "$out/run.txt"
+          exit "${PIPESTATUS[0]}"
+      - name: Summary (also after a failure)
+        if: always()
+        env:
+          MEMBERS: ${{ matrix.members }}
+        run: |
+          f="$RUNNER_TEMP/out/run.txt"
+          echo "### mass exit, $MEMBERS members" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "$f" ]; then
+            grep -E '^(PASS|R6:|every path|amounts|every member|round |  refused)' "$f" | sed 's/^/    /' >> "$GITHUB_STEP_SUMMARY" || true
+            echo "last lines:" >> "$GITHUB_STEP_SUMMARY"
+            tail -n 3 "$f" | sed 's/^/    /' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "no run log: the run did not start" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: mass-exit-${{ matrix.members }}-fill-${{ matrix.fill }}
+          path: ${{ runner.temp }}/out
+          retention-days: 14
+          if-no-files-found: warn
