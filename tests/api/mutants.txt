@@ -74,6 +74,8 @@ doing-lowest-wins	ports/api/status.c	if (r < best_rank) { best_rank = r; best = 
 offline-not-first	ports/api/status.c	if (f->chain_state == GZ_API_CHAIN_OFFLINE_BY_CHOICE) return "nobody_offline";	
 dates-never-hidden	ports/api/status.c	int hide = !dates_ok;	int hide = 0;
 act-now-without-date	ports/api/status.c	if (strcmp(tier, "act_now") == 0 && !f->attention[i].due_json) return -1;   /* act_now has a date */	
+lobby-item-without-role	ports/api/status.c	if (f->attention[i].lobby_id && !f->attention[i].lobby_role) return -1;	if (0) return -1;
+lobby-role-not-written	ports/api/status.c	if (a->lobby_id) gz_jw_kstr(w, "lobby_role", a->lobby_role);	
 corp-missing	ports/api/http.c	static const char COMMON_HEADERS[] =\n    "Cross-Origin-Resource-Policy: same-origin	static const char COMMON_HEADERS[] =\n    "X-Gazpacho-Mutant: 1
 csp-missing	ports/api/http.c	kind == BK_PAGE ? gz_page_headers() : CSP_NONE,	kind == BK_PAGE ? gz_page_headers() : "",
 no-store-missing	ports/api/http.c	%s%s%sCache-Control: no-store	%s%s%sX-Mutant: 1
