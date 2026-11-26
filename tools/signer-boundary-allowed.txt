@@ -277,6 +277,6 @@ program/wport.c	gzt_funding_spend_back	1
 program/wport.c	gzw_bip32_master	1
 tests/node/test_node_lobby.c	gate_secret	3
 tests/program/test_wport.c	gzw_bip32_master	1
-# tests/lobby/test_lobby.c secp256k1_schnorrsig_sign32: REASON MISSING
+# tests/lobby/test_lobby.c secp256k1_schnorrsig_sign32: #95 (K1): the lobby tests sign a binding with a test key. Tests.
 tests/lobby/test_lobby.c	secp256k1_schnorrsig_sign32	1
 # ---- END integration-slice1
