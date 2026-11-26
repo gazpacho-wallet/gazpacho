@@ -1702,6 +1702,75 @@ static void test_package_to_every_server(test_state *T) {
   mfx_close(&x);
 }
 
+/* Says it took the package, with the child under another txid. */
+static gz_chain_result wrong_package_child(void *ctx, const uint8_t *parent, size_t parent_len,
+                                           const uint8_t *child, size_t child_len,
+                                           gz_package_result *out) {
+  (void)child;
+  (void)child_len;
+  ((stub *)ctx)->broadcasts++;
+  memset(out, 0, sizeof *out);
+  if (!gz_txid_from_raw(parent, parent_len, out->parent.txid)) return GZ_CHAIN_INVALID_ARG;
+  test_hash(TX_B, out->child.txid);
+  out->result = out->parent.result = out->child.result = GZ_CHAIN_OK;
+  return GZ_CHAIN_OK;
+}
+
+/* Says it took the package, with the parent under another txid. */
+static gz_chain_result wrong_package_parent(void *ctx, const uint8_t *parent, size_t parent_len,
+                                            const uint8_t *child, size_t child_len,
+                                            gz_package_result *out) {
+  (void)parent;
+  (void)parent_len;
+  ((stub *)ctx)->broadcasts++;
+  memset(out, 0, sizeof *out);
+  if (!gz_txid_from_raw(child, child_len, out->child.txid)) return GZ_CHAIN_INVALID_ARG;
+  test_hash(TX_B, out->parent.txid);
+  out->result = out->parent.result = out->child.result = GZ_CHAIN_OK;
+  return GZ_CHAIN_OK;
+}
+
+/* A backend that "takes" a package under other txids has not taken it: its
+ * answer is malformed, as for a single transaction (review L2 of #109). */
+static void test_package_backend_not_taken_at_its_word(test_state *T) {
+  mfx x;
+  gz_multi_config mc;
+  gz_chain m;
+  gz_chain_ops ops;
+  stub st = {0};
+  gz_package_result pr;
+  uint8_t parent[1024], child[1024];
+  mfx_open(&x, 2);
+  size_t plen = load_raw("tx_a_hex.txt", parent, sizeof parent);
+  size_t clen = load_raw("tx_spender_hex.txt", child, sizeof child);
+  gz_multi_config_default(&mc, GZ_NET_SIGNET);
+  mc.now_ms = test_clock;
+  memset(&ops, 0, sizeof ops);
+  ops.block_hash = stub_block_hash;
+  /* an honest server that refuses it, and a backend that lies */
+  fake_set(&x.fake[0], true, B0 "/txs/package", 400, "package topology disallowed");
+  gz_chain two[2] = {x.server[0], {&st, &ops}};
+  CHECK_RESULT(gz_multi_create(&mc, two, 2, &m), GZ_CHAIN_OK);
+  const gz_multi_report *rep = gz_multi_last_report(&m);
+  ops.broadcast_package = wrong_package_child;
+  CHECK_RESULT(gz_chain_broadcast_package(&m, parent, plen, child, clen, &pr), GZ_CHAIN_REJECTED);
+  CHECK(st.broadcasts == 1);
+  CHECK(rep->answers[1].result == GZ_CHAIN_MALFORMED);
+  CHECK(rep->answers[1].package.result == GZ_CHAIN_MALFORMED);
+  CHECK(rep->answers[1].u.broadcast.result == GZ_CHAIN_MALFORMED);
+  ops.broadcast_package = wrong_package_parent;
+  CHECK_RESULT(gz_chain_broadcast_package(&m, parent, plen, child, clen, &pr), GZ_CHAIN_REJECTED);
+  CHECK(rep->answers[1].result == GZ_CHAIN_MALFORMED);
+  CHECK(rep->answers[1].package.result == GZ_CHAIN_MALFORMED);
+  /* the honest server down: nothing was taken */
+  x.fake[0].down = true;
+  CHECK_RESULT(gz_chain_broadcast_package(&m, parent, plen, child, clen, &pr), GZ_CHAIN_UNREACHABLE);
+  CHECK(pr.result != GZ_CHAIN_OK);
+  x.fake[0].down = false;
+  gz_chain_destroy(&m);
+  mfx_close(&x);
+}
+
 /* ---- fees ---- */
 
 static void test_fee_rule(test_state *T) {
@@ -1905,6 +1974,7 @@ int main(void) {
   RUN(test_three_servers_one_wrong);
   RUN(test_broadcast);
   RUN(test_package_to_every_server);
+  RUN(test_package_backend_not_taken_at_its_word);
   RUN(test_fee_rule);
   RUN(test_create_and_single_server);
   TEST_MAIN_END("test_multi");

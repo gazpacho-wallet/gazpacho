@@ -73,7 +73,10 @@ gz_chain_result gz_esplora_create(const gz_esplora_config *cfg, const gz_http *h
  * refuses it with 400; one without answers 404 (or 405).
  */
 #define GZ_ESPLORA_PROBE_BODY "gazpacho package probe: not a package"
-#define GZ_ESPLORA_PROBE_PATH_MAX 24
+/* A path no Esplora server has, asked first with the same body: it must
+ * answer 404 or 405, or a 400 elsewhere would prove nothing. */
+#define GZ_ESPLORA_PROBE_CONTROL_PATH "/txs/gazpacho-probe-no-such-path"
+#define GZ_ESPLORA_PROBE_PATH_MAX 40
 
 typedef struct gz_package_probe {
   /* GZ_CHAIN_OK: the endpoint is there (400 to the probe), at `path`.

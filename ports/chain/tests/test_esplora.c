@@ -722,6 +722,7 @@ static void test_broadcast_retry_rules(test_state *T) {
 
 #define PKG_PATH BASE "/txs/package"
 #define PKG_PATH_V1 BASE "/v1/txs/package"
+#define PROBE_CONTROL BASE GZ_ESPLORA_PROBE_CONTROL_PATH
 
 /* A parent and a child that really spends it: transaction A and its
  * recorded spender. */
@@ -915,6 +916,10 @@ static void test_package_answer_strict(test_state *T) {
       PKG_ANSWER("transaction failed", PKG_ENTRY_OK(TX_A, "") "," PKG_ENTRY_OK(TX_SPENDER, "")),
       /* trailing bytes */
       PKG_SUCCESS "x",
+      /* "other-wtxid" that is not a string, or not a hash */
+      PKG_ANSWER("success", PKG_ENTRY_OK(TX_A, "\"other-wtxid\":5,") "," PKG_ENTRY_OK(TX_SPENDER, "")),
+      PKG_ANSWER("success", PKG_ENTRY_OK(TX_A, "\"other-wtxid\":\"00\",") "," PKG_ENTRY_OK(TX_SPENDER, "")),
+      PKG_ANSWER("success", PKG_ENTRY_OK(TX_A, "\"other-wtxid\":null,") "," PKG_ENTRY_OK(TX_SPENDER, "")),
   };
   for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
     fake_set(&x.fake, true, PKG_PATH, 200, bad[i]);
@@ -935,25 +940,120 @@ static void test_package_answer_strict(test_state *T) {
   fx_close(&x);
 }
 
-/* The S12 probe: a body that is not a package, so nothing can be broadcast;
- * 400 means the endpoint exists, 404 or 405 that it does not. */
+/* The answer cap is 16384 bytes: an answer of exactly that size is read, one
+ * byte more is too large. */
+static void test_package_answer_cap(test_state *T) {
+  fixture x;
+  pkg_pair k;
+  gz_package_result pr;
+  static char body[16386];
+  const char *ok = PKG_SUCCESS;
+  size_t ok_len = strlen(ok);
+  fx_open(&x);
+  pkg_pair_load(&k);
+  for (size_t size = 16384; size <= 16385; size++) {
+    /* the success answer, padded with spaces after its opening brace */
+    body[0] = '{';
+    memset(body + 1, ' ', size - ok_len);
+    memcpy(body + 1 + (size - ok_len), ok + 1, ok_len - 1);
+    body[size] = '\0';
+    CHECK(strlen(body) == size);
+    fake_set(&x.fake, true, PKG_PATH, 200, body);
+    CHECK_RESULT(PKG_SEND(x, k, &pr), size == 16384 ? GZ_CHAIN_OK : GZ_CHAIN_TOO_LARGE);
+    CHECK(x.fake.last_cap == 16384);
+    /* a refusal of the same sizes */
+    memset(body, 'A', size);
+    body[size] = '\0';
+    fake_set(&x.fake, true, PKG_PATH, 400, body);
+    CHECK_RESULT(PKG_SEND(x, k, &pr), size == 16384 ? GZ_CHAIN_REJECTED : GZ_CHAIN_TOO_LARGE);
+    if (size == 16384) CHECK(strlen(pr.reason) == GZ_REASON_MAX - 1);
+  }
+  fx_close(&x);
+}
+
+/* A package POST that timed out may have been acted on: it is not sent
+ * again, not even to the other path. One that never connected, or drew 429,
+ * was not looked at, and the other path is still tried. */
+static void test_package_not_reposted(test_state *T) {
+  fixture x;
+  pkg_pair k;
+  gz_package_result pr;
+  fx_open(&x);
+  pkg_pair_load(&k);
+  fake_set(&x.fake, true, PKG_PATH, 200, PKG_SUCCESS);
+  fake_set(&x.fake, true, PKG_PATH_V1, 404, "Not Found");
+
+  fake_once(&x.fake, true, PKG_PATH, GZ_HTTP_E_TIMEOUT, 0, "", 1);
+  unsigned first = fake_hits(&x.fake, true, PKG_PATH), second = fake_hits(&x.fake, true, PKG_PATH_V1);
+  unsigned before = x.fake.requests;
+  CHECK_RESULT(PKG_SEND(x, k, &pr), GZ_CHAIN_UNREACHABLE);
+  CHECK(x.fake.requests == before + 1);
+  CHECK(fake_hits(&x.fake, true, PKG_PATH_V1) == second); /* the other path was not asked */
+  CHECK(fake_hits(&x.fake, true, PKG_PATH) == first + 1);
+  CHECK(x.fake.last_timeout_ms == 15000);
+  CHECK(pr.server_status == 0 && pr.parent.result == GZ_CHAIN_UNREACHABLE);
+
+  /* the same after a 5xx */
+  fake_once(&x.fake, true, PKG_PATH, GZ_HTTP_OK, 502, "bad gateway", 1);
+  before = x.fake.requests;
+  CHECK_RESULT(PKG_SEND(x, k, &pr), GZ_CHAIN_UNREACHABLE);
+  CHECK(x.fake.requests == before + 1);
+  CHECK(fake_hits(&x.fake, true, PKG_PATH_V1) == second);
+
+  /* never connected on any try: nothing was sent, the other path is asked */
+  fake_once(&x.fake, true, PKG_PATH, GZ_HTTP_E_CONNECT, 0, "", 3);
+  before = x.fake.requests;
+  CHECK_RESULT(PKG_SEND(x, k, &pr), GZ_CHAIN_UNREACHABLE);
+  CHECK(x.fake.requests == before + 4);
+  CHECK(fake_hits(&x.fake, true, PKG_PATH_V1) == second + 1);
+
+  /* and the probe follows the same rule */
+  fake_set(&x.fake, true, PROBE_CONTROL, 404, "Not Found");
+  fake_once(&x.fake, true, PKG_PATH, GZ_HTTP_E_TIMEOUT, 0, "", 1);
+  gz_package_probe pp;
+  CHECK_RESULT(gz_esplora_probe_package(&x.chain, &pp), GZ_CHAIN_UNREACHABLE);
+  CHECK(fake_hits(&x.fake, true, PKG_PATH_V1) == second + 1);
+  fx_close(&x);
+}
+
+/* The S12 probe: `[]`, valid JSON but no package (Core takes 2 to 25
+ * transactions), so nothing can be broadcast. First to a path that cannot
+ * exist, which must answer 404 or 405; then 400 at a package path means the
+ * endpoint exists, 404 or 405 at both that it does not. */
 static void test_package_probe(test_state *T) {
   fixture x;
   gz_package_probe pp;
   fx_open(&x);
-  const char *invalid = "invalid package";
+  const char *invalid = "submitpackage RPC error: Array must contain between 2 and 25 transactions.";
 
+  fake_set(&x.fake, true, PROBE_CONTROL, 404, "Not Found");
   fake_set(&x.fake, true, PKG_PATH, 400, invalid);
   unsigned before = x.fake.requests;
   CHECK_RESULT(gz_esplora_probe_package(&x.chain, &pp), GZ_CHAIN_OK);
-  CHECK(x.fake.requests == before + 1);
+  CHECK(x.fake.requests == before + 2);
+  CHECK(fake_hits(&x.fake, true, PROBE_CONTROL) == 1 && fake_hits(&x.fake, true, PKG_PATH) == 1);
   CHECK(pp.result == GZ_CHAIN_OK && pp.server_status == 400);
   CHECK(strcmp(pp.path, "/txs/package") == 0 && strcmp(pp.reason, invalid) == 0);
-  /* what was sent is the fixed probe body, which no server can read as a
-   * list of transactions */
-  CHECK(x.fake.last_body_len == strlen(GZ_ESPLORA_PROBE_BODY));
-  CHECK(memcmp(x.fake.last_body, GZ_ESPLORA_PROBE_BODY, strlen(GZ_ESPLORA_PROBE_BODY)) == 0);
-  CHECK(GZ_ESPLORA_PROBE_BODY[0] != '[' && strchr(GZ_ESPLORA_PROBE_BODY, '"') == NULL);
+  /* what was sent is the fixed probe body: an empty JSON array, which no
+   * server can read as transactions */
+  CHECK(strcmp(GZ_ESPLORA_PROBE_BODY, "[]") == 0);
+  CHECK(x.fake.last_body_len == 2 && memcmp(x.fake.last_body, "[]", 2) == 0);
+
+  /* A server that answers 400 on a path that cannot exist (it reads the
+   * body before it routes, or refuses every POST) says nothing about the
+   * package endpoint: cannot tell, and the package paths are not asked. */
+  fake_set(&x.fake, true, PROBE_CONTROL, 400, "bad request");
+  before = fake_hits(&x.fake, true, PKG_PATH);
+  CHECK_RESULT(gz_esplora_probe_package(&x.chain, &pp), GZ_CHAIN_REJECTED);
+  CHECK(pp.server_status == 400 && strcmp(pp.path, GZ_ESPLORA_PROBE_CONTROL_PATH) == 0);
+  CHECK(strcmp(pp.reason, "bad request") == 0);
+  CHECK(fake_hits(&x.fake, true, PKG_PATH) == before);
+  fake_set(&x.fake, true, PROBE_CONTROL, 200, "");
+  CHECK_RESULT(gz_esplora_probe_package(&x.chain, &pp), GZ_CHAIN_REJECTED);
+  CHECK(fake_hits(&x.fake, true, PKG_PATH) == before);
+  fake_set(&x.fake, true, PROBE_CONTROL, 405, "");
+  CHECK_RESULT(gz_esplora_probe_package(&x.chain, &pp), GZ_CHAIN_OK);
+  fake_set(&x.fake, true, PROBE_CONTROL, 404, "Not Found");
 
   /* only at mempool.space's path */
   fake_set(&x.fake, true, PKG_PATH, 404, "Not Found");
@@ -2053,6 +2153,8 @@ int main(void) {
   RUN(test_broadcast_retry_rules);
   RUN(test_package);
   RUN(test_package_answer_strict);
+  RUN(test_package_answer_cap);
+  RUN(test_package_not_reposted);
   RUN(test_package_probe);
   RUN(test_fee_estimates);
   RUN(test_retries_and_backoff);

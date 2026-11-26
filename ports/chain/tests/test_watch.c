@@ -588,6 +588,17 @@ static void test_package(test_state *T) {
   SEQ(go(&f), "broadcast #4 unreachable tries=1 package parent=unreachable child=unreachable");
   SEQ(go(&f), "");
   SEQ(go(&f), "broadcast #4 unreachable final tries=3 package parent=unreachable child=unreachable");
+  /* A server whose answer contradicts itself ("success", listing only the
+   * parent) has not taken the package: malformed, which the worker treats
+   * as no answer and tries again, never as a refusal or as acceptance
+   * (review L1 of #109). */
+  f.net.view[0].package = SIM_PKG_LIE;
+  CHECK(send_pair(&f, 5, SIM_T, SIM_K) == GZ_CHAINW_OK);
+  (void)gz_watch_step(f.e);
+  CHECK(f.rec.n == 1 && f.rec.ev[0].broadcast.detail == GZ_CHAIN_MALFORMED);
+  CHECK(f.rec.n == 1 && !f.rec.ev[0].broadcast.final && f.rec.ev[0].broadcast.package);
+  st_join(&f.rec, f.line, sizeof f.line);
+  SEQ(f.line, "broadcast #5 unreachable tries=1 package parent=unreachable child=unreachable");
   fx_close(&f);
 }
 

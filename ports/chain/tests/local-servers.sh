@@ -195,9 +195,18 @@ printf '%s\n' "$out" | grep -q "present: HTTP 400 at /txs/package" ||
   { echo "FAIL the probe did not report the endpoint present"; fail=1; }
 printf '%s\n' "$out" | grep -q "absent: HTTP 404" ||
   { echo "FAIL the probe did not report the endpoint absent"; fail=1; }
-# the probe sent nothing but its fixed 37-byte body, to package paths only
-if grep -qv ' 37$' posts.log || grep -qv 'txs/package ' posts.log; then
+# the probe sent nothing but its fixed body `[]` (2 bytes), under /txs/ only
+if grep -qv ' 2$' posts.log || grep -qv '/txs/' posts.log; then
   echo "FAIL the probe posted something else:"; cat posts.log; fail=1
 fi
+# review M1 of #109: a server that answers 400 on any path is not taken to
+# have a package endpoint
+expect "probe: a server that reads the body before it routes has no endpoint" 0 \
+  "package endpoint: 0 of 2 server" \
+  "$tool" $A --server $L/parsefirst --operator second-operator package --probe
+expect "probe: a server that refuses every POST cannot be told" 1 "cannot tell" \
+  "$tool" $A --server $L/refuseall --operator second-operator package --probe
+printf '%s\n' "$out" | grep -q "package endpoint: 0 of 2 server" ||
+  { echo "FAIL a server refusing every POST was counted as having an endpoint"; fail=1; }
 
 exit $fail
