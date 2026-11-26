@@ -13,8 +13,8 @@
 # the other 4 go at S4).
 core/gazpacho/include/gazpacho/ports.h	host_secret	1
 core/node/internal.h	gate_secret	1
-core/node/lobbyslot.c	gate_secret	5
-core/node/lobbyslot.c	hook:secret	1
+core/node/lobbyslot.c	gate_secret	7
+core/node/lobbyslot.c	hook:secret	2
 core/node/signslot.c	gate_secret	1
 core/node/signslot.c	hook:secret	2
 core/node/signslot.c	hook:sign	2
@@ -113,7 +113,7 @@ tests/program/fuzz_keys.c	secp256k1_ec_pubkey_create	1
 tests/program/silent_peer.c	secp256k1_ec_seckey_verify	1
 tests/program/test_keys_rare.c	gzw_bip32_derive_priv	1
 tests/program/test_keys_rare.c	gzw_bip32_master	1
-tests/program/test_net.c	gzp_net_sign	2
+tests/program/test_net.c	gzp_net_sign	6
 tests/regtest/tree_regtest.c	factory_sign_all	1
 tests/regtest/tree_regtest.c	secp256k1_keypair_create	1
 tests/scale/tree_shapes.c	factory_sign_all	1
@@ -228,3 +228,54 @@ wallet/vectors/official_vectors.c	secp256k1_keypair_create	1
 wallet/vectors/official_vectors.c	secp256k1_keypair_sec	1
 wallet/vectors/official_vectors.c	secp256k1_schnorrsig_sign32	1
 wallet/vectors/official_vectors.c	secp256k1_schnorrsig_sign_custom	1
+
+# ---- BEGIN integration-slice1 (P4.6), after the signer-boundary review of #66.
+# Each file's uses and why. gzp_net_sign_host is gone (#53's GZP_NET_KEY_STATIC);
+# gzp_net_sign signs with fresh aux (K20).
+# raised in place above: core/node/lobbyslot.c gate_secret from 5 to 7
+# raised in place above: core/node/lobbyslot.c hook:secret from 1 to 2
+# raised in place above: tests/program/test_net.c gzp_net_sign from 2 to 6
+# core/node/lobbyslot.c: #55 (composite-p6a, K1): a member's factory key
+#   derived when the person readies or joins with the passphrase (keys.secret
+#   at key_index + 1 into gate_secret), bound to the values digest seen and
+#   wiped when the gate closes or the seat ends (gate_wipe, gz_ls_wipe32). Two
+#   more gate_secret uses and one more key-port secret call than #52's S3 block
+#   counts. #55's own boundary review; S3 removes them with the rest of the
+#   block.
+# program/store_unlock.c: the seed source (storage 9.1): it turns the words
+#   into the seed outside the signer, a reasoned exemption until 1.0.0's signer
+#   process. The seed buffers are gz_sc_salloc'd and freed on every path.
+# program/sweep.c: test build only (GZP_TEST_BUILD; the release object is
+#   empty, program_release_build): the host's timeout sweep and the one-coin
+#   spend of the signet recovery (integration.md 9): the host's per-lobby
+#   factory key (secp256k1_keypair_create), the wallet's master key and a BIP
+#   86 key-path signature (gzw_bip32_master, gzw_bip86_tweaked_keypair,
+#   gzt_sign_keypath), every secret wiped on every path, fresh aux.
+# program/wport.c: the wallet port (P4.6): the host's funding, its signature
+#   and its spend-backs (gzt_funding_build, gzt_funding_release,
+#   gzt_funding_spend_back), each with a master key derived for that one
+#   operation from the seed source and wiped at once (master_now,
+#   gzw_bip32_master); no private key is kept between operations or across a
+#   lock (test_master_not_kept). The addresses come from the account's public
+#   key. To signer/ at S5 (the funding wallet).
+# tests/node/test_node_lobby.c: #55's node tests of that gate: the join-ready
+#   key derived, bound to the values seen, wiped when the seat ends. Tests:
+#   allowed by target name at S4.
+# tests/program/test_net.c: K20's test (this branch): gzp_net_sign twice on the
+#   same message, for a lobby key and for GZP_NET_KEY_STATIC, gives two valid,
+#   different signatures. Tests: allowed by target name at S4.
+# tests/program/test_wport.c: test_master_not_kept derives the test seed's
+#   master key (gzw_bip32_master) to check that the wallet port's memory never
+#   holds it. Tests: allowed by target name at S4.
+program/store_unlock.c	gzw_phrase_to_seed	1
+program/sweep.c	gzt_sign_keypath	1
+program/sweep.c	gzw_bip32_master	1
+program/sweep.c	gzw_bip86_tweaked_keypair	1
+program/sweep.c	secp256k1_keypair_create	1
+program/wport.c	gzt_funding_build	1
+program/wport.c	gzt_funding_release	1
+program/wport.c	gzt_funding_spend_back	1
+program/wport.c	gzw_bip32_master	1
+tests/node/test_node_lobby.c	gate_secret	3
+tests/program/test_wport.c	gzw_bip32_master	1
+# ---- END integration-slice1
