@@ -456,12 +456,12 @@ static gz_status_t attention(gz_node_t *c, slot_t *s, int force, gz_action_list_
         put8(&w, GZ_VAT_CODE, code);
         put(&w, GZ_VAT_LOBBY, s->view.local_id, slen(s->view.local_id));
         put64(&w, GZ_VAT_SINCE, wall(c));
-        put8(&w, GZ_VAT_ROLE, slot_role(s));
         if (count) put16(&w, GZ_VAT_COUNT, count);
         if (code == GZ_ATT_HOST_FUNDS_SHORT) {
             put64(&w, GZ_VAT_NEED, s->funds_need);
             put64(&w, GZ_VAT_HAVE, s->funds_have);
         }
+        put8(&w, GZ_VAT_ROLE, slot_role(s));          /* last: records in increasing type */
         if (w.bad) return gz_c_bug(c, ENG_NODE);
     }
     return emit(c, GZ_VIEW_ATTENTION, id, c->view.body, w.at, !code, &last, 1, out);
