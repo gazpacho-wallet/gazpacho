@@ -4468,9 +4468,10 @@ static void w_tip(int n, uint32_t height)
 }
 
 /* Review B of #55, second pass, M-2: a lobby that waits for the host's funds when its
- * deadline comes ends there, as a paused one does (cancel reason 2, the host's side).
- * No ready check starts later when the coins come back: a factory never starts after
- * the date its members agreed it would start by. */
+ * deadline comes ends there, cancel reason 5, the host could not fund it by the deadline
+ * (messages.md 6.10; review B of #106, L-1). It ends in the deadline second itself, not a
+ * second later (L-2, mutant funds-deadline-strict). No ready check starts later when the
+ * coins come back: a factory never starts after the date its members agreed it would start by. */
 static void test_funds_blocked_past_deadline(void)
 {
     terms_t t;
@@ -4487,10 +4488,19 @@ static void test_funds_blocked_past_deadline(void)
     for (int n = 1; n <= 3; n++) CHECK(member_join(n, &t) == 200);
     w_run(4000, 100);
     CHECK(host_ready(&t) == 3 && host_state(&t) == GZ_LOBBY_OPEN && slot(0, &t)->funds_blocked);   /* before its deadline */
-    w_run(610000, 5000);                                           /* the deadline passes, still short */
+    {
+        uint64_t dl_ms = (uint64_t)slot(0, &t)->lobby.h.terms.deadline * 1000;
+        uint64_t to = dl_ms - 1000;                                /* a second before the deadline */
+        CHECK(dl_ms > NOW + 2000 && (to - NOW) % 100 == 0);
+        w_run((to - NOW) / 1000 * 1000, 1000);
+        w_run(to - NOW, 100);                                      /* exactly there, no step past it */
+        CHECK(NOW == to);
+        CHECK(host_state(&t) == GZ_LOBBY_OPEN && slot(0, &t)->funds_blocked);
+        w_run(1500, 100);                                          /* the deadline second itself, still short: it ends */
+    }
     CHECK(host_state(&t) == -1 && h_records_of(&N[0], GZ_REC_FREEZE) == 0);
     w = view_of(0, GZ_VIEW_HOST_LOBBY, id);
-    CHECK(w && vf8(w, GZ_VHL_STAGE) == GZ_LOBBY_CANCELLED && vf(w, GZ_VHL_END_REASON, &v) && gz_get_u16(v.data) == 2);
+    CHECK(w && vf8(w, GZ_VHL_STAGE) == GZ_LOBBY_CANCELLED && vf(w, GZ_VHL_END_REASON, &v) && gz_get_u16(v.data) == 5);
     w = view_of(0, GZ_VIEW_ATTENTION, aid);
     CHECK(!w || w->gone);
     FUNDS[0] = 0;                                                  /* the coins come back: nothing starts */

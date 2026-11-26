@@ -416,8 +416,8 @@ typedef struct {
      * before the start rule's ready check, the automatic start. 0: no check;
      * before the deadline the lobby stays Open and is asked again at its next
      * seat event, or when its node asks the rule again (a tip); at or after
-     * it the lobby is cancelled, reason 2, as a paused one is (review B of
-     * #55, M-2). NULL: always. With seat_ctx. */
+     * it the lobby is cancelled, reason 5, the host could not fund it by the
+     * deadline (review B of #55, M-2; messages.md 6.10). NULL: always. With seat_ctx. */
     int (*funds_ok)(void *ctx);
     /* The rule applied and asked for no start (paused, or not CHECK): nothing
      * waits for funds now. NULL: not told. With seat_ctx. */

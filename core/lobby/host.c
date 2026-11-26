@@ -338,11 +338,11 @@ static gz_status_t apply_rule(gz_lobby_host_t *h, int at_deadline, gz_action_lis
     if (paused) return now_ms(h) / 1000 >= h->terms.deadline ? end_lobby(h, 2, out) : GZ_OK;
     /* The host's funds, as at its own early start (review B of #55, M-1): a
      * start the wallet cannot fund waits Open; rule_dirty stays, so the next
-     * seat event or a recheck asks again. At or after the deadline it ends as
-     * a paused lobby does, reason 2 (M-2): never a start past the date the
-     * members agreed it would start by. */
+     * seat event or a recheck asks again. At or after the deadline it ends,
+     * reason 5, the host could not fund it by the deadline (M-2; messages.md
+     * 6.10): never a start past the date the members agreed it would start by. */
     if (rule == GZ_RULE_CHECK && h->cfg.funds_ok && !h->cfg.funds_ok(h->cfg.seat_ctx))
-        return now_ms(h) / 1000 >= h->terms.deadline ? end_lobby(h, 2, out) : GZ_OK;   /* M-2 */
+        return now_ms(h) / 1000 >= h->terms.deadline ? end_lobby(h, 5, out) : GZ_OK;   /* M-2 */
     if (rule == GZ_RULE_CHECK) return ready_check(h, out);
     if (rule == GZ_RULE_CANCEL) return end_lobby(h, 1, out);
     return GZ_OK;

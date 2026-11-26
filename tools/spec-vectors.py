@@ -406,6 +406,21 @@ show("Lightning message, adapter (32800, submessage 4, TLV 0, TLV 1024)", adapte
 # type, submessage, TLV 0 (34), TLV 1024's type (fd0400) and its BigSize length
 assert MAGIC + adapted[2 + 2 + 34 + 3 + len(bigsize(len(ready_env) - 4)):] == ready_env
 
+# --------------------------------------------- a cancel, reason 5 -------------
+# messages.md 6.10 and vector M4: the host could not fund the lobby by its
+# deadline (review B of #106, L-1). Signed by the host's long-term key.
+KIND_CANCEL = 34
+cancel_body = tlv([(2, u16(5))])
+cancel_header = MAGIC + u16(KIND_CANCEL) + outer_digest
+cancel_hash = tagged_hash("gazpacho/msg", cancel_header + cancel_body)
+cancel_sig = schnorr_sign(cancel_hash, host_sk, AUX)
+assert schnorr_verify(cancel_hash, xonly(host_sk), cancel_sig)
+cancel_env = cancel_header + cancel_body + tlv([(240, cancel_sig)])
+print("
+== messages.md: vector M4, the host's 'cancel' of T1's lobby, reason 5")
+print("signed hash =", cancel_hash.hex())
+show("Lightning message, native (52791, tag, kind, scope, records 2, 240)", u16(custom_type) + cancel_env)
+
 # --------------------------------------------- a part --------------------------
 inner = bytes(range(256)) * 300   # 76,800 bytes of test data as an inner body
 INNER_KIND = 68

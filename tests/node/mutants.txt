@@ -413,7 +413,9 @@ seat-end-gate-kept	core/node/lobbyslot.c	        !gz_lobby_member_check_in_fligh
 funds-auto-unchecked	core/lobby/host.c	    if (rule == GZ_RULE_CHECK && h->cfg.funds_ok && !h->cfg.funds_ok(h->cfg.seat_ctx))
         return now_ms(h)	    if (0)
         return now_ms(h)
-funds-deadline-kept	core/lobby/host.c	? end_lobby(h, 2, out) : GZ_OK;   /* M-2 */	? GZ_OK : GZ_OK;   /* M-2 */
+funds-deadline-kept	core/lobby/host.c	? end_lobby(h, 5, out) : GZ_OK;   /* M-2 */	? GZ_OK : GZ_OK;   /* M-2 */
+funds-deadline-strict	core/lobby/host.c	return now_ms(h) / 1000 >= h->terms.deadline ? end_lobby(h, 5, out)	return now_ms(h) / 1000 > h->terms.deadline ? end_lobby(h, 5, out)
+funds-deadline-reason-2	core/lobby/host.c	? end_lobby(h, 5, out) : GZ_OK;   /* M-2 */	? end_lobby(h, 2, out) : GZ_OK;   /* M-2 */
 funds-idle-never	core/lobby/host.c	    if ((paused || rule != GZ_RULE_CHECK) && h->cfg.funds_idle)	    if (0 && h->cfg.funds_idle)
 funds-idle-not-paused	core/lobby/host.c	    if ((paused || rule != GZ_RULE_CHECK) && h->cfg.funds_idle)	    if ((rule != GZ_RULE_CHECK) && h->cfg.funds_idle)
 funds-idle-hook-off	core/node/lobbyslot.c	        hc.funds_idle = ls_funds_idle;	        hc.funds_idle = NULL;

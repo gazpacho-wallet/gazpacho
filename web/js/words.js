@@ -346,7 +346,9 @@
     case "refused":
       return { strong: "Did not sign.", rest: (Array.isArray(p.failures) ? failuresText(p.failures) + " " : "") + "Nothing was signed. Nothing moved." };
     case "refused_by_host": return { strong: "The host refused your seat.", rest: "Nothing was signed. Nothing moved." };
-    case "lobby_cancelled": return { strong: "Lobby cancelled.", rest: "Not your doing. Nothing was signed. Nothing moved." };
+    case "lobby_cancelled":
+      if (p.reason === "host_could_not_fund") return { strong: "Lobby cancelled: the host could not fund it by its deadline.", rest: "Not your doing. Nothing was signed. Nothing moved." };
+      return { strong: "Lobby cancelled.", rest: "Not your doing. Nothing was signed. Nothing moved." };
     case "not_chosen": return { strong: "Not chosen.", rest: "The lobby started without you. Not your doing. Nothing was signed. Nothing moved." };
     case "idle_in_factory": return { strong: "In a live factory.", rest: "Nothing to do." };
     case "idle_no_factory": return { strong: "", rest: "Not in a factory. You cannot pay or receive until you are in a live one." };

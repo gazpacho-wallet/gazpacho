@@ -478,7 +478,7 @@ Member with role 1: waits for `round_propose`, up to the terms' step timeout. Me
 
 | Type | Field | Size | Required |
 |---|---|---|---|
-| 2 | `reason` | `u16` | Yes. 1 deadline below the minimum, 2 host's choice, 3 signing failed within its time budget, 4 the funding did not confirm: the host's funding deadline passed, or a funding input was spent elsewhere and buried (step P4.5) |
+| 2 | `reason` | `u16` | Yes. 1 deadline below the minimum, 2 host's choice, 3 signing failed within its time budget, 4 the funding did not confirm: the host's funding deadline passed, or a funding input was spent elsewhere and buried (step P4.5), 5 the host could not fund it by the deadline: the start rule asked for a ready check at or after the deadline and the host's wallet was short, or could not tell (vector M4) |
 | 240 | `sig` | 64 | Yes. Host's long-term key |
 
 Ends the lobby. Signed so that a member's history can show the host's own reason. The member saves the end, erases any secret nonces, and keeps every round identifier it saved (they stay refused). Duplicate: ignore.
