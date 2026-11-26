@@ -28,11 +28,13 @@ factory. That run lives on integration-slice1 and has no recording yet; it
 is added when its harness can write one. Standard library only.
 """
 import hashlib
+import http.server
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOL = os.path.join(os.path.dirname(os.path.dirname(HERE)), "tools", "chain-ledger.py")
@@ -132,7 +134,8 @@ def base_paths():
     return {k: {"status": 200, "body": v} for k, v in p.items()}
 
 
-GROUPS = ["--group", "host=" + CHANGE_SPK, "--group", "host=" + HOST_FIRST]
+HOST_GROUPS = ["--group", "host=" + CHANGE_SPK, "--group", "host=" + HOST_FIRST]
+GROUPS = HOST_GROUPS + ["--expect", "host=99701"]     # every named group has its expected total
 EXPECT = ["--expect", "in=100000", "--expect", "fees=59", "--expect", "host=99701", "--expect", "anchor=240",
           "--expect-fee", "%s=16" % FUND_TXID, "--expect-fee", "%s=17" % ROOT_TXID,
           "--expect-fee", "%s=26" % SWEEP_TXID]
@@ -251,6 +254,11 @@ def main():
         expect_code(work, "server-error", mutate(coin_hex=(500, "oops")), FOLLOW, 3, ["HTTP 500"])
         expect_code(work, "tip-not-number", mutate(tip="tip"), FOLLOW, 3, ["not a number"])
         expect_code(work, "redirect", mutate(coin_hex=(302, "")), FOLLOW, 3, ["HTTP 302"])
+        expect_code(work, "tip-not-ascii", mutate(tip="３３２５６０"), FOLLOW, 3,
+                    ["not a number"])
+        for name, h in (("height-bool", True), ("height-negative", -1), ("height-text", "332400")):
+            bad = json.dumps({"confirmed": True, "block_height": h, "block_hash": "0a" * 32})
+            expect_code(work, name, mutate(root_status=bad), FOLLOW, 3, ["has no block"])
 
         # 6. Not buried: the lower tip of the two counts.
         expect_code(work, "shallow", mutate(tip="332550"), FOLLOW + ["--min-conf", "3"], 1,
@@ -298,7 +306,9 @@ def main():
         c, out, err = run(work, "satoshi-to-stranger", sp, sp, FOLLOW)
         check(c == 1 and "left to a script in no group" in err and STRANGER in err,
               "one satoshi of the sweep to a script nobody named: exit 1", err)
-        c, out, err = run(work, "satoshi-to-stranger-allowed", sp, sp, FOLLOW + ["--allow-unnamed"])
+        c, out, err = run(work, "satoshi-to-stranger-allowed", sp, sp,
+                          ["--follow", FUND_TXID + ":0", "--funding", "100000", "--tree", ROOT_TXID] + HOST_GROUPS
+                          + ["--expect", "host=99700", "--allow-unnamed"])
         check(c == 0 and ("group script:%s 1" % STRANGER) in out,
               "the same with --allow-unnamed, the explicit opt-in: it balances and names the script", out + err)
 
@@ -358,6 +368,87 @@ def main():
                           ["--follow", FUND_TXID + ":0", "--funding", "100000", "--tree-file", tf] + GROUPS)
         check(c == 0, "the host's set read from its sweep-tree lines", out + err)
 
+        # 8k. 8e as a list: the altered root and its sweep listed, the host's root not on chain.
+        c, out, err = run(work, "list-root-satoshi-altered", ap, ap,
+                          [FUND_TXID, a_root, a_sweep, "--funding", "100000", "--tree", ROOT_TXID] + GROUPS)
+        check(c == 1 and ("%s looks like a tree transaction" % a_root) in err,
+              "8e as a list: a tree-shaped transaction outside the host's set, exit 1", err)
+
+        # 8l. A host's set unrelated to the list: run 1's root is then a tree-shaped stranger;
+        # and a list with no transaction of the host's set at all.
+        c, out, err = run(work, "list-tree-unrelated", base_paths(), base_paths(),
+                          LIST + ["--funding", "100000", "--tree", "00" * 32] + GROUPS)
+        check(c == 1 and ("%s looks like a tree transaction" % ROOT_TXID) in err,
+              "a list whose root is not in the (unrelated) host's set: exit 1", err)
+        c, out, err = run(work, "list-no-tree-tx", base_paths(), base_paths(),
+                          [FUND_TXID, "--funding", "100000", "--tree", "00" * 32, "--allow-unnamed"] + GROUPS)
+        check(c == 1 and "none of the host's tree transactions is in the set" in err,
+              "a list with no transaction of the host's set: exit 1", err)
+
+        # 8m. A named group with no expected total: all the money could go to it unchecked.
+        client = "5120" + "dd" * 32
+        c, out, err = run(work, "group-no-expect", base_paths(), base_paths(), FOLLOW + ["--group", "client=" + client])
+        check(c == 2 and "client" in err and "--expect" in err, "a --group without its --expect: usage, exit 2", err)
+        c, out, err = run(work, "group-unchecked", base_paths(), base_paths(),
+                          FOLLOW + ["--group", "client=" + client, "--unchecked-groups"])
+        check(c == 0, "the same with --unchecked-groups, the explicit opt-out", out + err)
+
+        # 8n, 8o. Money to a pay-to-anchor output of more than 240 sat, and burnt in an OP_RETURN:
+        # neither is the automatic anchor or data group.
+        for name, spk, what in (("value-to-p2a", P2A, "a pay-to-anchor output of 42,528 sat"),
+                                ("burn-op-return", "6a00", "42,528 sat in an OP_RETURN")):
+            v_txid, v_hex = serialise(2, [(ROOT_TXID, 0, 0xfffffffe), (ROOT_TXID, 1, 0xfffffffe)],
+                                      [(40000, HOST_FIRST), (42528, spk)], 332548, [[b"\x22" * 64], [b"\x55" * 64]])
+            vp = with_txs(base_paths(), (v_txid, v_hex, 332549, "0b"))
+            setp(vp, "/tx/%s/outspend/0" % ROOT_TXID, spent(v_txid, 0, 332549, "0b"))
+            setp(vp, "/tx/%s/outspend/1" % ROOT_TXID, spent(v_txid, 1, 332549, "0b"))
+            setp(vp, "/tx/%s/outspend/0" % v_txid, UNSPENT)
+            setp(vp, "/tx/%s/outspend/1" % v_txid, UNSPENT)
+            c, out, err = run(work, name, vp, vp, FOLLOW)
+            check(c == 1 and "left to a script in no group" in err and ("42528 sat to " + spk) in err,
+                  "%s is not an automatic group: exit 1" % what, err)
+
+        # 8p. The host's set: an anchor of 239 sat.
+        r_txid, r_hex = serialise(3, [(FUND_TXID, 0, 0xfffffffd)],
+                                  [(41277, BRANCH_A), (41278, BRANCH_B), (239, P2A)], 0, [[b"\x11" * 64]])
+        rp = with_txs(base_paths(), (r_txid, r_hex, 332400, "0a"))
+        setp(rp, "/tx/%s/outspend/0" % FUND_TXID, spent(r_txid, 0, 332400, "0a"))
+        for n in range(3):
+            setp(rp, "/tx/%s/outspend/%d" % (r_txid, n), UNSPENT)
+        c, out, err = run(work, "anchor-239", rp, rp,
+                          ["--follow", FUND_TXID + ":0", "--funding", "100000", "--tree", r_txid,
+                           "--allow-unnamed"] + GROUPS)
+        check(c == 1 and ("%s is in the host's set but is not version 3 with a 240-sat" % r_txid) in err,
+              "a tree transaction whose anchor is 239 sat: exit 1", err)
+
+        # 8q. A tree file: an uppercase txid, or a line that is not the host's, is a usage error.
+        for name, line in (("treefile-uppercase", SWEEP_TXID.upper()), ("treefile-unknown", "node txid=" + SWEEP_TXID)):
+            with open(tf, "w", encoding="utf-8") as h:
+                h.write(ROOT_TXID + "\n" + line + "\n")
+            c, out, err = run(work, name, base_paths(), base_paths(),
+                              ["--follow", FUND_TXID + ":0", "--funding", "100000", "--tree-file", tf] + GROUPS)
+            check(c == 2 and "tree.txt" in err, "a tree file with %r: usage, exit 2" % line[:20], err)
+
+        # 8r. A real redirect, from a loopback server: refused, never followed.
+        class Redirect(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", "http://ledger.invalid/elsewhere")
+                self.end_headers()
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), Redirect)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            url = "http://127.0.0.1:%d" % srv.server_address[1]
+            r = subprocess.run([sys.executable, "-I", TOOL, "--server", url, "--server", url, FUND_TXID,
+                                "--funding", "100000", "--no-tree"], capture_output=True, text=True, timeout=60)
+        finally:
+            srv.shutdown()
+        check(r.returncode == 3 and "HTTP 302" in r.stderr, "a server's redirect: refused as HTTP 302, exit 3", r.stderr)
+
         # 9. Usage.
         fa = os.path.join(work, "follow-a.json")
         r = subprocess.run([sys.executable, "-I", TOOL, "--server", "fixture:" + fa] + FOLLOW,
@@ -373,7 +464,9 @@ def main():
         for name, args, words in (
                 ("no --funding", ["--follow", FUND_TXID + ":0", "--tree", ROOT_TXID] + GROUPS, "--funding"),
                 ("no tree set", ["--follow", FUND_TXID + ":0", "--funding", "100000"] + GROUPS, "--tree"),
-                ("an --expect for a group nobody named", FOLLOW + ["--expect", "memebrs=0"], "memebrs")):
+                ("an --expect for a group nobody named", FOLLOW + ["--expect", "memebrs=0"], "memebrs"),
+                ("a --funding not in ASCII digits", ["--follow", FUND_TXID + ":0", "--funding", "１００",
+                                                     "--tree", ROOT_TXID] + GROUPS, "not an amount")):
             r = subprocess.run([sys.executable, "-I", TOOL, "--server", "fixture:" + fa, "--server", "fixture:" + fa]
                                + args, capture_output=True, text=True, timeout=60)
             check(r.returncode == 2 and words in r.stderr, "%s: usage, exit 2" % name, r.stderr)
