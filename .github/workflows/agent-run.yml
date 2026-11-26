@@ -187,6 +187,7 @@ jobs:
             .github/actions
             tools/ci-summary.py
             tools/ci-valgrind.py
+            tools/valgrind-tests.py
           sparse-checkout-cone-mode: false
       - name: Keep the tools' copy out of the tested tree
         # tools/mutate-node.py copies untracked files too (git ls-files -o

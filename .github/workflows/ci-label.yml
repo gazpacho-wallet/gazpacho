@@ -47,18 +47,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.event.pull_request.head.sha }}
+          PR: ${{ github.event.pull_request.number }}
         run: |
           set -eu
-          # The newest ci.yml run of this commit from a pull request event;
-          # wait while it runs (a re-run is allowed only once it is done).
+          # The newest ci.yml run of this commit from a pull request event
+          # that belongs to this pull request (the same commit can head
+          # another pull request); wait while it runs (a re-run is allowed
+          # only once it is done).
           for i in $(seq 1 170); do
-            line=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?event=pull_request&head_sha=$SHA&per_page=1" \
-                     --jq '.workflow_runs[0] | select(. != null) | "\(.id) \(.status)"')
+            line=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?event=pull_request&head_sha=$SHA&per_page=50" \
+                     --jq "[.workflow_runs[] | select(any(.pull_requests[]; .number == $PR))][0] | select(. != null) | \"\\(.id) \\(.status)\"")
             if [ -n "$line" ] && [ "${line#* }" = completed ]; then break; fi
             sleep 30
           done
           [ -n "$line" ] && [ "${line#* }" = completed ] ||
-            { echo "::error::no finished CI run of $SHA to re-run; re-run signer boundary by hand"; exit 1; }
+            { echo "::error::no finished CI run of $SHA for pull request $PR to re-run; re-run signer boundary by hand"; exit 1; }
           run=${line%% *}
           job=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/jobs?per_page=100" \
                   --jq '.jobs[] | select(.name == "signer boundary") | "\(.id) \(.conclusion)"' | head -n 1)
