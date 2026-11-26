@@ -560,8 +560,9 @@ bool gz_es_reason_is_already_known(const char *reason) {
 
 #define ES_PATH_MAX 192
 #define ES_MAX_BACKOFF_MS 30000u
-/* A server's throttle (429, "too many requests"): waited out, ES_THROTTLE_WAIT_MS first and twice
- * as long each time (to ES_MAX_BACKOFF_MS), up to ES_THROTTLE_RETRIES times per request, none
+/* A server's throttle (429, "too many requests"), for a client that asks (throttle_waits): waited
+ * out, ES_THROTTLE_WAIT_MS first and twice as long each time (to ES_MAX_BACKOFF_MS), up to
+ * throttle_waits times per request (the program: ES_THROTTLE_RETRIES), none
  * counted as one of max_attempts; then this client keeps its requests ES_THROTTLED_INTERVAL_MS
  * apart. Public Esplora servers throttle a burst (signet run 2: mempool.space after about 27
  * requests at four a second, with a 429 that three quick tries could not outlast). */
@@ -672,7 +673,8 @@ static gz_chain_result es_request_as(esplora *es, bool post, const char *content
       *len = resp.len;
       if (resp.status == 429) {
         /* refused before doing anything: safe to repeat, once the throttle has passed */
-        if (throttles >= ES_THROTTLE_RETRIES) break;
+        if (es->cfg.throttle_waits == 0) continue; /* one of max_attempts (the default) */
+        if (throttles >= es->cfg.throttle_waits) break;
         uint64_t wait = (uint64_t)ES_THROTTLE_WAIT_MS << throttles;
         if (wait > ES_MAX_BACKOFF_MS) wait = ES_MAX_BACKOFF_MS;
         throttles++;
@@ -1328,7 +1330,7 @@ gz_chain_result gz_esplora_create(const gz_esplora_config *cfg, const gz_http *h
   }
   if (cfg->timeout_ms == 0 || cfg->timeout_ms > 120000 || cfg->max_attempts == 0 ||
       cfg->max_attempts > 8 || cfg->backoff_ms > ES_MAX_BACKOFF_MS ||
-      cfg->min_interval_ms > 60000 || cfg->max_response_bytes < 4096 ||
+      cfg->min_interval_ms > 60000 || cfg->max_response_bytes < 4096 || cfg->throttle_waits > 16 ||
       cfg->max_response_bytes > 16u * 1024 * 1024)
     return GZ_CHAIN_INVALID_ARG;
   esplora *es = calloc(1, sizeof *es);

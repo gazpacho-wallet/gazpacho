@@ -63,6 +63,11 @@ typedef struct gz_esplora_config {
   uint32_t backoff_ms;
   /* Least time between the starts of two requests to this server. */
   uint32_t min_interval_ms;
+  /* How many times a 429 (the server's throttle) is waited out per request: 2 s first, twice
+   * as long each time to 30 s, none counted as one of max_attempts, and the client then keeps
+   * its requests at least 1 s apart. 0 (the default): a 429 is one of max_attempts, retried
+   * after backoff_ms like any failure, for a caller with retries of its own. At most 16. */
+  uint32_t throttle_waits;
   /* Optional: the server's pace shared with the program's other clients of it (above).
    * NULL: this client's own min_interval_ms alone. Not copied: it must outlive the client. */
   gz_esplora_pacer *pacer;

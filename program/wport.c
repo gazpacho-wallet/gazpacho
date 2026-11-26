@@ -892,6 +892,7 @@ static void *scan_thread(void *arg)
     gz_esplora_config_default(&cfg);
     cfg.base_url = w->url;
     cfg.pacer = gzp_chain_pacer(w->url, w->wnet == GZW_NET_REGTEST);   /* the server's pace, with the chain adapter's */
+    cfg.throttle_waits = 6;   /* a 429 waited out, as the chain adapter's clients do (B22, F22) */
     if (gz_esplora_create(&cfg, &http, &view) != GZ_CHAIN_OK) {
         gz_http_curl_destroy(&http);
         return NULL;

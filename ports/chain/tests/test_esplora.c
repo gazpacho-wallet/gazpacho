@@ -45,6 +45,22 @@ static void fx_open_paced(fixture *x, gz_esplora_pacer *p, fake_http *shared) {
   }
 }
 
+/* A backend that waits out a 429 up to `waits` times (gz_esplora_config.throttle_waits). */
+static void fx_open_throttled(fixture *x, uint32_t waits) {
+  gz_esplora_config cfg;
+  gz_http http;
+  fake_init(&x->fake);
+  fake_load_honest(&x->fake, BASE, false);
+  http = fake_transport(&x->fake);
+  gz_esplora_config_default(&cfg);
+  cfg.base_url = BASE;
+  cfg.throttle_waits = waits;
+  if (gz_esplora_create(&cfg, &http, &x->chain) != GZ_CHAIN_OK) {
+    fprintf(stderr, "cannot create backend\n");
+    exit(2);
+  }
+}
+
 static void fx_close(fixture *x) {
   gz_chain_destroy(&x->chain);
   fake_free(&x->fake);
@@ -977,7 +993,7 @@ static void test_rate_limit(test_state *T) {
 static void test_throttle_waited_out(test_state *T) {
   fixture x;
   uint8_t h[GZ_HASH_LEN];
-  fx_open(&x);
+  fx_open_throttled(&x, 6);
   const char *url = BASE "/block-height/329438";
   fake_once(&x.fake, false, url, GZ_HTTP_OK, 429, "Too Many Requests", 4);
   size_t s0 = x.fake.n_sleeps;
@@ -994,6 +1010,15 @@ static void test_throttle_waited_out(test_state *T) {
   unsigned r0 = x.fake.requests;
   for (int i = 0; i < 3; i++) CHECK_RESULT(gz_chain_block_hash(&x.chain, 329438, h), GZ_CHAIN_OK);
   for (unsigned i = r0; i < x.fake.requests; i++) CHECK(x.fake.starts[i] - x.fake.starts[i - 1] >= 1000);
+  /* the default (no throttle_waits): a 429 is one of max_attempts, as before */
+  {
+    fixture z;
+    fx_open(&z);
+    fake_once(&z.fake, false, url, GZ_HTTP_OK, 429, "Too Many Requests", 50);
+    CHECK_RESULT(gz_chain_block_hash(&z.chain, 329438, h), GZ_CHAIN_UNREACHABLE);
+    CHECK(z.fake.requests == 3);
+    fx_close(&z);
+  }
   /* a server that keeps refusing: six waits, seven requests, then unreachable */
   fake_once(&x.fake, false, url, GZ_HTTP_OK, 429, "Too Many Requests", 50);
   x.fake.requests = 0;
