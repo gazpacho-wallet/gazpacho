@@ -1896,7 +1896,8 @@ static void test_forget_frees_slot(void)
     for (int i = 0; i < 20; i++) {
         CHECK(plan(&w, 100000, tx, &len) == 1);
         CHECK(held_by_txid_tag(&w, 0xa0) != 0);
-        if (w.port.forget) w.port.forget(w.port.ctx, tx, len);   /* live, say */
+        static const uint8_t none[GZ_FUND_MAX_INPUTS];
+        if (w.port.forget) w.port.forget(w.port.ctx, tx, len, none, 1);   /* failed: the coin is free again */
         CHECK(held_by_txid_tag(&w, 0xa0) == 0);
     }
     gzp_wport_close(&w);
@@ -2020,6 +2021,58 @@ static void test_failed_retry_caps(void)
     CHECK(gzp_wport_failed_retry_ms(15000, 50, 1) == GZP_WPORT_RETRY_CAP_MS);
 }
 
+/* F-1 (review B of PR 101, round 2): a factory gone live spent its plan's
+ * coins: forget drops them from the list, so the next plan cannot pick a
+ * spent coin (its broadcast would be refused, missing inputs). */
+static void test_forget_live_drops_coins(void)
+{
+    static gzp_wport_t w;
+    mark_store ms;
+    static uint8_t tx[GZ_FUND_MAX_TX], t2[GZ_FUND_MAX_TX];
+    gz_fund_prevout_t prev[GZ_FUND_MAX_INPUTS];
+    size_t len = 0, l2 = 0, np = 0;
+    uint8_t spent[GZ_FUND_MAX_INPUTS];
+    memset(&ms, 0, sizeof ms);
+    open_marked(&w, &ms);
+    many_coins(&w, 2, 0xe0);   /* 0xe0 at receive 0, 0xe1 at receive 1 */
+    CHECK(plan_prev(&w, 100000, tx, &len, prev, &np) == 1 && np == 1);
+    int first = held_by_txid_tag(&w, 0xe0) ? 0xe0 : 0xe1;
+    memset(spent, 1, sizeof spent);
+    if (w.port.forget) w.port.forget(w.port.ctx, tx, len, spent, np);   /* live */
+    CHECK(held_by_txid_tag(&w, (uint8_t)first) == -1);   /* gone from the list */
+    CHECK(plan(&w, 100000, t2, &l2) == 1);
+    CHECK(held_by_txid_tag(&w, (uint8_t)(first ^ 1)) == 1);   /* the other coin */
+    gzp_wport_close(&w);
+}
+
+/* F-1: a dead factory: the input spent elsewhere leaves the list, the others
+ * are the wallet's again. */
+static void test_forget_dead_mix(void)
+{
+    static gzp_wport_t w;
+    mark_store ms;
+    static uint8_t tx[GZ_FUND_MAX_TX], t2[GZ_FUND_MAX_TX];
+    gz_fund_prevout_t prev[GZ_FUND_MAX_INPUTS];
+    size_t len = 0, l2 = 0, np = 0;
+    uint8_t spent[GZ_FUND_MAX_INPUTS];
+    gzt_tx parsed;
+    int a, b;
+    memset(&ms, 0, sizeof ms);
+    open_marked(&w, &ms);
+    many_coins(&w, 2, 0xf0);
+    CHECK(plan_prev(&w, 700000, tx, &len, prev, &np) == 1 && np == 2);   /* both coins */
+    CHECK(gzt_tx_parse(tx, len, &parsed) == GZT_OK);
+    a = parsed.in[0].prev_txid[0];   /* input 0: spent elsewhere */
+    b = parsed.in[1].prev_txid[0];
+    memset(spent, 0, sizeof spent);
+    spent[0] = 1;
+    if (w.port.forget) w.port.forget(w.port.ctx, tx, len, spent, np);   /* dead */
+    CHECK(held_by_txid_tag(&w, (uint8_t)a) == -1);   /* gone */
+    CHECK(held_by_txid_tag(&w, (uint8_t)b) == 0);    /* the wallet's again, free */
+    CHECK(plan(&w, 100000, t2, &l2) == 1 && held_by_txid_tag(&w, (uint8_t)b) == 1);
+    gzp_wport_close(&w);
+}
+
 int main(void)
 {
     secp = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
@@ -2093,6 +2146,8 @@ int main(void)
     test_adopt_without_change();
     test_adopt_refusals();
     test_failed_retry_caps();
+    test_forget_live_drops_coins();
+    test_forget_dead_mix();
     secp256k1_context_destroy(secp);
     printf("program_wport: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;

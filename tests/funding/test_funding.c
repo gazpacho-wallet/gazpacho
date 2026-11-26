@@ -150,6 +150,7 @@ static void test_auto_live(void)
     CHECK(t->h.n == 1 && t->h.r[0].kind == GZ_FUND_R_LIVE && t->h.r[0].host == 1);
     CHECK(memcmp(t->h.r[0].funding.txid, p.funding.txid, 32) == 0);
     CHECK(t->w.forgot == 1);   /* the wallet frees its hold: the factory is live (M-1, review B of PR 101) */
+    CHECK(t->w.forgot_n > 0 && t->w.forgot_spent == t->w.forgot_n);   /* every input spent (F-1) */
     CHECK(t->h.unwatched == 2 && t->f.n_watches == 0);
     CHECK(gz_fund_scope_state(&t->f, SCOPE_A, NULL) == GZ_FUND_SCOPE_LIVE);
     CHECK(gz_fund_scope_state(&t->f, SCOPE_B, NULL) == GZ_FUND_SCOPE_NONE);
@@ -454,6 +455,8 @@ static void test_abandon_replace(void)
     CHECK(ft_ev(t, &e) == GZ_OK);
     CHECK(ft_saved_state(t) == GZ_FUND_ST_DEAD && t->h.n == 1 && t->f.n_watches == 0);
     CHECK(gz_fund_scope_state(&t->f, SCOPE_A, NULL) == GZ_FUND_SCOPE_DEAD);
+    /* dead: only the input spent elsewhere (the spend-back's) is told spent (F-1) */
+    CHECK(t->w.forgot == 1 && t->w.forgot_n >= 1 && t->w.forgot_spent == 1 && t->w.forgot_spent0 == 1);
     free(t);
 }
 
