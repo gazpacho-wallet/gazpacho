@@ -7,7 +7,7 @@
 - Q3 A: the regtest suite becomes a required check after seven consecutive green runs; R1 and R2 stay on the roadmap.
 - Q4 A: P5 is the recover call with a preview the host confirms, plus the automatic recovery of H15.
 
-Q2 is still open. The coordinator's proposed middle path is written into 2.7 and section 7.
+Q2 was answered the same day by owner decision 17c, on stuck fundings (PR #108). 2.7 and section 7 follow it.
 
 Slice 1.5 runs every path a factory can take *without* the channel engine, with the Slice 1 programs: the 13 signet tests S1 to S13 that `spec/exit.md` 11.2 adopted from the exit-path audit of 2026-11-14, plus the controlled-chain tests that used to wait for "a node of our own". Members are owed nothing in every test (no channels yet), so the INTERIM spend rules of `spec/exit.md` 3.2 and 4.5 apply throughout.
 
@@ -210,14 +210,37 @@ Ledger: positive half: the funding's txid is the one every member signed for; th
 
 Regtest: on 29.1 and 29.0 nodes, a minute each. Signet: not in the milestone set; S12 decides whether it is worth one run there.
 
-**Open with the owner (Q2).** The funding cannot be replaced by fee: the tree is pre-signed against its txid, so a replacement kills it (C-7, H16). A stuck funding can only be bumped by a child.
+**Answered by the owner (Q2, decision 17c, 2026-11-26; PR #108).** The funding stays version 2. It cannot be replaced by fee, because the tree is pre-signed against its txid (C-7, H16), so a stuck funding is helped only by a child (CPFP).
+1. Coin selection prefers leaving a change output, adding a small coin if needed.
+2. When no change is possible, the funding preview says so and offers a 240-sat P2A "speed-up output". The host setting "Speed-up output on fundings" is Auto (the default: on near the relay floor, 0.1 to 1 sat/vB), Always or Never. **It is a host setting only:** not in the lobby terms, not sent to members, and members cannot object. Their checks read only the output the tree spends (`spec/safety-rule.md` C1).
+3. "Never", with no change and no anchor, is allowed. When the funding has no speed-up handle and its rate is within a margin (for example 2×) of the higher of the relay floor and the servers' current mempool minimum (the higher of the two answers), the preview warns: "This funding can't be sped up if it gets stuck. If it doesn't confirm within M blocks, the lobby ends and the members are released. The coins stay yours." The warning never blocks.
+4. The host gets a "Speed up" button with a preview. It spends the change or the speed-up output, and never replaces the funding.
+5. Status for the host and members: "Funding not confirmed: waited N blocks; the lobby ends in M blocks if it doesn't confirm". It turns amber after a normal wait and red when M is 6 or fewer. Members see "The host's funding is waiting; you are released automatically in M blocks" and have no button.
+6. Version 3 for fundings is reconsidered before mainnet.
 
-**The coordinator's proposed middle path, pending the owner's decision:** keep the funding at version 2, but always give it an output the host can bump from. That is the host's change when there is change, or a non-dust 240-sat P2A output when change would be dust. S7's positive half then also covers the P2A case: a funding with no change, bumped by a child on its P2A.
+**What S7 tests, after 17c.** Each run checks the members' verdicts and the ledger (P1), and that no member's check looks at any output but the factory's.
 
-If adopted, it changes:
-- the wallet's funding builder (`wallet/tx/src/funding.c`);
-- H16's wording (`spec/safety-rule.md`, `spec/exit.md` 5.7);
-- the funding's size and fee vectors.
+| Run | Funding shape | Expected |
+|---|---|---|
+| a | Change output | The host's "Speed up" child on the change confirms the same funding txid; members go Live at burial |
+| b | No change possible, Auto near the floor | The speed-up output is added, and a child on it confirms the same txid |
+| c | "Never" (no change, no anchor) at a rate within the warning margin | The preview warns and does not block; the host goes ahead. If the funding does not confirm, members are released at the funding deadline, and the coins stay the host's |
+| d | Run c, read against two servers whose mempool minimums differ (shim option, P7) | The warning uses the higher of the two answers |
+| e | A version-2 funding below every server's floor (the negative half, as before) | Refused alone and in a package; nothing confirms; members are Abandoned at the deadline |
+| f | The waiting status, host and members | N and M count correctly; amber after the normal wait; red at M ≤ 6 |
+
+**New pieces this adds** (folded into P6c and a new **P9**):
+- P6c's test switches set the funding's shape and rate.
+- **P9** is the feature itself, host-only:
+  - coin selection preferring change;
+  - the speed-up output and its setting;
+  - the warning;
+  - the "Speed up" button and its preview;
+  - the waiting status;
+  - the chain port's "current minimum fee" read (Esplora's fee estimates and mempool information, the higher of the servers' answers).
+- Two host-side checks have to change first, because each refuses a funding with a P2A output or with no change:
+  - the funding engine's plan check, which requires exactly two outputs (`core/funding/funding.c`, `plan_ok`);
+  - the signer's adopt check, which requires every other output to be change (`docs/notes/signer.md`, `gz_sg_fund_adopt` step 3).
 
 ### 2.8 S8: the host replaces the funding by fee (C-7, negative)
 
@@ -424,6 +447,18 @@ S13 needs no program switch: the hiding is in the test's shim (P7), so the progr
 - Needs terms whose shapes reach 512 members (`terms.md` shape table; `tree_shapes` already builds to 1,000 [`TESTING.md` Part 1]).
 - Depends on: P1, P3.
 
+### P9. Stuck fundings, host-only (integration; owner decision 17c)
+- **Spec:** owner decision 17c (`docs/ux/decisions.md`); `spec/safety-rule.md` C1 (the member reads only the output the tree spends) and H16; `spec/exit.md` 5.7; `local-api.md`, new: the speed-up setting, the funding preview's warning, the "Speed up" preview and call, and the waiting status for host and members.
+- **What:**
+  - coin selection preferring change;
+  - the 240-sat P2A speed-up output (Auto, Always, Never);
+  - the warning when there is no speed-up handle and the rate is within 2× of the higher of the floor and the servers' current mempool minimum;
+  - "Speed up" by CPFP only;
+  - the countdown to the funding deadline, amber and red;
+  - the chain port's "current minimum fee" read.
+- **Tests first:** S7 runs a to f (2.7). The funding engine's plan check and the signer's adopt check accept a P2A output and a funding with no change, with tests for each. No member check changes, and a test shows that a member's verdict is the same for each funding shape.
+- **Depends on:** the wallet port (integration), P2 for packages, #55 for the views.
+
 ---
 
 ## 4. What can start before Slice 1 is done
@@ -511,12 +546,9 @@ Its record, with every txid, is the public proof the audit proposed (a page of s
 - **Q3, A.** The suite becomes required after seven consecutive green runs, which may be dispatched back to back. R1 and R2 stay on the roadmap (1.3, 6.4).
 - **Q4, A.** P5 is the local-API recover call with a preview of the transactions, amounts, fees and destination, which the host confirms, plus the automatic recovery after each timeout while no member is owed (H15). It is on the roadmap (P5, 6.4).
 
-**Still open:**
+- **Q2, decision 17c.** A stuck funding is bumped by a child on its change or on a 240-sat P2A speed-up output, and is never replaced. The speed-up output is a host-only setting (Auto, Always, Never). "Never" is allowed, with a non-blocking warning near the floor. The host gets a "Speed up" button with a preview; host and members see a waiting status. The funding stays version 2, and version 3 is reconsidered before mainnet (2.7, P9).
 
-**Q2. S7 and the funding's bump.** Our funding is version 2 and cannot be replaced by fee, because the tree is signed against its txid. So it can only be bumped by a child, and a version-2 parent below the floor cannot be rescued that way.
-- A: test the two halves of 2.7 as they stand.
-- B: make the funding TRUC with its own anchor, which changes H16 and the wallet's funding builder.
-- **Proposed by the coordinator, pending the owner:** keep the funding at version 2, but always give it a bumpable output: the host's change, or a non-dust 240-sat P2A when change would be dust (2.7).
+No question is open.
 
 ## 8. What this plan did not check
 
