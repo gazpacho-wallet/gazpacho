@@ -14,6 +14,13 @@
 #include "gzp.h"
 #include "pchain.h"
 
+gz_esplora_pacer *gzp_chain_pacer(const char *url, int local)
+{
+    (void)url;
+    (void)local;
+    return NULL;   /* the test first */
+}
+
 /* The worker holds every watch the node can ask for at once; else a FULL
  * answer would come back at every start (review of PR 50, M2). */
 _Static_assert(GZ_NODE_MAX_WATCHES <= GZP_MAX_WATCHES, "the chain worker holds fewer watches than the node asks for");

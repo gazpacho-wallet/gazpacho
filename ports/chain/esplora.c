@@ -1195,6 +1195,17 @@ static const gz_chain_ops es_ops = {
     .destroy = es_destroy,
 };
 
+int gz_esplora_pacer_init(gz_esplora_pacer *p, uint32_t interval_ms) {
+  if (p == NULL) return 0;
+  memset(p, 0, sizeof *p);
+  p->interval_ms = interval_ms;
+  return pthread_mutex_init(&p->mu, NULL) == 0;
+}
+
+void gz_esplora_pacer_destroy(gz_esplora_pacer *p) {
+  if (p != NULL) pthread_mutex_destroy(&p->mu);
+}
+
 void gz_esplora_config_default(gz_esplora_config *cfg) {
   if (cfg == NULL) return;
   memset(cfg, 0, sizeof *cfg);

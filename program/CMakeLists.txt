@@ -73,6 +73,8 @@ target_compile_options(gzp_silent_peer PRIVATE ${GZ_NEW_CODE_WARNINGS})
 gz_add_test(program_store ${CMAKE_SOURCE_DIR}/tests/program/test_store.c gazpacho_program_test)
 gz_add_test(program_options ${CMAKE_SOURCE_DIR}/tests/program/test_options.c gazpacho_program_test)
 gz_add_test(program_net ${CMAKE_SOURCE_DIR}/tests/program/test_net.c gazpacho_program_test)
+# One pace per chain server for all the program's clients (signet run 2's preparation).
+gz_add_test(program_chain_pace ${CMAKE_SOURCE_DIR}/tests/program/test_chain_pace.c gazpacho_program_test)
 # The funding engine's wallet port (wport.c): holds across a publish, change
 # only once buried, can_plan as plan does (review of PR 80, N-1).
 gz_add_test(program_wport ${CMAKE_SOURCE_DIR}/tests/program/test_wport.c gazpacho_program_test)

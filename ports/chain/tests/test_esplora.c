@@ -27,6 +27,24 @@ static void fx_open(fixture *x) {
   }
 }
 
+/* A backend with a pacer; with `shared`, on that fixture's transport and clock instead of a new one. */
+static void fx_open_paced(fixture *x, gz_esplora_pacer *p, fake_http *shared) {
+  gz_esplora_config cfg;
+  gz_http http;
+  if (!shared) {
+    fake_init(&x->fake);
+    fake_load_honest(&x->fake, BASE, false);
+  }
+  http = fake_transport(shared ? shared : &x->fake);
+  gz_esplora_config_default(&cfg);
+  cfg.base_url = BASE;
+  cfg.pacer = p;
+  if (gz_esplora_create(&cfg, &http, &x->chain) != GZ_CHAIN_OK) {
+    fprintf(stderr, "cannot create backend\n");
+    exit(2);
+  }
+}
+
 static void fx_close(fixture *x) {
   gz_chain_destroy(&x->chain);
   fake_free(&x->fake);
@@ -984,6 +1002,27 @@ static void test_throttle_waited_out(test_state *T) {
   fx_close(&x);
 }
 
+/* Two clients of one server share a pacer (one program's worker and wallet scan): their
+ * requests, taken in turns, start at least the pacer's interval apart, though each client's
+ * own min_interval_ms (250) would allow four a second. */
+static void test_shared_pacer(test_state *T) {
+  fixture x, y;
+  uint8_t h[GZ_HASH_LEN];
+  gz_esplora_pacer p;
+  CHECK(gz_esplora_pacer_init(&p, 1000));
+  fx_open_paced(&x, &p, NULL);
+  fx_open_paced(&y, &p, &x.fake);   /* one transport and one clock for both */
+  for (int i = 0; i < 4; i++) {
+    CHECK_RESULT(gz_chain_block_hash(&x.chain, 329438, h), GZ_CHAIN_OK);
+    CHECK_RESULT(gz_chain_block_hash(&y.chain, 329438, h), GZ_CHAIN_OK);
+  }
+  CHECK(x.fake.requests == 8);
+  for (unsigned i = 1; i < x.fake.requests; i++) CHECK(x.fake.starts[i] - x.fake.starts[i - 1] >= 1000);
+  gz_chain_destroy(&y.chain);
+  fx_close(&x);
+  gz_esplora_pacer_destroy(&p);
+}
+
 static void test_time_limit_on_every_request(test_state *T) {
   fixture x;
   gz_chain_tip tip;
@@ -1911,6 +1950,7 @@ int main(void) {
   RUN(test_retries_and_backoff);
   RUN(test_rate_limit);
   RUN(test_throttle_waited_out);
+  RUN(test_shared_pacer);
   RUN(test_time_limit_on_every_request);
   RUN(test_size_caps);
   RUN(test_small_buffer);
