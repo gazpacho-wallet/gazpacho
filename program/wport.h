@@ -39,7 +39,7 @@
 #include "unlock.h"
 
 #define GZP_WPORT_COINS 256
-#define GZP_WPORT_PLANS GZ_FUND_MAX_FACTORIES   /* one per factory the engine keeps (M-1, review B of PR 101) */
+#define GZP_WPORT_PLANS ((int)GZ_FUND_MAX_FACTORIES)   /* one per factory the engine keeps (M-1, review B of PR 101) */
 #define GZP_WPORT_TIP_RETRY_MS 15000   /* a tip that could not be read is asked again */
 #define GZP_WPORT_RETRY_CAP_MS 600000  /* a wide read not settled is asked again at most this far apart */
 #define GZP_WPORT_RETRY_CAP_PLAIN_MS 120000 /* a scan that published nothing, with no wide read pending */
