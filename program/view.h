@@ -45,9 +45,12 @@ int gzp_view_lobby_class(uint32_t kind);
  * (joined or hosted: the item's GZ_VAT_ROLE, else the lobby's own view kind,
  * else the code), and
  * params (lobby_id and lobby_role, and need_sat, have_sat for
- * host_funds_short, count for member_refused). Oldest first (since_at, then
- * id); the server orders them by tier. An item of an unknown code, or whose
- * lobby has no role, is left out and counted in `skipped`. */
+ * host_funds_short, count for member_refused, each required). Oldest first
+ * (since_at, then id); the server orders them by tier. An item of an unknown
+ * code, whose lobby has no role, or without its numbers is left out, counted
+ * in `skipped`, and named in `dropped` (the first GZP_ATT_DROPPED_MAX, as
+ * "id why") for the program's log. */
+#define GZP_ATT_DROPPED_MAX 8
 #define GZP_ATT_PARAMS_MAX 192
 typedef struct {
     char id[GZ_API_MAX_ATTENTION][GZP_VIEW_ID_MAX + 1];
@@ -56,6 +59,7 @@ typedef struct {
     gz_api_attention item[GZ_API_MAX_ATTENTION];
     int n;
     int skipped;
+    char dropped[GZP_ATT_DROPPED_MAX][GZP_VIEW_ID_MAX + 24];
 } gzp_attention_t;
 void gzp_view_attention(const gzp_view_t *v, gzp_attention_t *out);
 

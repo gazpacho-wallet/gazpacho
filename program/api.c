@@ -174,6 +174,18 @@ static int status(void *be, gz_api_status_facts *f)
         gzp_view_attention(&a->view, &a->attention);
         for (int i = 0; i < a->attention.n; i++) f->attention[i] = a->attention.item[i];
         f->nattention = a->attention.n;
+        {   /* items left out are logged, once per change (review A of #107, L3) */
+            char said[sizeof a->attention_dropped_said];
+            size_t at = 0;
+            said[0] = 0;
+            for (int i = 0; i < a->attention.skipped && i < GZP_ATT_DROPPED_MAX && at < sizeof said; i++)
+                at += (size_t)snprintf(said + at, sizeof said - at, "%s%s", i ? ", " : "", a->attention.dropped[i]);
+            if (strcmp(said, a->attention_dropped_said) != 0) {
+                if (a->attention.skipped) gzp_log("attention: %d item(s) left out of the status: %s%s", a->attention.skipped, said,
+                                                  a->attention.skipped > GZP_ATT_DROPPED_MAX ? ", ..." : "");
+                snprintf(a->attention_dropped_said, sizeof a->attention_dropped_said, "%s", said);
+            }
+        }
     }
     return 0;
 }

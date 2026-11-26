@@ -141,6 +141,14 @@ typedef struct {
     uint64_t since;
 } att_ref_t;
 
+/* An item left out of the list: counted, and named for the log. */
+static void att_drop(gzp_attention_t *out, const char *id, const char *why)
+{
+    if (out->skipped < GZP_ATT_DROPPED_MAX)
+        snprintf(out->dropped[out->skipped], sizeof out->dropped[out->skipped], "%s %s", id, why);
+    out->skipped++;
+}
+
 void gzp_view_attention(const gzp_view_t *v, gzp_attention_t *out)
 {
     att_ref_t ref[GZP_VIEW_MAX];
@@ -166,14 +174,14 @@ void gzp_view_attention(const gzp_view_t *v, gzp_attention_t *out)
         uint8_t code = gz_rec_find(all, GZ_VAT_CODE, &f) == 1 && f.len == 1 ? f.data[0] : 0;
         const char *name = att_code(code), *role;
         if (!name || k == GZ_API_MAX_ATTENTION || gz_rec_find(all, GZ_VAT_LOBBY, &f) != 1 || !printable_id(f.data, f.len)) {
-            out->skipped++;
+            att_drop(out, ref[i].o->id, !name ? "unknown_code" : k == GZ_API_MAX_ATTENTION ? "list_full" : "no_lobby");
             continue;
         }
         memcpy(out->lobby[k], f.data, f.len);
         out->lobby[k][f.len] = 0;
         role = att_role(v, all, out->lobby[k], code);
         if (!role) {
-            out->skipped++;
+            att_drop(out, ref[i].o->id, "no_role");
             continue;
         }
         snprintf(out->id[k], sizeof out->id[k], "%s", ref[i].o->id);
@@ -181,14 +189,19 @@ void gzp_view_attention(const gzp_view_t *v, gzp_attention_t *out)
         if (code == GZ_ATT_HOST_FUNDS_SHORT) {
             gz_bytes_t nd, hv;
             if (gz_rec_find(all, GZ_VAT_NEED, &nd) != 1 || nd.len != 8 || gz_rec_find(all, GZ_VAT_HAVE, &hv) != 1 || hv.len != 8) {
-                out->skipped++;
+                att_drop(out, ref[i].o->id, "no_amounts");
                 continue;
             }
             w += snprintf(out->params[k] + w, sizeof out->params[k] - (size_t)w, ",\"need_sat\":%llu,\"have_sat\":%llu",
                           (unsigned long long)gz_get_u64(nd.data), (unsigned long long)gz_get_u64(hv.data));
         }
-        if (code == GZ_ATT_MEMBER_REFUSED && gz_rec_find(all, GZ_VAT_COUNT, &f) == 1 && f.len == 2)
+        if (code == GZ_ATT_MEMBER_REFUSED) {                 /* always with its count (review A of #107, L4) */
+            if (gz_rec_find(all, GZ_VAT_COUNT, &f) != 1 || f.len != 2) {
+                att_drop(out, ref[i].o->id, "no_count");
+                continue;
+            }
             w += snprintf(out->params[k] + w, sizeof out->params[k] - (size_t)w, ",\"count\":%u", (unsigned)gz_get_u16(f.data));
+        }
         snprintf(out->params[k] + w, sizeof out->params[k] - (size_t)w, "}");
         out->item[k].id = out->id[k];
         out->item[k].code = name;

@@ -80,7 +80,7 @@ static const char *const ATTENTION[][2] = {
     {"unexplained_spend", "at_risk"},
     {"unlock_to_take_part", "important"},   /* draft 5, 14.3 rule 3: never act_now, no check waits for it */
     {"member_refused", "important"},        /* draft 5 gap 4, the host's side (15.3) */
-    {"lobby_left_out", "important"},        /* the core's: a lobby whose keys this start could not give (H1); not yet in 11.4's table */
+    {"lobby_left_out", "important"},        /* the core's: a lobby whose keys this start could not give (H1); 11.4, K35 */
 };
 
 const char *gz_attention_tier(const char *code, int at_risk_override)
@@ -104,7 +104,7 @@ int gz_tier_rank(const char *tier)
     return 6;
 }
 
-/* The locked headline table (4.7), first match wins; *tier NULL for "—". */
+/* The locked headline table (4.7), first match wins; *tier NULL for "â€”". */
 const char *gz_headline(const gz_api_status_facts *f, const char **tier)
 {
     unsigned x = f->locked_flags;

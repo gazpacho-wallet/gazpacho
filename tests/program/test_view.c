@@ -77,8 +77,14 @@ int main(void)
     item("att_00000000000000e5", 99, "lob_00000000000000e5", 5, GZ_ROLE_JOINED, 0, 0, 0);
     /* a member's locked seat with no role record and no view: the code says joined */
     item("att_00000000000000f6", GZ_ATT_UNLOCK_TO_TAKE_PART, "lob_00000000000000f6", 10, 0, 0, 0, 0);
+    /* member_refused always has its count (review A of #107, L4): without it, left out */
+    item("att_00000000000000a8", GZ_ATT_MEMBER_REFUSED, "lob_00000000000000a8", 40, GZ_ROLE_HOSTED, 0, 0, 0);
     gzp_view_attention(&V, &a);
-    CHECK(a.n == 4 && a.skipped == 2);
+    CHECK(a.n == 4 && a.skipped == 3);
+    /* each item left out is named, with why, for the program's log (L3) */
+    CHECK(strcmp(a.dropped[0], "att_00000000000000d4 no_role") == 0);
+    CHECK(strcmp(a.dropped[1], "att_00000000000000e5 unknown_code") == 0);
+    CHECK(strcmp(a.dropped[2], "att_00000000000000a8 no_count") == 0);
     /* oldest first, then by id */
     CHECK(a.n == 4 && strcmp(a.item[0].id, "att_00000000000000b2") == 0 && strcmp(a.item[1].id, "att_00000000000000f6") == 0 &&
           strcmp(a.item[2].id, "att_00000000000000c3") == 0 && strcmp(a.item[3].id, "att_00000000000000a1") == 0);
@@ -99,7 +105,7 @@ int main(void)
     gzp_view_clear(&V);
     item("att_00000000000000a7", GZ_ATT_HOST_FUNDS_SHORT, "lob_00000000000000a7", 1, GZ_ROLE_HOSTED, 0, 0, 0);
     gzp_view_attention(&V, &a);
-    CHECK(a.n == 0 && a.skipped == 1);
+    CHECK(a.n == 0 && a.skipped == 1 && strcmp(a.dropped[0], "att_00000000000000a7 no_amounts") == 0);
     gzp_view_clear(&V);
     if (failures) fprintf(stderr, "%d failures\n", failures);
     else printf("program_view: ok\n");
