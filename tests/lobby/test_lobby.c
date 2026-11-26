@@ -1143,21 +1143,22 @@ static void test_host_hostile(void)
         n = ready_k1_bad(buf, sizeof buf, 1, 1, cd2, MEM[1].key[3].pub, 1, 1);
         CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK && !any_save() && refusals() == 1);
         fresh(1);
-        /* was "another seat's contribution key" as a factory key (member 2's): on a fresh seat, member 3's, since
+        /* was "another seat's contribution key" as a factory key (member 2's): on a fresh seat, member 21's (one this test uses nowhere else), since
          * member 1's seat has had its three invalid readies (the cap is the seat's, for the lobby's life) */
         {
             gz_lobby_enc_t e3;
             uint8_t lv3[64];
             size_t lv3n;
-            hin(GZ_LIN_CONNECTED, 3, NULL, 0);
-            n = join_msg(buf, sizeof buf, 3, MEM[3].key[3].pub, 3, 3);
-            CHECK(hin(GZ_LIN_MESSAGE, 3, buf, n) == GZ_OK && status_seat() == GZ_SEAT_JOINED);
-            n = ready_k1_bad(buf, sizeof buf, 3, 1, cd2, MEM[2].key[2].pub, 3, 0);
-            CHECK(hin(GZ_LIN_MESSAGE, 3, buf, n) == GZ_OK && !any_save() && status_seat() == own_state(WHO) && own_state(WHO) != GZ_SEAT_REFUSED);
-            CHECK(status_to(3, &g5) && g5.has_reason && g5.reason == 5);
+            hin(GZ_LIN_CONNECTED, 21, NULL, 0);
+            n = join_msg(buf, sizeof buf, 21, MEM[21].key[3].pub, 21, 21);
+            CHECK(hin(GZ_LIN_MESSAGE, 21, buf, n) == GZ_OK && status_seat() == GZ_SEAT_JOINED);
+            n = ready_k1_bad(buf, sizeof buf, 21, 1, cd2, MEM[2].key[2].pub, 21, 0);
+            CHECK(hin(GZ_LIN_MESSAGE, 21, buf, n) == GZ_OK && !any_save() && status_seat() == own_state(WHO) && own_state(WHO) != GZ_SEAT_REFUSED);
+            CHECK(status_to(21, &g5) && g5.has_reason && g5.reason == 5);
             gz_lobby_enc_start(&e3, lv3, sizeof lv3, GZ_KIND_LEAVE, SCOPE);
             lv3n = gz_lobby_enc_done(&e3);
-            CHECK(hin(GZ_LIN_MESSAGE, 3, lv3, lv3n) == GZ_OK && status_seat() == GZ_SEAT_LEFT);
+            CHECK(hin(GZ_LIN_MESSAGE, 21, lv3, lv3n) == GZ_OK && status_seat() == GZ_SEAT_LEFT);
+            hin(GZ_LIN_DISCONNECTED, 21, NULL, 0);           /* gone: the later counts are of the test's own connections */
         }
     }
     /* the largest ready a seat keeps is an envelope of GZ_LOBBY_MAX_SAVED_MSG (384) bytes; one byte more is not
@@ -1355,8 +1356,9 @@ static void test_host_hostile(void)
         CHECK(before(GZ_KIND_READY_CHECK, GZ_REC_FREEZE) && H.state == GZ_LOBBY_READY_CHECK);
         {
             gz_lobby_msg_t g0;
+            memset(&g0, 0, sizeof g0);
             CHECK(last_sent(GZ_KIND_READY_CHECK, &g0, NULL, NULL));
-            memcpy(CHK, g0.check_id, 32);
+            if (g0.check_id) memcpy(CHK, g0.check_id, 32);
         }
         acts_reset();
         CHECK(gz_lobby_host_set_values(&H, v, 3, &A.l) == GZ_OK && A.l.count == 1 && refused(GZ_CMD_SET_VALUES));
