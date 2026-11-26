@@ -29,6 +29,7 @@ All network traffic, the clock and sleeping go through a small transport interfa
 | `gz_chain_raw_tx` | Give me this transaction | The bytes, already checked to hash to the txid asked for |
 | `gz_chain_merkle_proof` | The branch for this transaction | Block height, position, and the hashes |
 | `gz_chain_broadcast` | Send this transaction | The txid, or a refusal with the server's own reason text |
+| `gz_chain_broadcast_package` | Send this parent and its child as one package | Each transaction's result (accepted, refused with the server's words), or "no package endpoint" (section 19) |
 | `gz_chain_fee_estimates` | What fee rate for N blocks? | A table of opinions, never a fact |
 | `gz_chain_check_network` | Is this server on the network I mean? | By its block 0 |
 | `gz_chain_confirm_tx` | Is this transaction really confirmed, how deep? | A checked result: see section 6 |
@@ -497,6 +498,12 @@ New in the chain view: `gz_chain_broadcast_package(c, parent, child, out)` and t
 **The pair is never sent one after the other instead.** A parent that needs its child would be refused alone and the failure would read as a fee problem. No endpoint is its own, explicit, final outcome with the reason text "no chain server accepts transaction packages".
 
 A transaction already in the mempool of a server is reported, per transaction, as `ALREADY_KNOWN` when the server says so (`other-wtxid` in its answer). If the first package path keeps answering 429, the second is still tried, and the outcome is `UNREACHABLE` only when neither answered. Package outcomes are advice, as for single transactions.
+
+**The answer is read strictly (Slice 1.5, plan P2).** Fields the parser does not know are allowed, because the `submitpackage` result grows with each Core release, but every `tx-results` entry must carry a `txid` that is the parent's or the child's, neither may be listed twice, `success` must list both without an error, and any other message must leave at least one of them out. An answer that breaks any of these is `GZ_CHAIN_MALFORMED`, never "accepted". The answer is capped at 16 KiB (`GZ_CHAIN_TOO_LARGE` above it); a status other than 200 and 4xx is malformed; a 4xx other than 404 and 405 is a refusal of the whole package, with the server's words. One transaction given as both parent and child is `GZ_CHAIN_INVALID_ARG` and nothing is sent. The comparing backend's report sets `package` and keeps each server's whole result in `answers[i].package` (pair, parent, child, each with its words), so two servers that disagree are both visible.
+
+**The endpoint probe (plan S12, step 1).** `gz_esplora_probe_package` posts the fixed text `GZ_ESPLORA_PROBE_BODY` (not JSON, so no server can read a transaction in it) to the same paths in the same order. 400 means the endpoint is there (`GZ_CHAIN_OK`, with the path), 404 or 405 at every path means it is not (`GZ_CHAIN_UNSUPPORTED`); another 4xx cannot tell (`GZ_CHAIN_REJECTED`, with the words), and a 2xx to a body that is no package is `GZ_CHAIN_MALFORMED`. Nothing is broadcast, so the probe is not refused on any network.
+
+`gz-chain package PARENT CHILD` sends a package through the comparing backend and prints each server's result (refused on mainnet, by flag and by each server's block 0, as `broadcast` is); `gz-chain package --probe` probes each server on its own and prints `package endpoint: N of M server(s)`. The tool tests in `chain_local_servers` run both against the local look-alikes, where `honest2` has a package endpoint and the others answer 404, and check that the probe posted nothing but its fixed body.
 
 ### 19.2 Which public servers take packages
 

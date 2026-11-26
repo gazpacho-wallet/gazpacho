@@ -6,7 +6,8 @@
  *
  * Exit status: 0 the command produced an answer that servers of at least two
  * operators gave alike (for `proof`: and the transaction is confirmed and
- * every check passed; for `broadcast`: a server took the transaction);
+ * every check passed; for `broadcast` and `package`: a server took it; for
+ * `package --probe`: every server said whether it has a package endpoint);
  * 1 no such answer; 2 bad usage or a refused request.
  */
 #include <stdio.h>
@@ -69,6 +70,12 @@ static void usage(FILE *to) {
           "                         coinbase, and N linked headers (default 6)\n"
           "  fee                    the servers' fee estimates and the rate that would be used\n"
           "  broadcast HEX          send a transaction (refused on mainnet)\n"
+          "  package PARENT CHILD   send a parent and its child as one package, POST\n"
+          "                         /txs/package (Bitcoin Core 28 or later behind the\n"
+          "                         server); refused on mainnet\n"
+          "  package --probe        ask each server whether it has a package endpoint, by\n"
+          "                         sending a body that is not a package: 400 means yes,\n"
+          "                         404 no. Nothing is broadcast\n"
           "\n"
           "The network defaults to signet. Without --server, the servers listed in\n"
           "docs/CHAIN-SERVERS.md for the network are used, each with its operator named.\n"
@@ -86,12 +93,14 @@ static void usage(FILE *to) {
           "servers of at least two different operators give it and none contradicts it\n"
           "about confirmed data. That shows the servers say the same thing; it does not\n"
           "show they are right. Fee estimates are opinions and are never an agreed fact.\n"
-          "A broadcast succeeds when any one server takes the transaction.\n");
+          "A broadcast succeeds when any one server takes the transaction; a package\n"
+          "when any one server takes both. Each server's own result is shown.\n");
 }
 
 typedef struct app {
   gz_network network;
   uint32_t want_confirmations;
+  bool probe; /* package --probe */
   const char *proxy; /* NULL: none */
   size_t n;
   const char *urls[GZ_MULTI_MAX_SERVERS];
@@ -181,6 +190,38 @@ static void print_fees(const gz_fee_estimates *f) {
   }
 }
 
+/* One transaction of a package, as one server saw it. */
+static void print_package_side(const char *which, const gz_broadcast_result *b) {
+  printf("%s ", which);
+  if (b->result == GZ_CHAIN_OK) {
+    printf(b->already_known ? "already there " : "accepted ");
+    print_hash(b->txid);
+  } else {
+    printf("%s%s%s", gz_chain_result_name(b->result), b->reason[0] ? ": " : "", b->reason);
+  }
+}
+
+/* One server's whole package result. */
+static void print_package(const gz_package_result *p) {
+  switch (p->result) {
+    case GZ_CHAIN_UNSUPPORTED:
+      printf("unsupported: no package endpoint (HTTP %ld)", p->server_status);
+      return;
+    case GZ_CHAIN_OK:
+    case GZ_CHAIN_REJECTED:
+      printf("%s (HTTP %ld)%s%s; ", p->result == GZ_CHAIN_OK ? "accepted" : "rejected",
+             p->server_status, p->reason[0] ? ": " : "", p->reason);
+      print_package_side("parent", &p->parent);
+      printf("; ");
+      print_package_side("child", &p->child);
+      return;
+    default:
+      printf("%s (HTTP %ld)%s%s", gz_chain_result_name(p->result), p->server_status,
+             p->reason[0] ? ": " : "", p->reason);
+      return;
+  }
+}
+
 /* Prints every server's line for the last call on the comparing backend. */
 static void print_report(const app *a) {
   const gz_multi_report *rep = gz_multi_last_report(&a->multi);
@@ -188,6 +229,11 @@ static void print_report(const app *a) {
   for (size_t i = 0; i < rep->server_count; i++) {
     const gz_multi_answer *ans = &rep->answers[i];
     printf("  %s  [operator: %s]\n    ", a->urls[i], rep->operators[i]);
+    if (rep->call == GZ_CALL_BROADCAST && rep->package) {
+      print_package(&ans->package);
+      printf("\n");
+      continue;
+    }
     if (rep->call == GZ_CALL_BROADCAST) {
       const gz_broadcast_result *b = &ans->u.broadcast;
       if (ans->result == GZ_CHAIN_OK) {
@@ -391,6 +437,102 @@ static int cmd_fee(app *a) {
   return r == GZ_CHAIN_OK ? 0 : 1;
 }
 
+/* The refusal does not rest on the --network flag alone: no server that
+ * turns out to be on mainnet is sent anything, whatever the flag says. */
+static bool no_mainnet_server(app *a) {
+  for (size_t i = 0; i < a->n; i++) {
+    gz_network found = GZ_NET_INVALID;
+    if (gz_chain_identify_network(&a->servers[i], &found) == GZ_CHAIN_OK &&
+        found == GZ_NET_MAINNET) {
+      fprintf(stderr, "gz-chain: refusing to broadcast: %s is a mainnet server\n", a->urls[i]);
+      return false;
+    }
+  }
+  return true;
+}
+
+/* A serialized transaction in lowercase hex, into a new buffer of
+ * GZ_TX_MAX_BYTES. NULL (and a message) if it is not one. */
+static uint8_t *decode_tx(const char *arg, size_t *len) {
+  uint8_t txid[GZ_HASH_LEN];
+  uint8_t *raw = malloc(GZ_TX_MAX_BYTES);
+  if (raw == NULL) return NULL;
+  if (!gz_hex_decode(arg, strlen(arg), raw, GZ_TX_MAX_BYTES, len) ||
+      !gz_txid_from_raw(raw, *len, txid)) {
+    fprintf(stderr, "gz-chain: that is not a serialized transaction in lowercase hex\n");
+    free(raw);
+    return NULL;
+  }
+  return raw;
+}
+
+static int cmd_package(app *a, const char *arg_parent, const char *arg_child) {
+  size_t plen = 0, clen = 0;
+  gz_package_result pr;
+  uint8_t *parent = decode_tx(arg_parent, &plen);
+  uint8_t *child = parent != NULL ? decode_tx(arg_child, &clen) : NULL;
+  if (parent == NULL || child == NULL || !no_mainnet_server(a)) {
+    free(parent);
+    free(child);
+    return 2;
+  }
+  gz_chain_result r = gz_chain_broadcast_package(&a->multi, parent, plen, child, clen, &pr);
+  free(parent);
+  free(child);
+  if (r == GZ_CHAIN_INVALID_ARG) {
+    fprintf(stderr, "gz-chain: a package is two different transactions, the parent first\n");
+    return 2;
+  }
+  print_report(a);
+  printf("verdict: %s\n", gz_chain_result_name(r));
+  switch (r) {
+    case GZ_CHAIN_OK:
+      printf("package: taken by at least one server; parent ");
+      print_hash(pr.parent.txid);
+      printf(", child ");
+      print_hash(pr.child.txid);
+      printf("\nnote: taken is not relayed; check with `gz-chain tx` that both appear\n");
+      return 0;
+    case GZ_CHAIN_REJECTED:
+      printf("package: refused%s%s; ", pr.reason[0] ? ": " : "", pr.reason);
+      print_package_side("parent", &pr.parent);
+      printf("; ");
+      print_package_side("child", &pr.child);
+      printf("\n");
+      return 1;
+    case GZ_CHAIN_UNSUPPORTED:
+      printf("package: no server here has a package endpoint; nothing was sent as a package\n");
+      return 1;
+    default: return 1;
+  }
+}
+
+/* Plan S12 step 1: per server, is there a package endpoint? Each server on
+ * its own; the body is not a package, so nothing is broadcast. */
+static int cmd_probe(app *a) {
+  size_t present = 0, told = 0;
+  for (size_t i = 0; i < a->n; i++) {
+    gz_package_probe pp;
+    gz_chain_result r = gz_esplora_probe_package(&a->servers[i], &pp);
+    printf("  %s\n    ", a->urls[i]);
+    if (r == GZ_CHAIN_OK) {
+      printf("present: HTTP %ld at %s", pp.server_status, pp.path);
+      present++;
+      told++;
+    } else if (r == GZ_CHAIN_UNSUPPORTED) {
+      printf("absent: HTTP %ld at every package path", pp.server_status);
+      told++;
+    } else {
+      printf("cannot tell: %s (HTTP %ld at %s)", gz_chain_result_name(r), pp.server_status,
+             pp.path);
+    }
+    if (pp.reason[0] != '\0') printf(": %s", pp.reason);
+    printf("\n");
+  }
+  printf("package endpoint: %zu of %zu server(s); nothing was broadcast\n", present, a->n);
+  return told == a->n ? 0 : 1;
+}
+
 static int cmd_broadcast(app *a, const char *arg) {
   uint8_t txid[GZ_HASH_LEN];
   size_t len = 0;
@@ -403,16 +545,9 @@ static int cmd_broadcast(app *a, const char *arg) {
     free(raw);
     return 2;
   }
-  /* The refusal does not rest on the --network flag alone: no server that
-   * turns out to be on mainnet is sent anything, whatever the flag says. */
-  for (size_t i = 0; i < a->n; i++) {
-    gz_network found = GZ_NET_INVALID;
-    if (gz_chain_identify_network(&a->servers[i], &found) == GZ_CHAIN_OK &&
-        found == GZ_NET_MAINNET) {
-      fprintf(stderr, "gz-chain: refusing to broadcast: %s is a mainnet server\n", a->urls[i]);
-      free(raw);
-      return 2;
-    }
+  if (!no_mainnet_server(a)) {
+    free(raw);
+    return 2;
   }
   gz_chain_result r = gz_chain_broadcast(&a->multi, raw, len, &br);
   free(raw);
@@ -480,6 +615,8 @@ int main(int argc, char **argv) {
         return 2;
       }
       a.operators[a.n - 1] = argv[i];
+    } else if (strcmp(argv[i], "--probe") == 0) {
+      a.probe = true;
     } else if (argv[i][0] == '-' && argv[i][1] == '-') {
       fprintf(stderr, "gz-chain: unknown option %s\n", argv[i]);
       return 2;
@@ -501,13 +638,16 @@ int main(int argc, char **argv) {
       strcmp(cmd, "broadcast") == 0)
     want = 2;
   if (strcmp(cmd, "outspend") == 0) want = 3;
-  if (want < 0 || n_args != want) {
+  bool package = strcmp(cmd, "package") == 0;
+  if (package) want = a.probe ? 1 : 3;
+  if (want < 0 || n_args != want || (a.probe && !package)) {
     usage(stderr);
     return 2;
   }
   /* Decided before anything touches the network. The servers themselves are
-   * checked as well, in cmd_broadcast. */
-  if (strcmp(cmd, "broadcast") == 0 && a.network == GZ_NET_MAINNET) {
+   * checked as well, in cmd_broadcast and cmd_package. The probe sends no
+   * transaction and is not refused. */
+  if ((strcmp(cmd, "broadcast") == 0 || (package && !a.probe)) && a.network == GZ_NET_MAINNET) {
     fprintf(stderr, "gz-chain: refusing to broadcast on mainnet\n");
     return 2;
   }
@@ -565,6 +705,8 @@ int main(int argc, char **argv) {
   else if (strcmp(cmd, "outspend") == 0) rc = cmd_outspend(&a, args[1], args[2]);
   else if (strcmp(cmd, "proof") == 0) rc = cmd_proof(&a, args[1]);
   else if (strcmp(cmd, "fee") == 0) rc = cmd_fee(&a);
+  else if (package && a.probe) rc = cmd_probe(&a);
+  else if (package) rc = cmd_package(&a, args[1], args[2]);
   else rc = cmd_broadcast(&a, args[1]);
 
 out:

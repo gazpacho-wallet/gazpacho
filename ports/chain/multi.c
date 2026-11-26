@@ -722,7 +722,8 @@ static gz_chain_result multi_broadcast(void *ctx, const uint8_t *raw, size_t len
  * is reported before anything else; GZ_CHAIN_UNSUPPORTED only when every
  * server that could be asked has no package endpoint, so that "nobody here
  * relays packages" is never mistaken for a server being down. The report
- * holds, per server, the child's result under the pair's result code.
+ * holds, per server, its whole result (`package`) and, as for a single
+ * transaction, the child's result under the pair's result code.
  */
 static gz_chain_result multi_broadcast_package(void *ctx, const uint8_t *parent, size_t parent_len,
                                                const uint8_t *child, size_t child_len,
@@ -735,16 +736,19 @@ static gz_chain_result multi_broadcast_package(void *ctx, const uint8_t *parent,
   memset(&refused, 0, sizeof refused);
   memset(&other, 0, sizeof other);
   begin(m, GZ_CALL_BROADCAST);
+  m->report.package = true;
   memset(out, 0, sizeof *out);
   for (size_t i = 0; i < m->n; i++) {
     gz_multi_answer *a = &m->report.answers[i];
     /* a server on another chain is never sent the transactions */
     if (!ready(m, i)) {
       a->u.broadcast.result = a->result;
+      a->package.result = a->package.parent.result = a->package.child.result = a->result;
       continue;
     }
     asked++;
     a->result = gz_chain_broadcast_package(&m->servers[i], parent, parent_len, child, child_len, &one);
+    a->package = one;
     a->u.broadcast = one.child;
     a->u.broadcast.result = a->result;
     a->u.broadcast.server_status = one.server_status;

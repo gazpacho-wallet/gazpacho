@@ -439,17 +439,24 @@ bool gz_es_parse_package(const char *s, size_t len, const uint8_t parent[GZ_HASH
           }
           k = fv->next;
         }
-        if (have_txid && memcmp(txid, parent, GZ_HASH_LEN) == 0) {
+        /* Every entry names one of the two transactions sent, once. An
+         * entry without a txid, a transaction that was not sent, or one
+         * listed twice is not an answer about this package. */
+        if (!have_txid) return false;
+        if (memcmp(txid, parent, GZ_HASH_LEN) == 0) {
+          if (p.parent_listed) return false;
           p.parent_listed = true;
           p.parent_failed = have_error;
           p.parent_known = have_other;
           memcpy(p.parent_error, error, sizeof error);
-        }
-        if (have_txid && memcmp(txid, child, GZ_HASH_LEN) == 0) {
+        } else if (memcmp(txid, child, GZ_HASH_LEN) == 0) {
+          if (p.child_listed) return false;
           p.child_listed = true;
           p.child_failed = have_error;
           p.child_known = have_other;
           memcpy(p.child_error, error, sizeof error);
+        } else {
+          return false;
         }
         j = entry->next;
       }
@@ -457,8 +464,15 @@ bool gz_es_parse_package(const char *s, size_t len, const uint8_t parent[GZ_HASH
     i = val->next;
   }
   if (!have_msg) return false;
-  p.accepted = strcmp(p.message, "success") == 0 && p.parent_listed && !p.parent_failed &&
-               p.child_listed && !p.child_failed;
+  bool both_in = p.parent_listed && !p.parent_failed && p.child_listed && !p.child_failed;
+  /* "success" means both are in; anything else means at least one is not.
+   * An answer that says one thing and lists the other contradicts itself. */
+  if (strcmp(p.message, "success") == 0) {
+    if (!both_in) return false;
+  } else if (both_in) {
+    return false;
+  }
+  p.accepted = both_in;
   *out = p;
   return true;
 }
@@ -1206,12 +1220,42 @@ gz_chain_result gz_esplora_create(const gz_esplora_config *cfg, const gz_http *h
   return GZ_CHAIN_OK;
 }
 
-/* Not written yet: the tests come first. */
+/* The S12 probe. The body is fixed text that is not JSON, so a server can
+ * only refuse it: nothing it could broadcast ever leaves this machine. */
 gz_chain_result gz_esplora_probe_package(const gz_chain *c, gz_package_probe *out) {
-  (void)c;
-  if (out != NULL) {
-    memset(out, 0, sizeof *out);
-    out->result = GZ_CHAIN_INVALID_ARG;
+  if (out == NULL) return GZ_CHAIN_INVALID_ARG;
+  memset(out, 0, sizeof *out);
+  out->result = GZ_CHAIN_INVALID_ARG;
+  if (c == NULL || c->ops != &es_ops || c->ctx == NULL) return out->result;
+  esplora *es = c->ctx;
+  static const char body[] = GZ_ESPLORA_PROBE_BODY;
+  long status = 0;
+  size_t len = 0;
+  bool unreachable = false;
+  gz_chain_result r = GZ_CHAIN_UNSUPPORTED;
+  /* the same paths, in the same order, with the same rules as a package */
+  for (size_t i = 0; i < ES_PACKAGE_PATHS; i++) {
+    snprintf(out->path, sizeof out->path, "%s", es_package_paths[i]);
+    r = es_request_as(es, true, "application/json", es_package_paths[i], (const uint8_t *)body,
+                      sizeof body - 1, ES_CAP_PACKAGE, &status, &len);
+    if (r == GZ_CHAIN_OK && status != 404 && status != 405) break;
+    if (r != GZ_CHAIN_OK && r != GZ_CHAIN_UNREACHABLE) break;
+    if (r == GZ_CHAIN_UNREACHABLE) unreachable = true;
+    r = unreachable ? GZ_CHAIN_UNREACHABLE : GZ_CHAIN_UNSUPPORTED;
   }
-  return GZ_CHAIN_INVALID_ARG;
+  out->server_status = status;
+  if (r == GZ_CHAIN_OK) {
+    reason_from_body(es, len, out->reason);
+    if (status == 400) {
+      r = GZ_CHAIN_OK; /* refused as unreadable: the endpoint is there */
+    } else if (status >= 400 && status <= 499) {
+      r = GZ_CHAIN_REJECTED; /* refused for some other reason: cannot tell */
+    } else {
+      r = GZ_CHAIN_MALFORMED; /* no server takes a body that is no package */
+    }
+  } else if (r == GZ_CHAIN_UNSUPPORTED) {
+    reason_from_body(es, len, out->reason);
+  }
+  out->result = r;
+  return r;
 }
