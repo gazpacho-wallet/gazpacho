@@ -178,6 +178,7 @@ int gzp_net_sign(const gzp_net_t *n, uint32_t epoch, uint32_t index, const uint8
          secp256k1_schnorrsig_sign32(n->secp, sig, msg, &kp, aux);
     OPENSSL_cleanse(s, sizeof s);
     OPENSSL_cleanse(&kp, sizeof kp);
+    OPENSSL_cleanse(aux, sizeof aux);
     return ok;
 }
 

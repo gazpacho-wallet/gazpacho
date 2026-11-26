@@ -560,6 +560,14 @@ bool gz_es_reason_is_already_known(const char *reason) {
 
 #define ES_PATH_MAX 192
 #define ES_MAX_BACKOFF_MS 30000u
+/* A server's throttle (429, "too many requests"): waited out, ES_THROTTLE_WAIT_MS first and twice
+ * as long each time (to ES_MAX_BACKOFF_MS), up to ES_THROTTLE_RETRIES times per request, none
+ * counted as one of max_attempts; then this client keeps its requests ES_THROTTLED_INTERVAL_MS
+ * apart. Public Esplora servers throttle a burst (signet run 2: mempool.space after about 27
+ * requests at four a second, with a 429 that three quick tries could not outlast). */
+#define ES_THROTTLE_WAIT_MS 2000u
+#define ES_THROTTLE_RETRIES 6u
+#define ES_THROTTLED_INTERVAL_MS 1000u
 /* Per-call caps on the response body, in bytes. */
 #define ES_CAP_HEIGHT 10
 #define ES_CAP_HASH (2 * GZ_HASH_LEN)
@@ -581,6 +589,7 @@ typedef struct esplora {
   uint8_t *buf; /* the one response buffer, cfg.max_response_bytes long */
   bool has_last;
   uint64_t last_ms; /* when the previous request started */
+  uint32_t paced_ms; /* after a throttle: the least time between requests (0: min_interval_ms) */
 } esplora;
 
 static bool is_blank(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
@@ -610,16 +619,21 @@ static gz_chain_result es_request_as(esplora *es, bool post, const char *content
   *status = 0;
   *len = 0;
 
+  uint32_t throttles = 0;
+  bool throttled = false; /* the last try met the throttle, already waited out below */
   for (uint32_t attempt = 0; attempt < es->cfg.max_attempts; attempt++) {
-    if (attempt > 0) {
+    bool waited = throttled;
+    throttled = false;
+    if (attempt > 0 && !waited) {
       uint64_t wait = (uint64_t)es->cfg.backoff_ms << (attempt - 1 > 16 ? 16 : attempt - 1);
       if (wait > ES_MAX_BACKOFF_MS) wait = ES_MAX_BACKOFF_MS;
       es->http.sleep_ms(es->http.ctx, (uint32_t)wait);
     }
-    /* keep the request rate polite */
+    /* keep the request rate polite: slower once the server has throttled this client */
+    uint32_t gap = es->paced_ms > es->cfg.min_interval_ms ? es->paced_ms : es->cfg.min_interval_ms;
     uint64_t now = es->http.now_ms(es->http.ctx);
-    if (es->has_last && now >= es->last_ms && now - es->last_ms < es->cfg.min_interval_ms) {
-      es->http.sleep_ms(es->http.ctx, (uint32_t)(es->cfg.min_interval_ms - (now - es->last_ms)));
+    if (es->has_last && now >= es->last_ms && now - es->last_ms < gap) {
+      es->http.sleep_ms(es->http.ctx, (uint32_t)(gap - (now - es->last_ms)));
       now = es->http.now_ms(es->http.ctx);
     }
     es->last_ms = now;
@@ -640,7 +654,18 @@ static gz_chain_result es_request_as(esplora *es, bool post, const char *content
       if (resp.len > cap) return GZ_CHAIN_TOO_LARGE; /* a transport that broke its promise */
       *status = resp.status;
       *len = resp.len;
-      if (resp.status == 429) continue; /* refused before doing anything: safe to repeat */
+      if (resp.status == 429) {
+        /* refused before doing anything: safe to repeat, once the throttle has passed */
+        if (throttles >= ES_THROTTLE_RETRIES) break;
+        uint64_t wait = (uint64_t)ES_THROTTLE_WAIT_MS << throttles;
+        if (wait > ES_MAX_BACKOFF_MS) wait = ES_MAX_BACKOFF_MS;
+        throttles++;
+        es->paced_ms = ES_THROTTLED_INTERVAL_MS;
+        es->http.sleep_ms(es->http.ctx, (uint32_t)wait);
+        throttled = true;
+        attempt--; /* not one of max_attempts (unsigned: wraps and comes back to it) */
+        continue;
+      }
       if (resp.status >= 500 && resp.status <= 599) {
         if (post) break; /* see below */
         continue;

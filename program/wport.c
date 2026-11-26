@@ -163,6 +163,7 @@ static int plan_locked(void *ctx, uint64_t amount, const uint8_t script[34], uin
         gzw_xprv m;
         int built = master_now(w, &m) && gzt_funding_build(w->secp, &m, &req, offer, n, aux, &w->plans[k]) == GZT_OK;
         gzw_wipe(&m, sizeof m);
+        OPENSSL_cleanse(aux, sizeof aux);
         if (built) goto planned;
     }
     {
@@ -207,8 +208,10 @@ static int w_sign_plan(void *ctx, const uint8_t txid[32], uint8_t *out, size_t c
             int ok = master_now(w, &m) &&
                      gzt_funding_release(w->secp, &m, &w->plans[k], txid, aux, out, cap, out_len) == GZT_OK;
             gzw_wipe(&m, sizeof m);
+            OPENSSL_cleanse(aux, sizeof aux);
             return ok;
         }
+    OPENSSL_cleanse(aux, sizeof aux);
     return 0;
 }
 
@@ -349,6 +352,7 @@ static int w_spend_back(void *ctx, const uint8_t txid[32], uint32_t index, uint6
              gzt_funding_spend_back(w->secp, &m, f, index, dest.script_pubkey, sizeof dest.script_pubkey, fee,
                                     aux, out, cap, out_len) == GZT_OK;
         gzw_wipe(&m, sizeof m);
+        OPENSSL_cleanse(aux, sizeof aux);
     }
     if (!ok) {   /* nothing signed: the index never left */
         pthread_mutex_lock(&w->mu);
