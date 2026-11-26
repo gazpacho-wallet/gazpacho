@@ -226,6 +226,10 @@ typedef struct {
     uint64_t port_refused;                     /* counted: sweeps the port failed or got wrong */
     uint8_t scratch[GZ_XE_MAX_STEP_BYTES];     /* the records of one save */
     uint8_t work[GZ_XE_MAX_SWEEP];
+    /* Work space kept off the stack (the sanitizer build's isolation check). */
+    uint8_t work2[GZ_XE_MAX_SWEEP];
+    uint8_t rec[GZ_XE_MAX_SWEEP + 128u];
+    gz_xe_sweep_in_t cand[GZ_XE_MAX_SWEEP_IN];
 } gz_xe_t;
 
 gz_status_t gz_xe_init(gz_xe_t *x, const uint8_t scope[32], const gz_xe_port_t *port);

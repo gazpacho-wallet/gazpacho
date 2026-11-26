@@ -45,7 +45,7 @@ static int skip(size_t len, size_t *at, uint64_t n)
 int gz_xe_strip_witness(const uint8_t *tx, size_t len, uint8_t *out, size_t cap, size_t *out_len, int *had_witness)
 {
     size_t at = 6, body;
-    uint64_t n_in, n_out, v;
+    uint64_t n_in, n_out, v, items;
     gz_tx_info_t info;
     if (!tx || !out || !out_len || !had_witness || len < 10) return 0;
     if (tx[4] != 0 || tx[5] != 1) {
@@ -63,7 +63,6 @@ int gz_xe_strip_witness(const uint8_t *tx, size_t len, uint8_t *out, size_t cap,
         if (!skip(len, &at, 8) || !varint(tx, len, &at, &v) || !skip(len, &at, v)) return 0;
     body = at;
     for (uint64_t i = 0; i < n_in; i++) {
-        uint64_t items;
         if (!varint(tx, len, &at, &items)) return 0;
         for (uint64_t k = 0; k < items; k++)
             if (!varint(tx, len, &at, &v) || !skip(len, &at, v)) return 0;
@@ -137,6 +136,9 @@ static void input_of(const gz_xe_plan_t *p, size_t i, gz_outpoint_t *o)
 static int plan_check(const gz_xe_plan_t *p)
 {
     uint8_t bare[GZ_XE_MAX_SIGNED];
+    gz_outpoint_t in;
+    size_t bl;
+    int wit;
     if (p->n_nodes == 0 || p->n_nodes > GZ_XE_MAX_NODES || p->n_steps == 0 || p->n_steps > GZ_XE_MAX_STEPS) return 0;
     if (p->c.B == 0) return 0;
     for (size_t i = 0; i < p->n_nodes; i++) {
@@ -150,9 +152,6 @@ static int plan_check(const gz_xe_plan_t *p)
     }
     for (size_t k = 0; k < p->n_steps; k++) {
         const gz_xe_step_t *s = &p->step[k];
-        gz_outpoint_t in;
-        size_t bl;
-        int wit;
         if (s->node >= p->n_nodes || s->len > GZ_XE_MAX_SIGNED) return 0;
         if (k > 0 && p->node[s->node].parent != p->step[k - 1].node) return 0;   /* a path, root first */
         if (k == 0 && s->node != 0) return 0;
@@ -271,6 +270,7 @@ gz_xe_plan_err_t gz_xe_plan_member(const gz_xe_tree_in_t *in, uint32_t member, c
 gz_xe_plan_err_t gz_xe_plan_host(const gz_xe_tree_in_t *in, const uint8_t *owed, gz_xe_plan_t *out)
 {
     gz_xe_plan_err_t e;
+    gz_outpoint_t inp;
     if ((e = plan_args(in, out)) != GZ_XE_PLAN_OK) return e;
     const gz_tree_t *t = in->tree;
     out->host = 1;
@@ -278,7 +278,6 @@ gz_xe_plan_err_t gz_xe_plan_host(const gz_xe_tree_in_t *in, const uint8_t *owed,
     for (size_t i = 0; i < t->n_nodes; i++) {
         const gz_tree_node_t *s = &t->node[i];
         uint16_t parent;
-        gz_outpoint_t inp;
         if (i == 0) { if (s->parent >= 0) return GZ_XE_PLAN_BAD_TREE; parent = GZ_XE_FUNDING; }
         else { if (s->parent < 0 || (size_t)s->parent >= i) return GZ_XE_PLAN_BAD_TREE; parent = (uint16_t)s->parent; }
         if (!copy_node(s, parent, &out->node[i])) return GZ_XE_PLAN_BAD_TREE;
@@ -705,11 +704,11 @@ static gz_status_t classify_all(gz_xe_t *x, gz_action_list_t *out)
 {
     static const int kinds[] = { K_IN, K_CHAN, K_SPARE, K_ANCHOR };
     gz_status_t st;
+    gz_outpoint_t o;
     for (size_t k = 0; k < 4; k++) {
         size_t n = kinds[k] == K_ANCHOR ? x->plan.n_steps : x->plan.n_nodes;
         for (size_t i = 0; i < n; i++) {
             gz_xe_fact_t *f = fact_of(x, kinds[k], i);
-            gz_outpoint_t o;
             if (!f->watched || !f->known || f->conf == 0) continue;
             if (f->recorded && memcmp(f->rec_spender, f->spender, 32) == 0) continue;
             outpoint_of(x, kinds[k], i, &o);
@@ -857,17 +856,16 @@ static int sweepable(const gz_xe_t *x, const gz_xe_fact_t *f, const uint8_t *own
 static int sweep_parse(const uint8_t *tx, size_t len, uint8_t *work, size_t cap, gz_xe_sweep_t *s,
                        const gz_xe_sweep_in_t *want, size_t n_want, uint32_t locktime)
 {
-    size_t bl;
+    size_t bl, sl;
     int wit;
     gz_tx_info_t info;
+    const uint8_t *op;
+    uint32_t seq;
+    uint8_t b[36];
     if (len > GZ_XE_MAX_SWEEP || !gz_xe_strip_witness(tx, len, work, cap, &bl, &wit) || !wit) return 0;
     if (!gz_tx_parse(work, bl, &info) || info.n_in == 0 || info.n_in > GZ_XE_MAX_SWEEP_IN) return 0;
     if (want && (info.n_in != n_want || info.locktime != locktime)) return 0;
     for (size_t k = 0; k < info.n_in; k++) {
-        const uint8_t *op;
-        size_t sl;
-        uint32_t seq;
-        uint8_t b[36];
         if (!gz_tx_input(work, bl, &info, k, &op, &sl, &seq)) return 0;
         s->in[k].vout = (uint32_t)op[32] | (uint32_t)op[33] << 8 | (uint32_t)op[34] << 16 | (uint32_t)op[35] << 24;
         memcpy(s->in[k].txid, op, 32);
@@ -899,6 +897,8 @@ static gz_status_t new_sweep(gz_xe_t *x, const gz_xe_sweep_in_t *c, size_t n, gz
     uint32_t lock = 0;
     size_t len = 0;
     gz_status_t st;
+    enc_t e = { x->rec, sizeof x->rec, 0, GZ_OK };
+    gz_record_t r;
     if (!s || !x->port.sweep) return GZ_OK;
     for (size_t k = 0; k < n; k++)
         if (c[k].lock > lock) lock = c[k].lock;
@@ -907,28 +907,20 @@ static gz_status_t new_sweep(gz_xe_t *x, const gz_xe_sweep_in_t *c, size_t n, gz
         x->port_refused++;
         return GZ_OK;
     }
-    {
-        uint8_t tmp[GZ_XE_MAX_SWEEP];
-        if (!sweep_parse(x->work, len, tmp, sizeof tmp, s, c, n, lock)) {
-            memset(s, 0, sizeof *s);
-            x->port_refused++;
-            return GZ_OK;
-        }
+    if (!sweep_parse(x->work, len, x->work2, sizeof x->work2, s, c, n, lock)) {
+        memset(s, 0, sizeof *s);
+        x->port_refused++;
+        return GZ_OK;
     }
-    {
-        uint8_t buf[GZ_XE_MAX_SWEEP + 128];
-        enc_t e = { buf, sizeof buf, 0, GZ_OK };
-        gz_record_t r;
-        put(&e, F_SCOPE, x->scope, 32);
-        put(&e, SW_TXID, s->txid, 32);
-        put(&e, SW_TX, s->tx, s->len);
-        put_u32(&e, SW_TIP, x->tip);
-        if (e.st != GZ_OK) return e.st;
-        r.type = GZ_XE_REC_SWEEP;
-        r.bytes.data = buf;
-        r.bytes.len = e.at;
-        if ((st = save(out, &r, 1)) != GZ_OK) return st;
-    }
+    put(&e, F_SCOPE, x->scope, 32);
+    put(&e, SW_TXID, s->txid, 32);
+    put(&e, SW_TX, s->tx, s->len);
+    put_u32(&e, SW_TIP, x->tip);
+    if (e.st != GZ_OK) return e.st;
+    r.type = GZ_XE_REC_SWEEP;
+    r.bytes.data = x->rec;
+    r.bytes.len = e.at;
+    if ((st = save(out, &r, 1)) != GZ_OK) return st;
     s->used = 1;
     if ((st = broadcast(out, s->tx, s->len)) != GZ_OK) return st;
     s->last_bcast = x->tip;
@@ -941,7 +933,11 @@ static gz_status_t decide_host(gz_xe_t *x, gz_action_list_t *out)
     const gz_xe_plan_t *p = &x->plan;
     uint32_t B = p->c.B;
     gz_status_t st;
-    int added = 0;
+    int added = 0, kind;
+    size_t idx, n_c = 0;
+    gz_outpoint_t o;
+    const gz_xe_fact_t *fs[3];
+    gz_xe_sweep_in_t *cand = x->cand;
 
     if ((st = step_records(x, 0, out)) != GZ_OK) return st;
     if (node_conf(x, 0) == 0) {
@@ -971,8 +967,6 @@ static gz_status_t decide_host(gz_xe_t *x, gz_action_list_t *out)
         int dead = 0, settled = 1;
         if (!s->used || s->settled) continue;
         for (size_t j = 0; j < s->n_in; j++) {
-            int kind;
-            size_t idx;
             const gz_xe_fact_t *f = find_fact(x, &s->in[j], &kind, &idx);
             if (!f) { dead = 1; break; }
             if (f->known && f->conf >= 1 && memcmp(f->spender, s->txid, 32) != 0) dead = 1;
@@ -989,47 +983,43 @@ static gz_status_t decide_host(gz_xe_t *x, gz_action_list_t *out)
 
     /* What is due now (6.8, H15). */
     {
-        gz_xe_sweep_in_t c[GZ_XE_MAX_SWEEP_IN];
-        size_t n_c = 0;
         for (size_t n = 1; n < p->n_nodes && n_c < GZ_XE_MAX_SWEEP_IN; n++) {
             const gz_xe_node_t *nd = &p->node[n];
-            gz_outpoint_t o;
             if (nd->parent == GZ_XE_FUNDING || node_conf(x, nd->parent) == 0) continue;
             if (nd->cltv == 0 || x->tip < nd->cltv || owed_below(p, nd->first, nd->count)) continue;
             input_of(p, n, &o);
             if (!sweepable(x, &x->in[n], nd->txid) || in_sweep(x, &o)) continue;
-            c[n_c].outpoint = o; c[n_c].amount = nd->in_amount; c[n_c].lock = nd->cltv; c[n_c].csv = 0;
-            c[n_c].node = (uint16_t)n; c[n_c].what = GZ_XE_OUT_INPUT;
+            cand[n_c].outpoint = o; cand[n_c].amount = nd->in_amount; cand[n_c].lock = nd->cltv; cand[n_c].csv = 0;
+            cand[n_c].node = (uint16_t)n; cand[n_c].what = GZ_XE_OUT_INPUT;
             n_c++;
         }
         for (size_t n = 0; n < p->n_nodes; n++) {
             const gz_xe_node_t *nd = &p->node[n];
             uint32_t lc;
-            gz_outpoint_t o;
             if (nd->kind != GZ_NODE_LEAF_STATE || (lc = node_conf(x, n)) == 0) continue;
             memcpy(o.txid, nd->txid, 32);
             o.vout = 0;
             if (n_c < GZ_XE_MAX_SWEEP_IN && nd->cltv != 0 && x->tip >= nd->cltv && !owed_below(p, nd->first, 1)
                 && sweepable(x, &x->chan[n], NULL) && !in_sweep(x, &o)) {
-                c[n_c].outpoint = o; c[n_c].amount = nd->chan_amount; c[n_c].lock = nd->cltv; c[n_c].csv = 0;
-                c[n_c].node = (uint16_t)n; c[n_c].what = GZ_XE_OUT_CHANNEL;
+                cand[n_c].outpoint = o; cand[n_c].amount = nd->chan_amount; cand[n_c].lock = nd->cltv; cand[n_c].csv = 0;
+                cand[n_c].node = (uint16_t)n; cand[n_c].what = GZ_XE_OUT_CHANNEL;
                 n_c++;
             }
             o.vout = 1;
             if (n_c < GZ_XE_MAX_SWEEP_IN && nd->spare_csv != 0 && lc >= nd->spare_csv
                 && sweepable(x, &x->spare[n], NULL) && !in_sweep(x, &o)) {
-                c[n_c].outpoint = o; c[n_c].amount = nd->spare_amount; c[n_c].lock = 0; c[n_c].csv = nd->spare_csv;
-                c[n_c].node = (uint16_t)n; c[n_c].what = GZ_XE_OUT_SPARE;
+                cand[n_c].outpoint = o; cand[n_c].amount = nd->spare_amount; cand[n_c].lock = 0; cand[n_c].csv = nd->spare_csv;
+                cand[n_c].node = (uint16_t)n; cand[n_c].what = GZ_XE_OUT_SPARE;
                 n_c++;
             }
         }
-        if (n_c && (st = new_sweep(x, c, n_c, out)) != GZ_OK) return st;
+        if (n_c && (st = new_sweep(x, cand, n_c, out)) != GZ_OK) return st;
     }
 
     /* The end: the root buried and every output watched spent and buried. */
     if (node_conf(x, 0) < B) return GZ_OK;
     for (size_t n = 0; n < p->n_nodes; n++) {
-        const gz_xe_fact_t *fs[3] = { &x->in[n], &x->chan[n], &x->spare[n] };
+        fs[0] = &x->in[n]; fs[1] = &x->chan[n]; fs[2] = &x->spare[n];
         for (size_t k = 0; k < 3; k++)
             if (fs[k]->watched && !(fs[k]->known && fs[k]->conf >= B)) return GZ_OK;
     }
@@ -1047,6 +1037,8 @@ static gz_status_t decide(gz_xe_t *x, gz_action_list_t *out)
 static gz_status_t set_watches(gz_xe_t *x, gz_action_list_t *out)
 {
     gz_status_t st;
+    int kind;
+    size_t idx;
     if (x->plan.host) {
         if ((st = watch(x, K_IN, 0, out)) != GZ_OK) return st;
         if (x->st[0].state != GZ_XE_ST_BURIED && (st = watch(x, K_ANCHOR, 0, out)) != GZ_OK) return st;
@@ -1054,8 +1046,6 @@ static gz_status_t set_watches(gz_xe_t *x, gz_action_list_t *out)
             const gz_xe_sweep_t *s = &x->sweep[k];
             if (!s->used) continue;
             for (size_t j = 0; j < s->n_in; j++) {
-                int kind;
-                size_t idx;
                 if (find_fact(x, &s->in[j], &kind, &idx) && (st = watch(x, kind, idx, out)) != GZ_OK) return st;
             }
         }
@@ -1073,6 +1063,7 @@ gz_status_t gz_xe_begin(gz_xe_t *x, const gz_xe_plan_t *plan, uint8_t reason, gz
     gz_record_t r[2];
     gz_status_t st;
     size_t n1;
+    enc_t e;
     if (!x || !plan || !out || !refused) return GZ_ERR_ARGUMENT;
     *refused = 0;
     if (memcmp(plan->scope, x->scope, 32) != 0) { *refused = 2; return GZ_OK; }
@@ -1082,15 +1073,13 @@ gz_status_t gz_xe_begin(gz_xe_t *x, const gz_xe_plan_t *plan, uint8_t reason, gz
     derive_children(&x->plan);
     n1 = enc_plan(&x->plan, x->scratch, sizeof x->scratch, &st);
     if (st != GZ_OK) return st;
-    {
-        enc_t e = { x->scratch + n1, sizeof x->scratch - n1, 0, GZ_OK };
-        put(&e, F_SCOPE, x->scope, 32);
-        put_u8(&e, SR_WHY, reason);
-        put_u32(&e, SR_TIP, x->tip);
-        if (e.st != GZ_OK) return e.st;
-        r[0].type = GZ_XE_REC_PLAN; r[0].bytes.data = x->scratch; r[0].bytes.len = n1;
-        r[1].type = GZ_XE_REC_STARTED; r[1].bytes.data = x->scratch + n1; r[1].bytes.len = e.at;
-    }
+    e.buf = x->scratch + n1; e.cap = sizeof x->scratch - n1; e.at = 0; e.st = GZ_OK;
+    put(&e, F_SCOPE, x->scope, 32);
+    put_u8(&e, SR_WHY, reason);
+    put_u32(&e, SR_TIP, x->tip);
+    if (e.st != GZ_OK) return e.st;
+    r[0].type = GZ_XE_REC_PLAN; r[0].bytes.data = x->scratch; r[0].bytes.len = n1;
+    r[1].type = GZ_XE_REC_STARTED; r[1].bytes.data = x->scratch + n1; r[1].bytes.len = e.at;
     if ((st = save(out, r, 2)) != GZ_OK) return st;
     x->have_plan = 1;
     x->started = 1;
@@ -1107,7 +1096,12 @@ gz_status_t gz_xe_load(void *e, const gz_record_t *rec, gz_batch_id_t at)
     static const uint8_t f_ended[] = { F_SCOPE, EN_HOW, EN_HEIGHT };
     static const uint8_t f_seen[] = { F_SCOPE, SE_OUTPOINT, SE_SPENDER, SE_CLASS, SE_HEIGHT };
     gz_xe_t *x = e;
-    gz_bytes_t s, v;
+    gz_bytes_t s, v, id, sp;
+    gz_xe_sweep_t *slot = NULL;
+    gz_outpoint_t o;
+    int kind;
+    size_t idx;
+    gz_xe_fact_t *f;
     (void)at;
     if (!x || !rec) return GZ_ERR_ARGUMENT;
     switch (rec->type) {
@@ -1145,8 +1139,6 @@ gz_status_t gz_xe_load(void *e, const gz_record_t *rec, gz_batch_id_t at)
         return GZ_OK;
     }
     case GZ_XE_REC_SWEEP: {
-        gz_xe_sweep_t *slot = NULL;
-        gz_bytes_t id;
         if (!x->plan.host || !fields_ok(s, f_sweep, sizeof f_sweep) || !field(s, SW_TX, 0, &v)
             || !field(s, SW_TXID, 32, &id))
             return GZ_ERR_CORRUPT;
@@ -1168,11 +1160,6 @@ gz_status_t gz_xe_load(void *e, const gz_record_t *rec, gz_batch_id_t at)
         x->ended_how = v.data[0];
         return GZ_OK;
     default: {                                                   /* spend_seen */
-        gz_outpoint_t o;
-        gz_bytes_t sp;
-        int kind;
-        size_t idx;
-        gz_xe_fact_t *f;
         if (!fields_ok(s, f_seen, sizeof f_seen) || !field(s, SE_OUTPOINT, 36, &v) || !field(s, SE_SPENDER, 32, &sp))
             return GZ_ERR_CORRUPT;
         get_outpoint(v.data, &o);
@@ -1206,6 +1193,9 @@ gz_status_t gz_xe_handle(void *e, const gz_event_t *ev, gz_action_list_t *out)
 {
     gz_xe_t *x = e;
     const gz_chain_event_t *c;
+    gz_xe_fact_t *f;
+    int kind;
+    size_t idx;
     if (!x || !ev || !out) return GZ_ERR_ARGUMENT;
     if (ev->kind != GZ_EVENT_CHAIN) return GZ_OK;
     c = &ev->u.chain;
@@ -1227,9 +1217,7 @@ gz_status_t gz_xe_handle(void *e, const gz_event_t *ev, gz_action_list_t *out)
         break;
     }
     case GZ_CHAIN_OUTPOINT_SPENT: {
-        int kind;
-        size_t idx;
-        gz_xe_fact_t *f = x->have_plan ? find_fact(x, &c->outpoint, &kind, &idx) : NULL;
+        f = x->have_plan ? find_fact(x, &c->outpoint, &kind, &idx) : NULL;
         if (!f || !f->watched) { x->dropped++; return GZ_OK; }
         f->known = 1;
         memcpy(f->spender, c->txid, 32);
@@ -1239,9 +1227,7 @@ gz_status_t gz_xe_handle(void *e, const gz_event_t *ev, gz_action_list_t *out)
     }
     case GZ_CHAIN_WATCH_SYNCED:
     case GZ_CHAIN_WATCH_FAILED: {
-        int kind;
-        size_t idx;
-        gz_xe_fact_t *f = !c->is_tx && x->have_plan ? find_fact(x, &c->outpoint, &kind, &idx) : NULL;
+        f = !c->is_tx && x->have_plan ? find_fact(x, &c->outpoint, &kind, &idx) : NULL;
         if (!f || !f->watched) { x->dropped++; return GZ_OK; }
         if (!f->synced) { f->synced = 1; x->n_unsynced--; }
         break;
