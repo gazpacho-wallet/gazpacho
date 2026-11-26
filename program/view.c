@@ -173,19 +173,21 @@ void gzp_view_attention(const gzp_view_t *v, gzp_attention_t *out)
         int k = out->n, w;
         uint8_t code = gz_rec_find(all, GZ_VAT_CODE, &f) == 1 && f.len == 1 ? f.data[0] : 0;
         const char *name = att_code(code), *role;
+        char lob[GZP_VIEW_ID_MAX + 1];
         if (!name || k == GZ_API_MAX_ATTENTION || gz_rec_find(all, GZ_VAT_LOBBY, &f) != 1 || !printable_id(f.data, f.len)) {
             att_drop(out, ref[i].o->id, !name ? "unknown_code" : k == GZ_API_MAX_ATTENTION ? "list_full" : "no_lobby");
             continue;
         }
-        memcpy(out->lobby[k], f.data, f.len);
-        out->lobby[k][f.len] = 0;
-        role = att_role(v, all, out->lobby[k], code);
+        memcpy(lob, f.data, f.len);                   /* a local copy: never read out while writing it */
+        lob[f.len] = 0;
+        memcpy(out->lobby[k], lob, f.len + 1);
+        role = att_role(v, all, lob, code);
         if (!role) {
             att_drop(out, ref[i].o->id, "no_role");
             continue;
         }
         snprintf(out->id[k], sizeof out->id[k], "%s", ref[i].o->id);
-        w = snprintf(out->params[k], sizeof out->params[k], "{\"lobby_id\":\"%s\",\"lobby_role\":\"%s\"", out->lobby[k], role);
+        w = snprintf(out->params[k], sizeof out->params[k], "{\"lobby_id\":\"%s\",\"lobby_role\":\"%s\"", lob, role);
         if (code == GZ_ATT_HOST_FUNDS_SHORT) {
             gz_bytes_t nd, hv;
             if (gz_rec_find(all, GZ_VAT_NEED, &nd) != 1 || nd.len != 8 || gz_rec_find(all, GZ_VAT_HAVE, &hv) != 1 || hv.len != 8) {

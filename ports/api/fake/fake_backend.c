@@ -936,13 +936,13 @@ static void story_activity(gz_jw *w, gz_fake *f)
 #undef ENTRY
 }
 
-/* 11: what the story adds to the status facts. The strings live in f->st_buf. */
 /* An attention item's lobby_role (11.4): the fake hosts HOST_LOBBY_ID and is a member of the others. */
 static const char *fake_role_of(const char *lob)
 {
     return !lob ? NULL : strcmp(lob, HOST_LOBBY_ID) == 0 ? "hosted" : "joined";
 }
 
+/* 11: what the story adds to the status facts. The strings live in f->st_buf. */
 static void story_status(gz_fake *f, gz_api_status_facts *s)
 {
     gz_jw jw;
