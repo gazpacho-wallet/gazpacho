@@ -249,7 +249,7 @@ static inline int ftw_adopt_plan(void *ctx, const uint8_t *tx, size_t len, const
 {
     ft_wallet_t *w = (ft_wallet_t *)ctx;
     (void)prev;
-    (void)feerate;   /* step 1: not recorded */
+    w->adopt_feerate = feerate;
     w->adopted_prev++;
     w->last_n_prev = n_prev;
     return ftw_adopt(ctx, tx, len, script, amount);

@@ -1239,6 +1239,7 @@ static void test_restart_broadcast(void)
     CHECK(u->w.held == 1 && u->h.broadcasts == 1);   /* held again, and sent again */
     /* with the outputs its inputs spend, so the wallet can sign it again (P97-3) */
     CHECK(u->w.adopted_prev == 1 && t->f.fac[0].n_in > 0 && u->w.last_n_prev == t->f.fac[0].n_in);
+    CHECK(u->w.adopt_feerate == t->f.fac[0].feerate && u->w.adopt_feerate > 0);   /* its fee rate too */
     CHECK(u->f.fac[0].used && u->f.fac[0].state == GZ_FUND_ST_BROADCAST && u->f.fac[0].signed_len == t->f.fac[0].signed_len);
     CHECK(u->f.n_watches == 2);
     /* A plan whose round crashed: held again, not broadcast. */

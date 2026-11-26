@@ -334,6 +334,43 @@ static void test_adopt(void)
     gzt_funding_wipe(&g);
 }
 
+/* The boundary review of PR 101: a funding whose journaled bytes were changed
+ * to pay a dear fee (its change lowered) is refused before anything is
+ * signed, and nothing is held. */
+static void test_adopt_fee_ceiling(void)
+{
+    static gzt_funding f, g;
+    gzt_funding_request r = request(100000);
+    uint8_t aux[32], tx[GZT_MAX_TX_BYTES];
+    static uint8_t out[GZT_MAX_TX_BYTES];
+    size_t len, n = 7, ni;
+    gzt_adopt_input in[GZT_MAX_INPUTS];
+    gzt_feerate ceil = {1000};   /* 1 sat/vB: ten times the plan's rate */
+    gzt_tx t;
+    memset(aux, 1, 32);
+    r.require_change = 1;
+    CHECK(gzt_funding_build(ctx, &master, &r, coins, 3, aux, &f) == GZT_OK);
+    CHECK(gzt_funding_unsigned(&f, tx, sizeof tx, &len) == GZT_OK);
+    ni = f.info.selection.n_selected;
+    for (size_t i = 0; i < ni; i++) {
+        const gzt_coin *c = &coins[f.info.selection.selected[i]];
+        in[i].amount = c->amount;
+        in[i].script = c->script;
+        in[i].script_len = 34;
+        in[i].change = c->change;
+        in[i].index = c->index;
+    }
+    CHECK(gzt_funding_adopt(ctx, &master, GZT_NET_SIGNET, 0, tx, len, in, ni, 50, ceil, aux, &g) == GZT_OK);
+    gzt_funding_wipe(&g);
+    CHECK(gzt_tx_parse(tx, len, &t) == GZT_OK && t.n_out == 2);
+    t.out[1].value -= 50000;   /* the change 50,000 sat lower: the fee 50,000 higher */
+    CHECK(gzt_tx_serialize(&t, GZT_SER_NO_WITNESS, tx, sizeof tx, &len) == GZT_OK);
+    CHECK(gzt_funding_adopt(ctx, &master, GZT_NET_SIGNET, 0, tx, len, in, ni, 50, ceil, aux, &g) == GZT_ERR_FEE_CEILING);
+    CHECK(g.priv_state == 0);   /* nothing held */
+    CHECK(gzt_funding_release(ctx, &master, &g, f.info.txid, aux, out, sizeof out, &n) == GZT_ERR_STATE && n == 0);
+    gzt_funding_wipe(&f);
+}
+
 int main(void)
 {
     setup();
@@ -344,6 +381,7 @@ int main(void)
     test_must_reach();
     test_can_plan();
     test_adopt();
+    test_adopt_fee_ceiling();
     secp256k1_context_destroy(ctx);
     if (fails) return 1;
     printf("wallet funding port: all passed\n");

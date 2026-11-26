@@ -2136,6 +2136,38 @@ static void test_forget_dead_mix(void)
     gzp_wport_close(&w);
 }
 
+/* The boundary review of PR 101: a journaled plan changed to pay a dear fee
+ * (its change lowered) is not adopted: nothing is held, so nothing is signed. */
+static void test_adopt_refuses_dear_fee(void)
+{
+    static gzp_wport_t a, b;
+    mark_store ma, mb;
+    static uint8_t tx[GZ_FUND_MAX_TX];
+    gz_fund_prevout_t prev[GZ_FUND_MAX_INPUTS];
+    size_t len = 0, np = 0;
+    gz_tx_info_t info;
+    uint64_t amt, v = 0;
+    const uint8_t *scr = NULL;
+    size_t sl = 0;
+    memset(&ma, 0, sizeof ma);
+    memset(&mb, 0, sizeof mb);
+    open_marked(&a, &ma);
+    many_coins(&a, 1, 0xd8);
+    CHECK(plan_prev(&a, 100000, tx, &len, prev, &np) == 1);
+    gzp_wport_close(&a);
+    CHECK(gz_tx_parse(tx, len, &info) && gz_tx_output(tx, len, &info, 1, &amt, &scr, &sl) && sl == 34 && scr);
+    if (scr) {   /* output 1's value: the 8 bytes before its script's length */
+        uint8_t *p = (uint8_t *)(uintptr_t)(scr - 9);
+        for (int i = 7; i >= 0; i--) v = (v << 8) | p[i];
+        v -= 50000;
+        for (int i = 0; i < 8; i++) p[i] = (uint8_t)(v >> (8 * i));
+    }
+    open_marked(&b, &mb);
+    CHECK(b.port.adopt_plan && b.port.adopt_plan(b.port.ctx, tx, len, prev, np, factory, 100000, 100) == 0);
+    for (int k = 0; k < (int)GZP_WPORT_PLANS; k++) CHECK(!b.used[k]);
+    gzp_wport_close(&b);
+}
+
 int main(void)
 {
     secp = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
@@ -2212,6 +2244,7 @@ int main(void)
     test_failed_retry_caps();
     test_forget_live_drops_coins();
     test_forget_dead_mix();
+    test_adopt_refuses_dear_fee();
     secp256k1_context_destroy(secp);
     printf("program_wport: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
