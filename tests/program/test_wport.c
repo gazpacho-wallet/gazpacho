@@ -2029,7 +2029,7 @@ static void test_adopt_refusals(void)
     size_t len = 0, np = 0;
     gz_tx_info_t info;
     uint64_t amt;
-    const uint8_t *scr;
+    const uint8_t *scr = NULL;
     size_t sl;
     memset(&ma, 0, sizeof ma);
     memset(&mb, 0, sizeof mb);
@@ -2051,7 +2051,7 @@ static void test_adopt_refusals(void)
     CHECK(b.port.adopt_plan(b.port.ctx, tx, len, p2, np, factory, 100000) == 0);
     memcpy(bad, tx, len);   /* foreign change: output 1's key changed */
     CHECK(gz_tx_parse(bad, len, &info) && gz_tx_output(bad, len, &info, 1, &amt, &scr, &sl) && sl == 34);
-    bad[(size_t)(scr - bad) + 10] ^= 1;
+    if (scr) bad[(size_t)(scr - bad) + 10] ^= 1;
     CHECK(b.port.adopt_plan(b.port.ctx, bad, len, prev, np, factory, 100000) == 0);
     memcpy(other, factory, 34);
     other[5] ^= 1;
