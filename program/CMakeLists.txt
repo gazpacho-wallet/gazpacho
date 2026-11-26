@@ -9,7 +9,7 @@
 #                  the placeholder's bytes until P4), and the --test-* hooks
 # The release binary's symbols are checked (program_release_build, T12).
 
-set(GZP_SOURCES options.c datadir.c store_journal.c store_unlock.c net.c pchain.c notify.c executor.c testping.c view.c api.c)
+set(GZP_SOURCES options.c datadir.c keys.c store_journal.c store_unlock.c net.c pchain.c notify.c executor.c testping.c view.c api.c)
 
 foreach(variant release test)
   if(variant STREQUAL "release")
@@ -30,7 +30,7 @@ foreach(variant release test)
     # The test build links the storage library's test entry point (the
     # parameter floor of --test-kdf-floor); the release build never does.
     set(sc gazpacho_storage_crypto_test)
-    add_library(${lib} STATIC ${GZP_SOURCES} journal_standin.c store_powercut.c)
+    add_library(${lib} STATIC ${GZP_SOURCES} journal_standin.c store_powercut.c keys_standin.c)
   endif()
   target_include_directories(${lib} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
   target_link_libraries(${lib} PUBLIC ${node} ${net} gazpacho_wallet_keys gazpacho_chain gazpacho_journal ${sc} gazpacho_api gazpacho_tree_import OpenSSL::Crypto)
@@ -65,6 +65,36 @@ target_compile_options(gzp_silent_peer PRIVATE ${GZ_NEW_CODE_WARNINGS})
 gz_add_test(program_store ${CMAKE_SOURCE_DIR}/tests/program/test_store.c gazpacho_program_test)
 gz_add_test(program_options ${CMAKE_SOURCE_DIR}/tests/program/test_options.c gazpacho_program_test)
 gz_add_test(program_net ${CMAKE_SOURCE_DIR}/tests/program/test_net.c gazpacho_program_test)
+# P8, the key port (docs/notes/keys.md 10): vectors, policy, the scoped table;
+# BIP 32's rare cases forced and the wipes recorded (HMAC and gzw_wipe
+# wrapped at link time); a randomized run of the interface; under valgrind;
+# and the constant-time check (memcheck with the seed marked secret).
+gz_add_test(program_keys ${CMAKE_SOURCE_DIR}/tests/program/test_keys.c gazpacho_program_test)
+add_executable(test_program_keys_rare ${CMAKE_SOURCE_DIR}/tests/program/test_keys_rare.c)
+target_link_libraries(test_program_keys_rare PRIVATE gazpacho_program_test)
+target_link_options(test_program_keys_rare PRIVATE -Wl,--wrap=HMAC,--wrap=gzw_wipe)
+add_test(NAME program_keys_rare COMMAND test_program_keys_rare)
+add_executable(fuzz_keys ${CMAKE_SOURCE_DIR}/tests/program/fuzz_keys.c)
+target_link_libraries(fuzz_keys PRIVATE gazpacho_program_test)
+add_test(NAME program_keys_fuzz COMMAND fuzz_keys 20000)
+if(GZ_MEMCHECK)
+  add_test(NAME valgrind_program_keys COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_program_keys>)
+  add_test(NAME valgrind_program_keys_fuzz COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:fuzz_keys> 1500)
+  find_path(GZP_VALGRIND_INCLUDE valgrind/memcheck.h)
+  if(GZP_VALGRIND_INCLUDE)
+    # Its own build of the code under test (keys.c and the wallet's key code),
+    # with line information whatever the build type, so that ct_keys.py
+    # triages every report by function and line in every build (integration
+    # B10: a Release build had no lines, and nothing could be triaged).
+    add_executable(ct_keys ${CMAKE_SOURCE_DIR}/tests/program/ct_keys.c ${CMAKE_CURRENT_SOURCE_DIR}/keys.c
+                   ${CMAKE_SOURCE_DIR}/wallet/src/address.c ${CMAKE_SOURCE_DIR}/tests/program/ct_bip32.c
+                   ${CMAKE_SOURCE_DIR}/wallet/src/phrase.c ${CMAKE_SOURCE_DIR}/wallet/src/taproot.c)
+    target_include_directories(ct_keys PRIVATE ${GZP_VALGRIND_INCLUDE} ${CMAKE_CURRENT_SOURCE_DIR}
+                               ${CMAKE_SOURCE_DIR}/wallet/include ${CMAKE_SOURCE_DIR}/core/superscalar/src)
+    target_compile_options(ct_keys PRIVATE -g)
+    target_link_libraries(ct_keys PRIVATE gazpacho_superscalar secp256k1 OpenSSL::Crypto)
+  endif()
+endif()
 # Kind 0xffff (the signing engine's SEND bridge until P4.3) never reaches a
 # program, and the lobby's bridge, deleted in P4.2, stays deleted
 # (composite-node.md, tasks T-P42-1, T-P43-1).
@@ -188,6 +218,17 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME program_lobby
     COMMAND ${GZP_PY} ${GZP_T}/lobby.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/lobby)
   set_tests_properties(program_lobby PROPERTIES TIMEOUT 900)
+  # P8: the vectors header is what tools/keys_ref.py computes; T13 and T2
+  # step 3, keys derived from the seed end to end (docs/notes/keys.md 10).
+  add_test(NAME program_keys_join_window COMMAND ${GZP_PY} ${GZP_T}/join_window.py ${CMAKE_SOURCE_DIR})
+  add_test(NAME program_keys_vectors
+    COMMAND ${GZP_PY} ${CMAKE_SOURCE_DIR}/tools/keys-vectors.py --check ${GZP_T}/keys_vectors.h)
+  add_test(NAME program_derived_keys
+    COMMAND ${GZP_PY} ${GZP_T}/derived_keys.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/derived_keys)
+  set_tests_properties(program_derived_keys PROPERTIES TIMEOUT 300)
+  if(TARGET ct_keys)
+    add_test(NAME program_keys_ct COMMAND ${GZP_PY} ${GZP_T}/ct_keys.py ${GZ_VALGRIND} $<TARGET_FILE:ct_keys>)
+  endif()
   # Every program test may start gazpacho-test with a launcher of its own:
   # the passphrase file's path and the Argon2id floor come through the
   # environment (gazpacho-test only; the harness passes the options itself).

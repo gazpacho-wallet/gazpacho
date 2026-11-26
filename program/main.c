@@ -32,6 +32,7 @@
 #include "datadir.h"
 #include "executor.h"
 #include "gzp.h"
+#include "keys.h"
 #include "net.h"
 #include "notify.h"
 #include "api.h"
@@ -76,6 +77,8 @@ static gzp_chain_t chain;
 static gzp_testping_t tp;
 static gzp_datadir_t dir;
 static gzp_wallet_t *wallet;
+static gzp_keys_t keys;           /* the key port's keys (keys.h; docs/notes/keys.md) */
+static gzp_unlock_t unlock_tbl;   /* the wallet's unlock.h table: the key port's seed source */
 static gzp_api_t api;          /* the local API server (P5): one per process */
 
 #ifdef GZP_TEST_BUILD
@@ -153,11 +156,6 @@ static void on_illegal(const char *msg, void *data)
     gzp_log("secp-illegal-argument %s", msg ? msg : "");
 }
 
-static int key_ok(const uint8_t key[32], void *ctx)
-{
-    return secp256k1_ec_seckey_verify((const secp256k1_context *)ctx, key);
-}
-
 /* The transport's own random type (noise.h): the system's source at each call. */
 static void net_random(void *ctx, uint8_t *out, size_t len)
 {
@@ -165,23 +163,51 @@ static void net_random(void *ctx, uint8_t *out, size_t len)
     gzp_os_random(out, len);
 }
 
-/* The wallet: 24 words from the stand-in seed file, and the first receive
- * address (BIP 86, account 0) as a check that the keys are reachable. */
-static int wallet_open(const secp256k1_context *secp, gzw_network wnet, gzw_bip86_output *first)
+/* The wallet's keys (docs/notes/keys.md): the key port over the unlocked
+ * wallet's seed, taken through unlock.h's seed() (keys.md 9), and the first
+ * receive address (BIP 86, account 0), derived from the seed privately and
+ * publicly and checked against the payout script of receive index 0, which
+ * comes from the account's public key alone. */
+static int keys_open(const secp256k1_context *secp, gzw_network wnet, gzw_bip86_output *first)
 {
-    uint8_t seed[64];
-    gzw_xprv master;
-    gzw_reason why;
-    int rc = GZP_EXIT_DATA, ok;
-    /* The BIP 39 seed is the unlocked storage layer's copy (storage 9.1). */
-    if (gzp_wallet_seed(wallet, seed) != 0) return GZP_EXIT_DATA;
-    ok = gzw_bip32_master(secp, seed, sizeof seed, &master, &why) == 1 &&
-         gzw_bip86_output_from_master(secp, &master, wnet, 0, 0, 0, first, &why) == 1;
-    if (ok) rc = 0;
-    else fprintf(stderr, "gazpacho: cannot derive the wallet's keys\n");
-    gzw_wipe(seed, sizeof seed);
-    gzw_wipe(&master, sizeof master);
-    return rc;
+    gzp_seed_source_t src;
+    gzp_keys_err_t e;
+    uint8_t spk[34];
+    unlock_tbl = gzp_wallet_unlock_api(wallet);
+    src = gzp_keys_seed_from_unlock(&unlock_tbl);
+    if (!gzp_keys_init(&keys, secp, wnet, &src, &e)) {
+        fprintf(stderr, e.why == GZP_KEYS_UNUSABLE ? "gazpacho: these words cannot be used with Gazpacho: make a new wallet\n"
+                                                   : "gazpacho: cannot derive the wallet's keys\n");
+        return GZP_EXIT_DATA;
+    }
+    if (!gzp_keys_wallet_output(&keys, 0, 0, first, &e) || !gzp_keys_payout_script(&keys, 0, spk, &e) ||
+        memcmp(spk, first->script_pubkey, sizeof spk) != 0) {
+        fprintf(stderr, "gazpacho: cannot derive the wallet's keys\n");
+        return GZP_EXIT_DATA;
+    }
+    return 0;
+}
+
+/* The transport's static key (keys.md 4), from one source at the start and
+ * at every re-key after a lock, so the unlock gives back the same key
+ * (gzp_net_rekey): the host's long-term key on a host; on a member, its
+ * process key, never used on the wire (every CONNECT brings its own
+ * contribution key); in a test build with test engines, whose CONNECTs and
+ * test pings name one key under any index, the lobby key at (0, 1). */
+static int transport_key(const gzp_options_t *o, uint8_t priv[32])
+{
+    gzp_keys_err_t e;
+    if (o->role == GZP_ROLE_HOST) {
+        if (gzp_keys_host(&keys, priv, NULL, NULL, &e)) return 0;
+#ifdef GZP_TEST_BUILD
+    } else if (o->test_engines > 0) {
+        if (gzp_keys_lobby_raw(&keys, 0, 1, priv, NULL, &e)) return 0;
+#endif
+    } else {
+        if (gzp_keys_member_process(&keys, priv, NULL, &e)) return 0;
+    }
+    fprintf(stderr, "gazpacho: cannot derive the transport's key\n");
+    return GZP_EXIT_DATA;
 }
 
 #ifdef GZP_TEST_BUILD
@@ -696,14 +722,13 @@ int main(int argc, char **argv)
         goto out;
     }
     OPENSSL_cleanse(rseed, sizeof rseed);
-    /* The transport's key behind the key file: derived from the unlocked
-     * seed (a stand-in until P8's per-member keys; transport.key is gone). */
-    if (gzp_wallet_transport_key(wallet, key_ok, secp, priv) != 0) {
-        fprintf(stderr, "gazpacho: cannot derive the transport key\n");
-        rc = GZP_EXIT_DATA;
-        goto out;
-    }
-    if ((rc = wallet_open(secp, wnet, &first)) != 0) goto out;
+    /* The key port over the unlocked seed (keys.md 9), then the transport's
+     * key from it (keys.md 4). A host's own pairs on 2' (keys.md K2). AT_JOIN
+     * (gzp.h, 0): a member's round secrets only from the scoped table; a host
+     * derives its own pairs for every round it proposes (integration F4). */
+    if ((rc = keys_open(secp, wnet, &first)) != 0) goto out;
+    gzp_keys_set_role(&keys, opt.role == GZP_ROLE_HOST, opt.member_signing == 0);
+    if ((rc = transport_key(&opt, priv)) != 0) goto out;
     gzp_log("wallet network=%s first-address=%s", opt.network, first.address);
 
     if (opt.check_chain) {
@@ -733,6 +758,8 @@ int main(int argc, char **argv)
         goto out;
     }
     have_net = 1;
+    net.key_fn = gzp_keys_net_fn;
+    net.key_ctx = &keys;
     gzp_hex(net.pub, 33, hex);
     if (opt.role == GZP_ROLE_HOST) {
         gzp_net_set_listen(&net, opt.listen_host, opt.listen_port);
@@ -759,6 +786,7 @@ int main(int argc, char **argv)
     ex.dir = &dir;
     ex.wallet = wallet;
     ex.net = &net;
+    ex.keys = &keys;
     ex.chain_hash = chain_hash;
     ex.chain = &chain;
     ex.tp = &tp;
@@ -818,8 +846,9 @@ int main(int argc, char **argv)
                 stopped = 1;
                 break;
             }
-            /* Derived again from the unlocked seed; the same wallet's, or no start. */
-            if (gzp_wallet_transport_key(wallet, key_ok, secp, priv) != 0 || gzp_net_rekey(&net, priv) != 0) {
+            /* Derived again from the unlocked seed, from the same source as at the
+             * start (transport_key); the same wallet's, or no start. */
+            if (transport_key(&opt, priv) != 0 || gzp_net_rekey(&net, priv) != 0) {
                 OPENSSL_cleanse(priv, sizeof priv);
                 fprintf(stderr, "gazpacho: the unlocked wallet does not give this transport's key\n");
                 rc = GZP_EXIT_DATA;
@@ -894,6 +923,7 @@ out:
     if (stopped) gzp_log("shutdown connections-closed transport=%d storage=%d lock=%d", net.peers != NULL,
                          ex.store_open, dir.lock_fd >= 0);
     gzp_exec_close_storage(&ex);
+    gzp_keys_free(&keys);
     gzp_wallet_free(wallet); /* every key wiped (storage 8.3) */
     wallet = NULL;
     if (stopped) gzp_log("shutdown storage-closed transport=%d storage=%d lock=%d", net.peers != NULL,

@@ -32,13 +32,16 @@ import socket  # noqa: E402
 from gzp_harness import Checks, Proc, dump_journal, kill_all, peer_id, ping_payloads, run  # noqa: E402
 
 check = Checks()
-FORBIDDEN = re.compile(r"sim_rng|sim_chacha|gzp_testping|gzp_standin_fail_at|gzp_standin_put_restore|gzp_standin_test_hooks")
+FORBIDDEN = re.compile(r"sim_rng|sim_chacha|gzp_testping|gzp_standin_fail_at|gzp_standin_put_restore|gzp_standin_test_hooks|gzp_keys_lobby_raw")
 # Each name the release check looks for, and that the test build does have, so
 # that each half of the check can fail (review of PR 27, M5).
-IN_TEST = ("gzp_testping", "gzp_standin_fail_at", "gzp_standin_put_restore", "gzp_standin_test_hooks")
+IN_TEST = ("gzp_keys_lobby_raw", "gzp_testping", "gzp_standin_fail_at", "gzp_standin_put_restore", "gzp_standin_test_hooks")
 TEST_STRINGS = (b"--test-pings", b"--test-timer-ms", b"--test-start-delay-ms", b"--test-node-error-at",
                 b"tests only (gazpacho-test)", b"test-timer fired", b"payload=%s", b"ping-payload",
-                b"--test-lock-after-drop", b"--test-lock-after-command", b"locked-memory node-zero")
+                b"test-key-secret epoch=", b"--test-node-error-on-command",
+                b"--test-lock-after-drop", b"--test-lock-after-command", b"locked-memory node-zero")  # P8's test strings, then the storage's
+# In both builds: the key port's command gate runs on every USER_COMMAND (review of PR 53, H1).
+BOTH_STRINGS = (b"key-scope-open scope=", b"key-join-armed scope=", b"key-scope-closed scope=")
 
 VECTORS_NAME = re.compile(r"^(gz_sg_vectors_build_never_ship|gz_sgv_)")
 VECTORS_TEXT = b"gazpacho signer vectors build: never ship"
@@ -101,6 +104,8 @@ def main():
                           "payload format %s" % leaked)
         unseen = [n.decode() for n in TEST_STRINGS if n not in tstb]
         check(not unseen, "the check would see them: the test build has each (missing %s)" % unseen)
+        absent = [n.decode() for n in BOTH_STRINGS if n not in relb or n not in tstb]
+        check(not absent, "the key port's command gate is in both builds (missing %s)" % absent)
         # The signer's vectors build, by symbol and by the marker's text, in
         # the release program and in the test program alike.
         for name, syms, blob in (("gazpacho", rs, relb), ("gazpacho-test", ts, tstb)):

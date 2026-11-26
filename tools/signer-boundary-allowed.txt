@@ -28,18 +28,19 @@ tests/signing/world.h	secp256k1_keypair_create	6
 # ---- END S3
 
 # ---- BEGIN S4/S5, must move to signer/ (review A of #71, re-review).
-# program/main.c: wallet_open derives the master key from the words outside
-# the signer to check the first receive address, a second path from the words
-# to the master key. At S4 (S5 for the funding wallet) the check becomes a
-# signer call, or is dropped: gzw_bip32_master and gzw_phrase_to_seed go.
-# Its secp256k1_ec_seckey_verify is key_ok's check of the transport key, which
-# goes with S4's ECDH move.
+# program/main.c: wallet_open, a second path from the words to the master key, is gone
+# with #53 (P8): keys_open asks program/keys.c, the derivation layer the signer will wrap
+# (signer.md S2), over the unlocked seed (unlock.h's seed()); keys.c moves into signer/
+# at S4. key_ok went with #54's vault transport key: the transport's key is the host
+# key or a member's process key, both from keys.c. program/keys_standin.c: the test
+# build's stand-in seed source for the unit tests.
 # program/store_unlock.c (PR 54, B3, in place of program/unlock_standin.c and
 # main.c's own use): set-up turns the words into the seed for the storage
 # layer outside the signer: the seed source; reasoned exemption until 1.0.0's
 # separate signer process.
-program/main.c	gzw_bip32_master	1
-program/main.c	secp256k1_ec_seckey_verify	1
+program/keys.c	gzw_bip32_child_priv	2
+program/keys.c	gzw_bip32_master	1
+program/keys_standin.c	gzw_phrase_to_seed	1
 program/store_unlock.c	gzw_phrase_to_seed	1
 # ---- END S4/S5
 
@@ -68,7 +69,7 @@ ports/net/peers.h	static_key	2
 program/executor.c	gzp_net_sign	2
 program/executor.c	hook:secret	1
 program/executor.c	hook:sign	1
-program/executor.c	port_secret	2
+program/executor.c	port_secret	3
 program/executor.c	port_sign	2
 program/net.c	gzp_net_sign	1
 # program/net.c: PR 54's review A, M-1: the lock wipes the transport's static
@@ -79,7 +80,7 @@ program/net.c	secp256k1_ec_pubkey_create	3
 program/net.c	secp256k1_ec_seckey_verify	1
 program/net.c	secp256k1_keypair_create	1
 program/net.c	secp256k1_schnorrsig_sign32	1
-program/net.c	static_key	11
+program/net.c	static_key	10
 program/net.h	gzp_net_sign	1
 tests/funding/regtest_harness.c	gzt_funding_build	1
 tests/funding/regtest_harness.c	gzt_funding_release	1
@@ -107,7 +108,10 @@ tests/node/test_node_lobby.c	secp256k1_schnorrsig_sign32	3
 # (it kills sg-keys-any-role). Two uses: the assignment and the reset. It
 # goes with the key port's host_secret at S3.
 tests/node/test_node_lobby.c	host_secret	2
+tests/program/fuzz_keys.c	secp256k1_ec_pubkey_create	1
 tests/program/silent_peer.c	secp256k1_ec_seckey_verify	1
+tests/program/test_keys_rare.c	gzw_bip32_derive_priv	1
+tests/program/test_keys_rare.c	gzw_bip32_master	1
 tests/program/test_net.c	gzp_net_sign	2
 tests/regtest/tree_regtest.c	factory_sign_all	1
 tests/regtest/tree_regtest.c	secp256k1_keypair_create	1
