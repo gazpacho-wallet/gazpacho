@@ -901,6 +901,19 @@ static int journal_step(size_t i)
     return st;
 }
 
+/* exit_step records of step i in state `state`, from journal record `from` on. */
+static size_t journal_step_count(size_t i, int state, size_t from)
+{
+    size_t n = 0;
+    for (size_t k = from; k < NJ; k++) {
+        gz_bytes_t s = { JPOOL + J[k].off, J[k].len }, v;
+        if (J[k].type != GZ_XE_REC_STEP) continue;
+        if (gz_rec_find(s, 2, &v) != 1 || v.len != 2 || gz_get_u16(v.data) != i) continue;
+        n += gz_rec_find(s, 6, &v) == 1 && v.len == 1 && v.data[0] == state;
+    }
+    return n;
+}
+
 static size_t journal_count(uint32_t type)
 {
     size_t n = 0;
@@ -1651,14 +1664,16 @@ static void test_failed(void)
     CHECK(journal_step(0) == GZ_XE_ST_BURIED);
     FAIL_OP[N_FAIL_OP++] = FUND;
     memcpy(FAIL_TX[N_FAIL_TX++], step_txid(0), 32);
-    size_t mark = NBC, steps_before = journal_count(GZ_XE_REC_STEP);
+    size_t mark = NBC, steps_before = journal_count(GZ_XE_REC_STEP), jmark = NJ;
     restart(first);
     CHECK(count_bcast_after(step_txid(0), mark) == 0);              /* never sent again */
-    CHECK(journal_step(0) == GZ_XE_ST_BURIED);                      /* no false "left the chain" */
+    CHECK(journal_step(0) == GZ_XE_ST_BURIED);
+    CHECK(journal_step_count(0, GZ_XE_ST_SENT, jmark) == 0);        /* no false "left the chain" */
     CHECK(has_log("exit_watch_failed"));
     run_until_end(40);
     CHECK(ended(&how) && how == GZ_XE_END_TREE_PATH_DONE);
     CHECK(count_bcast_after(step_txid(0), mark) == 0);
+    CHECK(journal_step_count(0, GZ_XE_ST_SENT, jmark) == 0);
     CHECK(journal_count(GZ_XE_REC_STEP) > steps_before);
 
     /* The funding spent long ago by something else: at risk, the end. */
