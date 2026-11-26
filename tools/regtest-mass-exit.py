@@ -25,7 +25,8 @@ mempool kept full of other traffic. It checks, against the node:
 The full mempool: the node runs with -maxmempool (5 MB by default) and,
 before each round of publishing, the tool fills it with its own large
 transactions at --fill sat/vB until the node refuses one for the mempool's
-own minimum (the mempool is full and evicting) or its memory use passes 90%.
+own minimum: the mempool is full, has evicted, and its minimum fee is above
+the filler's rate (the run fails if it never gets there).
 A tree transaction pays 0.1 sat/vB (T1's 100 sat/kvB), so against a full
 mempool its anchor child must pay: with --bump wallet (the default when
 filling) the child spends a test coin of the node's wallet and brings the
@@ -245,13 +246,11 @@ class Filler:
         self.node, self.coins, self.rate = node, coins, rate
         self.sent = 0
 
-    def fill(self, cap=80):
+    def fill(self, cap=120):
+        """Add filler until the node refuses one for its own minimum: it is
+        full, has evicted, and its minimum is now above the filler's rate."""
         made, why = 0, "cap"
         for _ in range(cap):
-            info = self.node.rpc("getmempoolinfo")
-            if info["usage"] >= 0.9 * info["maxmempool"]:
-                why = "usage"
-                break
             txid, vout, value = self.coins.take("filler")
             fee = math.ceil(self.rate * FILLER_VSIZE)
             change = value - FILLER_OUTPUTS * 330 - fee
@@ -433,7 +432,7 @@ def main():
         # The funding, and the test coins for the children and the filler.
         fund_addr = node.rpc("deriveaddresses", node.rpc("getdescriptorinfo", f"rawtr({script[4:]})")["descriptor"])[0]
         ftxid = node.w("sendtoaddress", fund_addr, f"{amount / 1e8:.8f}")
-        coins.split(n_nodes + 16 if bump == "wallet" else 0, 600 if fill_rate else 0)
+        coins.split(n_nodes + 16 if bump == "wallet" else 0, 900 if fill_rate else 0)
         node.rpc("generatetoaddress", 1, addr)
         ftx = node.rpc("getrawtransaction", ftxid, True, node.rpc("getbestblockhash"))
         vout = next(o["n"] for o in ftx["vout"] if o["scriptPubKey"]["hex"] == script)
@@ -498,6 +497,9 @@ def main():
                 continue
             made, why = filler.fill() if filler else (0, "-")
             before = node.rpc("getmempoolinfo")
+            if filler and (why != "minfee" or before["mempoolminfee"] * 1e5 <= fill_rate):
+                sys.exit(f"the mempool is not full: the filler stopped ({why}) with the minimum at "
+                         f"{before['mempoolminfee'] * 1e5:.2f} sat/vB, not above the filler's {fill_rate}")
             # Children first (the wallet is one), then every member at once, in a random order.
             for i in {i for _, i in steps}:
                 engine.child_for(i, node)
