@@ -353,9 +353,24 @@ static void release_locked(void *ctx, const uint8_t *tx, size_t len)
 static void w_forget(void *ctx, const uint8_t *tx, size_t len, const uint8_t *spent, size_t n_in)
 {
     gzp_wport_t *w = ctx;
-    (void)spent;   /* step 1: every coin freed */
-    (void)n_in;
+    int k;
     pthread_mutex_lock(&w->mu);
+    if (by_tx(w, tx, len, &k)) {
+        /* the inputs spent on chain leave the list: the list is read once a
+         * run, and a coin spent by a funding that went live (or elsewhere)
+         * would be offered again (F-1, review B of PR 101, round 2) */
+        const gzt_tx *t = &w->plans[k].priv_tx;
+        for (uint32_t i = 0; i < t->n_in && i < n_in; i++) {
+            if (!spent[i]) continue;
+            for (size_t j = 0; j < w->n_coins; j++)
+                if (w->coins[j].vout == t->in[i].prev_vout && memcmp(w->coins[j].txid, t->in[i].prev_txid, 32) == 0) {
+                    memmove(&w->coins[j], &w->coins[j + 1], (w->n_coins - j - 1) * sizeof w->coins[0]);
+                    memmove(&w->held[j], &w->held[j + 1], (w->n_coins - j - 1) * sizeof w->held[0]);
+                    w->n_coins--;
+                    break;
+                }
+        }
+    }
     release_locked(ctx, tx, len);
     pthread_mutex_unlock(&w->mu);
 }
