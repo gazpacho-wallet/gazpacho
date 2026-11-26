@@ -32,7 +32,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import struct
 import subprocess
 import sys
@@ -40,8 +39,9 @@ import time
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from gzp_harness import Checks, Proc, free_port, kill_all, passphrase_file  # noqa: E402
+from gzp_harness import Checks, Proc, kill_all, passphrase_file  # noqa: E402
 import lobby  # noqa: E402
+import regtest_kit  # noqa: E402
 from lobby import World, cmd, conditions, parse_tlv, started, state, tlv  # noqa: E402
 
 check = Checks()
@@ -66,51 +66,20 @@ class Terms(lobby.Terms):
 
 
 class Regtest:
-    """Our own regtest node and the Esplora look-alike over it."""
+    """Our own regtest node and the Esplora look-alike over it (regtest_kit's
+    Node and Shim: one node, no peers, the version's own relay floor)."""
 
     def __init__(self, bindir, work):
-        self.bin, self.dir = bindir, os.path.join(work, "bitcoind")
-        shutil.rmtree(self.dir, ignore_errors=True)
-        os.makedirs(self.dir)
-        self.rpc_port = free_port()
-        self.proc = subprocess.Popen(
-            [os.path.join(bindir, "bitcoind"), "-regtest", "-datadir=" + self.dir, "-listen=0", "-server=1",
-             "-rpcbind=127.0.0.1", "-rpcallowip=127.0.0.1", "-rpcport=%d" % self.rpc_port, "-txindex=1",
-             "-fallbackfee=0.0001", "-mintxfee=0.000001", "-printtoconsole=0", "-daemon=0"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        for _ in range(120):
-            try:
-                self.cli("getblockcount")
-                break
-            except RuntimeError:
-                time.sleep(0.5)
-        else:
-            raise SystemExit("bitcoind did not start")
-        pf = os.path.join(self.dir, "esplora.port")
-        self.es = subprocess.Popen([sys.executable, "-I", os.path.join(TOOLS, "esplora-regtest.py"), self.dir,
-                                    str(self.rpc_port), pf], stdout=subprocess.DEVNULL,
-                                   stderr=open(os.path.join(work, "esplora.log"), "w"))
-        for _ in range(80):
-            if os.path.exists(pf):
-                break
-            time.sleep(0.25)
-        with open(pf) as f:
-            self.url = "http://127.0.0.1:%s" % f.read().strip()
+        self.node = regtest_kit.Node(bindir, work, "bitcoind", listen=False)
+        self.bin, self.dir, self.rpc_port, self.proc = bindir, self.node.dir, self.node.rpc_port, self.node.proc
+        self.shim = regtest_kit.Shim(self.node, log=os.path.join(work, "esplora.log"))
+        self.es, self.url = self.shim.proc, self.shim.url
         self.cli("createwallet", "miner")
         self.miner = self.cli("-rpcwallet=miner", "getnewaddress")
         self.mine(101)
 
     def cli(self, *args):
-        r = subprocess.run([os.path.join(self.bin, "bitcoin-cli"), "-regtest", "-datadir=" + self.dir,
-                            "-rpcport=%d" % self.rpc_port, "-rpcconnect=127.0.0.1"] + list(args),
-                           capture_output=True, text=True, timeout=60)
-        if r.returncode != 0:
-            raise RuntimeError(r.stderr.strip())
-        out = r.stdout.strip()
-        try:
-            return json.loads(out)
-        except ValueError:
-            return out
+        return self.node.cli(*args)
 
     def mine(self, n):
         return self.cli("generatetoaddress", str(n), self.miner)
