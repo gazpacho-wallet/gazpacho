@@ -7,6 +7,7 @@ uses (docs/notes/chain-port.md) from Core's RPC: the program's chain worker,
 its watches, its broadcasts and the wallet's coins then meet a real chain.
 
     esplora-regtest.py BITCOIN_DATADIR RPC_PORT LISTEN_PORT_FILE
+                       [--name NAME] [--control FILE] [--no-package]
 
 Listens on 127.0.0.1 only, on a port the system picks, written to
 LISTEN_PORT_FILE. Reads the RPC cookie of the regtest node in BITCOIN_DATADIR.
@@ -22,8 +23,32 @@ library only. Test tool: never used against signet or any public network.
 Endpoints: /blocks/tip/height, /block-height/N, /block/H/header, /block/H,
 /block/H/txid/0, /tx/T/hex, /tx/T/status, /tx/T/outspend/N,
 /tx/T/merkle-proof, /scripthash/S/utxo (S is sha256 of the script, in either
-byte order), /fee-estimates, POST /tx. A package endpoint is answered 404 (no
-package relay), as some public servers do.
+byte order), /fee-estimates, /v1/fees/recommended (mempool.space's form; its
+minimumFee is the node's mempool minimum in sat/vB), POST /tx, and POST
+/txs/package and /v1/txs/package (a JSON array of transactions in hex,
+passed to Core's submitpackage; its answer is returned as Core wrote it, and
+an RPC error is answered 400 with Core's words).
+
+Options (docs/SLICE-1.5-PLAN.md, P7):
+  --name NAME     the operator this server stands for: sent as the
+                  X-Gz-Operator header of every answer and written in each
+                  log line (two look-alikes on one machine are told apart;
+                  the program is told the same name by --chain-operator)
+  --no-package    the package paths answer 404, as servers without package
+                  relay do (S12's 404 case)
+  --control FILE  a JSON object read again whenever the file changes, so a
+                  test changes what this server says while it runs:
+      "package": false             as --no-package (true: served)
+      "hide": ["<txid>", ...]      for each: /tx/T/status unconfirmed,
+                                   /tx/T/hex and /tx/T/merkle-proof 404, its
+                                   outputs unspent-and-absent and the coins
+                                   it spends unspent, everywhere (S13)
+      "freeze_at": H               the tip stays at height H: no block above
+                                   H is served, and what confirmed above it
+                                   is unconfirmed (S13 step 2)
+      "mempool_min": R             the mempool minimum this server reports,
+                                   in sat/vB, whatever the node's (S7 run d)
+  A missing or unreadable control file is no change.
 """
 import base64
 import hashlib
@@ -36,9 +61,49 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 DATADIR, RPC_PORT, PORT_FILE = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+NAME, CONTROL_FILE, PACKAGE_DEFAULT = "", "", True
+_a = sys.argv[4:]
+while _a:
+    if _a[0] == "--name" and len(_a) > 1:
+        NAME, _a = _a[1], _a[2:]
+    elif _a[0] == "--control" and len(_a) > 1:
+        CONTROL_FILE, _a = _a[1], _a[2:]
+    elif _a[0] == "--no-package":
+        PACKAGE_DEFAULT, _a = False, _a[1:]
+    else:
+        raise SystemExit("esplora-regtest: unknown option " + _a[0])
 LOCK = threading.Lock()
 THROTTLE = os.environ.get("GZ_ESPLORA_THROTTLE", "")
 RECENT = []   # when each GET answered in the throttle's window started
+
+
+class Control:
+    """What the test asks this server to say (--control), read again on change."""
+
+    def __init__(self):
+        self.stamp = None
+        self.package, self.hide, self.freeze_at, self.mempool_min = PACKAGE_DEFAULT, set(), None, None
+
+    def refresh(self):
+        if not CONTROL_FILE:
+            return
+        try:
+            st = os.stat(CONTROL_FILE)
+            stamp = (st.st_mtime_ns, st.st_size, st.st_ino)
+            if stamp == self.stamp:
+                return
+            with open(CONTROL_FILE) as f:
+                c = json.load(f)
+        except (OSError, ValueError):
+            return
+        self.stamp = stamp
+        self.package = bool(c.get("package", PACKAGE_DEFAULT))
+        self.hide = {str(t).lower() for t in c.get("hide", [])}
+        self.freeze_at = None if c.get("freeze_at") is None else int(c["freeze_at"])
+        self.mempool_min = None if c.get("mempool_min") is None else float(c["mempool_min"])
+
+
+CTL = Control()
 
 
 def throttled(now):
@@ -54,17 +119,23 @@ def throttled(now):
     return False
 
 
-def rpc(method, *params):
+def rpc_text(method, *params):
+    """(parsed reply, reply text) of one RPC call; raises on an RPC error."""
     with open(os.path.join(DATADIR, "regtest", ".cookie")) as f:
         auth = base64.b64encode(f.read().strip().encode()).decode()
     c = http.client.HTTPConnection("127.0.0.1", RPC_PORT, timeout=30)
     body = json.dumps({"jsonrpc": "1.0", "id": 1, "method": method, "params": list(params)})
     c.request("POST", "/", body, {"Authorization": "Basic " + auth, "Content-Type": "application/json"})
-    r = json.loads(c.getresponse().read())
+    text = c.getresponse().read().decode()
     c.close()
+    r = json.loads(text)
     if r.get("error"):
         raise RuntimeError(r["error"].get("message", "error"))
-    return r["result"]
+    return r["result"], text
+
+
+def rpc(method, *params):
+    return rpc_text(method, *params)[0]
 
 
 def dsha(b):
@@ -124,15 +195,60 @@ class Index:
 IDX = Index()
 
 
+def top():
+    """The tip this server shows: the chain's, or the frozen height (--control freeze_at)."""
+    tip = len(IDX.hashes) - 1
+    return tip if CTL.freeze_at is None else min(tip, CTL.freeze_at)
+
+
+def seen_height(h):
+    """A confirmation height as this server shows it: None (unconfirmed) above its tip."""
+    return None if h is None or h > top() else h
+
+
 def status(h):
+    h = seen_height(h)
     if h is None:
         return {"confirmed": False}
     hdr = rpc("getblockheader", IDX.hashes[h])
     return {"confirmed": True, "block_height": h, "block_hash": IDX.hashes[h], "block_time": hdr["time"]}
 
 
+def hidden(txid):
+    return txid in CTL.hide
+
+
+def spends():
+    """Every spend this server shows, chain then mempool: hidden spenders left out."""
+    moutputs, mspent = IDX.mempool()
+    chain = {k: v for k, v in IDX.spent.items() if not hidden(v[0])}
+    mem = {k: v for k, v in mspent.items() if not hidden(v[0])}
+    return moutputs, chain, mem
+
+
+def package(body):
+    """POST /txs/package: Core's submitpackage, its answer as Core wrote it."""
+    try:
+        txs = json.loads(body.decode())
+    except (UnicodeDecodeError, ValueError):
+        return 400, "text/plain", b"Invalid package: not JSON"
+    if not isinstance(txs, list) or not all(isinstance(t, str) for t in txs):
+        return 400, "text/plain", b"Invalid package: not an array of hex strings"
+    try:
+        result, text = rpc_text("submitpackage", txs)
+    except RuntimeError as e:
+        return 400, "text/plain", ("submitpackage RPC error: " + str(e)).encode()
+    # The reply is {"result":...,"error":null,"id":1}: the result's own text keeps
+    # Core's numbers as written (0.00000240, not 2.4e-06).
+    head, tail = '{"result":', ',"error":null,"id":1}'
+    t = text.strip()
+    raw = t[len(head):-len(tail)] if t.startswith(head) and t.endswith(tail) else json.dumps(result)
+    return 200, "application/json", raw.encode()
+
+
 def answer(path, body=None):
     """(code, content type, bytes) for one request."""
+    CTL.refresh()
     IDX.sync()
     p = path.split("?")[0].strip("/").split("/")
     if body is not None:
@@ -141,17 +257,19 @@ def answer(path, body=None):
                 return 200, "text/plain", rpc("sendrawtransaction", body.decode().strip(), 0).encode()
             except RuntimeError as e:
                 return 400, "text/plain", ("sendrawtransaction RPC error: " + str(e)).encode()
+        if p in (["txs", "package"], ["v1", "txs", "package"]) and CTL.package:
+            return package(body)
         return 404, "text/plain", b"Not found"
     if p == ["blocks", "tip", "height"]:
-        return 200, "text/plain", str(len(IDX.hashes) - 1).encode()
+        return 200, "text/plain", str(top()).encode()
     if len(p) == 2 and p[0] == "block-height":
         h = int(p[1])
-        if h >= len(IDX.hashes):
+        if h > top():
             return 404, "text/plain", b"Block not found"
         return 200, "text/plain", IDX.hashes[h].encode()
     if p[0] == "block" and len(p) >= 2:
         bh = p[1]
-        if bh not in IDX.hashes:
+        if bh not in IDX.hashes[:top() + 1]:
             return 404, "text/plain", b"Block not found"
         if len(p) == 3 and p[2] == "header":
             return 200, "text/plain", rpc("getblockheader", bh, False).encode()
@@ -167,26 +285,32 @@ def answer(path, body=None):
     if p[0] == "tx" and len(p) >= 3:
         txid = p[1]
         if p[2] == "hex":
+            if hidden(txid):
+                return 404, "text/plain", b"Transaction not found"
             try:
                 return 200, "text/plain", rpc("getrawtransaction", txid).encode()
             except RuntimeError:
                 return 404, "text/plain", b"Transaction not found"
         if p[2] == "status":
-            if txid in IDX.tx_height:
+            if txid in IDX.tx_height and not hidden(txid):
                 return 200, "application/json", json.dumps(status(IDX.tx_height[txid])).encode()
             return 200, "application/json", b'{"confirmed":false}'
         if p[2] == "outspend" and len(p) == 4:
             key = (txid, int(p[3]))
-            s = IDX.spent.get(key)
-            if s is None:
-                s = IDX.mempool()[1].get(key)
+            s = None
+            if not hidden(txid):
+                s = IDX.spent.get(key)
+                if s is not None and hidden(s[0]):
+                    s = None
+                if s is None:
+                    s = spends()[2].get(key)
             if s is None:
                 return 200, "application/json", b'{"spent":false}'
             return 200, "application/json", json.dumps({"spent": True, "txid": s[0], "vin": s[1],
                                                         "status": status(s[2])}).encode()
         if p[2] == "merkle-proof":
-            h = IDX.tx_height.get(txid)
-            if h is None:
+            h = seen_height(IDX.tx_height.get(txid))
+            if h is None or hidden(txid):
                 return 404, "text/plain", b"Transaction not found"
             txids = rpc("getblock", IDX.hashes[h], 1)["tx"]
             pos = txids.index(txid)
@@ -201,14 +325,14 @@ def answer(path, body=None):
             return 200, "application/json", json.dumps({"block_height": h, "merkle": merkle, "pos": pos}).encode()
     if len(p) == 3 and p[0] == "scripthash" and p[2] == "utxo":
         spk = IDX.scripts.get(p[1].lower())
-        moutputs, mspent = IDX.mempool()
+        moutputs, cspent, mspent = spends()
         if spk is None:
             spk = IDX.scripts.get(p[1].lower())   # first seen in the mempool
         res = []
         if spk is not None:
             for src in (IDX.outputs, moutputs):
                 for (t, v), (s, val, h) in src.items():
-                    if s == spk and (t, v) not in IDX.spent and (t, v) not in mspent:
+                    if s == spk and not hidden(t) and (t, v) not in cspent and (t, v) not in mspent:
                         res.append({"txid": t, "vout": v, "status": status(h), "value": val})
         res.sort(key=lambda r: (r["txid"], r["vout"]))
         return 200, "application/json", json.dumps(res).encode()
@@ -216,7 +340,7 @@ def answer(path, body=None):
         # the address's stats (chain_stats, mempool_stats): every transaction
         # that paid or spent it, as electrs gives them
         spk = IDX.scripts.get(p[1].lower())
-        moutputs, mspent = IDX.mempool()
+        moutputs, cspent, mspent = spends()
 
         def stats(funded, spent):
             # funded: [((txid, vout), value)]; spent: [((txid, vout), value, spender txid)]
@@ -226,15 +350,24 @@ def answer(path, body=None):
                     "tx_count": len(txs)}
         cf, mf, cs, ms = [], [], [], []
         if spk is not None:
-            cf = [((t, v), val) for (t, v), (s, val, h) in IDX.outputs.items() if s == spk]
-            mf = [((t, v), val) for (t, v), (s, val, h) in moutputs.items() if s == spk]
+            cf = [((t, v), val) for (t, v), (s, val, h) in IDX.outputs.items() if s == spk and not hidden(t)]
+            mf = [((t, v), val) for (t, v), (s, val, h) in moutputs.items() if s == spk and not hidden(t)]
             vals = dict(cf + mf)
-            cs = [(k, vals[k], IDX.spent[k][0]) for k in vals if k in IDX.spent]
-            ms = [(k, vals[k], mspent[k][0]) for k in vals if k in mspent and k not in IDX.spent]
+            cs = [(k, vals[k], cspent[k][0]) for k in vals if k in cspent]
+            ms = [(k, vals[k], mspent[k][0]) for k in vals if k in mspent and k not in cspent]
         body = {"scripthash": p[1].lower(), "chain_stats": stats(cf, cs), "mempool_stats": stats(mf, ms)}
         return 200, "application/json", json.dumps(body).encode()
     if p == ["fee-estimates"]:
         return 200, "application/json", b'{"1":1.0,"6":1.0,"144":1.0}'
+    if p == ["v1", "fees", "recommended"]:
+        # mempool.space's form; minimumFee is the node's mempool minimum
+        # (getmempoolinfo.mempoolminfee, BTC/kvB to sat/vB), or the control's
+        m = CTL.mempool_min
+        if m is None:
+            m = round(rpc("getmempoolinfo")["mempoolminfee"] * 1e5, 3)
+        rate = max(1.0, m)
+        return 200, "application/json", json.dumps({"fastestFee": rate, "halfHourFee": rate, "hourFee": rate,
+                                                    "economyFee": rate, "minimumFee": m}).encode()
     return 404, "text/plain", b"Not found"
 
 
@@ -247,6 +380,8 @@ class H(BaseHTTPRequestHandler):
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
+            if NAME:
+                self.send_header("X-Gz-Operator", NAME)
             self.end_headers()
             self.wfile.write(data)
         except (BrokenPipeError, ConnectionResetError):
@@ -265,8 +400,9 @@ class H(BaseHTTPRequestHandler):
         log = os.environ.get("GZ_ESPLORA_LOG")
         if log:
             with open(log, "a") as f:
-                f.write("%.3f port=%d wait=%.3f took=%.3f code=%d %s%s" % (
-                    t0, self.client_address[1], t1 - t0, time.time() - t1, r[0], self.path, chr(10)))
+                f.write("%.3f port=%d%s wait=%.3f took=%.3f code=%d %s%s" % (
+                    t0, self.client_address[1], " op=" + NAME if NAME else "", t1 - t0, time.time() - t1,
+                    r[0], self.path, chr(10)))
 
     def do_POST(self):
         n = int(self.headers.get("Content-Length", "0"))
