@@ -2,11 +2,20 @@
 """Every member of a large factory exits at once, on a real regtest node (R6).
 
 The Slice 1.5 plan's P8 (docs/SLICE-1.5-PLAN.md, test R6, the risk U-3): a
-factory of N members (128, 256 and 512 in the nightly run; 4 and 16 to
-prove the harness) is built and signed by tests/regtest/tree_massexit with the core in
+factory of N members (128 and 256 in the nightly run; 4 and 16 to prove
+the harness) is built and signed by tests/regtest/tree_massexit with the core in
 one process, funded on a node this tool starts, and then every member
 publishes its own exit path at the same time, from its own thread, against a
-mempool kept full of other traffic. It checks, against the node:
+mempool kept full of other traffic.
+
+R6 sizes (owner, 2026-11-26): 128 and 256 members; 256 is the wallet's real
+maximum. 512 is out of scope: the wallet refuses more than 256 members, and
+the imported tree builder writes out of bounds from 257 members on until
+factory_set_level_arity repairs it. It returns when the wallet supports it
+and the import is fixed upstream (docs/notes/r6-mass-exit.md). This tool
+refuses more than 256 members.
+
+It checks, against the node:
 
   1. every tree transaction is version 3 with its 240-sat P2A anchor last and
      is mined, one level after another, each in a one-parent-one-child
@@ -65,7 +74,7 @@ usage: tools/regtest-mass-exit.py BITCOIND_BIN_DIR DATADIR TREE_MASSEXIT --membe
   TREE_MASSEXIT     the built tests/regtest/tree_massexit
   --shape           interior widths from the root, e.g. 8,4 (default by N:
                     ps up to 4, 4 up to 16, 8 up to 64, 8,4 up to 128,
-                    15,4 up to 256, 15,15 above)
+                    15,4 up to 256; at most 256 members)
   --fill            filler rate in sat/vB; 0 = no filler (default 2)
 """
 import base64
@@ -91,6 +100,7 @@ FILLER_VSIZE = 10 + 1 + 41 + 3 + FILLER_OUTPUTS * 43 + 31 + 28  # an upper bound
 FILLER_COIN = 1_000_000
 BUMP_COIN = 50_000
 CHILD_VSIZE = 156                                             # anchor + P2WPKH in, P2WPKH out (an upper bound)
+MAX_MEMBERS = 256                                             # GZ_TREE_MAX_MEMBERS, the wallet's maximum
 ALREADY = ("txn-already-in-mempool", "txn-already-known", "already in")
 
 
@@ -103,9 +113,7 @@ def default_shape(n):
         return "8"
     if n <= 128:
         return "8,4"
-    if n <= 256:
-        return "15,4"
-    return "15,15"
+    return "15,4"
 
 
 # ------------------------------------------------------------------ the node
@@ -404,6 +412,8 @@ def main():
         return a[a.index(name) + 1] if name in a else default
 
     n = int(opt("--members", "4"))
+    if not 3 <= n <= MAX_MEMBERS:
+        sys.exit(f"--members is 3 to {MAX_MEMBERS}: the wallet's maximum (R6 sizes, docs/notes/r6-mass-exit.md)")
     shape = opt("--shape", default_shape(n))
     rate = int(opt("--rate", "100"))
     fill_rate = float(opt("--fill", "2"))

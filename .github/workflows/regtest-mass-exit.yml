@@ -4,14 +4,15 @@ name: Regtest mass exit
 # on a real Bitcoin Core regtest node (tools/regtest-mass-exit.py, with the
 # tree from tests/regtest/tree_massexit). Never a required check.
 #
-#   nightly (main):       128, 256 and 512 members. 256 is the most the rules
-#                         (GZ_TREE_MAX_MEMBERS) and the wallet accept; 512
-#                         rests on the import alone, through a known
-#                         out-of-bounds write in its factory_init that
-#                         factory_set_level_arity repairs
-#                         (tests/regtest/tree_massexit.c)
+#   nightly (main):       128 and 256 members (owner, 2026-11-26). 256 is the
+#                         wallet's real maximum. 512 is out of scope: the
+#                         wallet refuses more than 256 members, and the
+#                         imported tree builder writes out of bounds from
+#                         257 on until factory_set_level_arity repairs it.
+#                         It returns when the wallet supports it and the
+#                         import is fixed upstream (docs/notes/r6-mass-exit.md)
 #   on demand:            gh workflow run regtest-mass-exit.yml -R gazpacho-wallet/gazpacho \
-#                           -r <branch> -f members="128 256 512" -f fill=2
+#                           -r <branch> -f members="128 256" -f fill=2
 #   pull requests that touch the harness, the tree, the exit engine, the
 #   sweep, the chain port or the program tests (plan 1.3): the smoke set,
 #                         4 and 16 members against a full mempool, and 4
@@ -27,8 +28,8 @@ on:
   workflow_dispatch:
     inputs:
       members:
-        description: "Member counts, space-separated (3 to 1000)"
-        default: "128 256 512"
+        description: "Member counts, space-separated (3 to 256, the wallet's maximum)"
+        default: "128 256"
       fill:
         description: "Filler rate in sat/vB (0: no filler, anchor-only children)"
         default: "2"
@@ -68,7 +69,7 @@ jobs:
         run: |
           set -eu
           case "$EVENT" in
-            schedule) list="128:2 256:2 512:2" ;;
+            schedule) list="128:2 256:2" ;;
             pull_request) list="4:2 16:2 4:0" ;;
             workflow_dispatch)
               printf '%s' "$MEMBERS" | grep -Eqx '[0-9]+( [0-9]+)*' || { echo "::error::members: numbers separated by spaces"; exit 1; }
@@ -78,7 +79,7 @@ jobs:
           esac
           for x in $list; do
             m=${x%%:*}
-            [ "$m" -ge 3 ] && [ "$m" -le 1000 ] || { echo "::error::members out of 3..1000: $m"; exit 1; }
+            [ "$m" -ge 3 ] && [ "$m" -le 256 ] || { echo "::error::members out of 3..256 (R6 sizes, docs/notes/r6-mass-exit.md): $m"; exit 1; }
           done
           json=$(for x in $list; do printf '{"members":%s,"fill":"%s"}\n' "${x%%:*}" "${x#*:}"; done | paste -sd, -)
           echo "matrix={\"include\":[$json]}" >> "$GITHUB_OUTPUT"

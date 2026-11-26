@@ -2,10 +2,10 @@
  * mass-exit run on a real node (docs/SLICE-1.5-PLAN.md, P8 and test R6).
  *
  * Used by tools/regtest-mass-exit.py. Like tree_regtest (the T1 tree, 3 to
- * 16 members), but for any member count the imported builder signs in one
- * process (up to GZ_MASSEXIT_MAX members), with the interior levels given on
- * the command line. THE KEYS ARE TEST KEYS (terms.md section 11); never use
- * them for coins.
+ * 16 members), but for any member count up to GZ_TREE_MAX_MEMBERS (256, the
+ * wallet's real maximum), with the interior levels given on the command
+ * line. THE KEYS ARE TEST KEYS (terms.md section 11); never use them for
+ * coins.
  *
  *   tree_massexit params N RATE SHAPE
  *       -> "levels L1,..,3 D d funding R nodes K script HEX rules yes|no"
@@ -20,19 +20,17 @@
  * member per pseudo-Spilman leaf), and every level down to the deepest leaf
  * is fixed (D), as the Slice 1 tree is (signing-round.md 4.1).
  *
- * At up to GZ_TREE_MAX_MEMBERS (256) members the tree is built twice, by the
- * rules (core/tree, from terms whose one shape entry is SHAPE) and by the
- * import signed with every key, and refused unless the two agree byte for
- * byte, as tree_regtest does. Above 256 the rules refuse the member count
- * (gz_tree_params: GZ_TREE_P_COUNT; signing-round.md 12), so only the import
- * builds and signs it; the split, D and R(root) still come from the rules'
- * own arithmetic (gz_tree_split, gz_tree_requirement), and "rules no" says
- * that the byte-for-byte check was not possible.
+ * The tree is built twice, by the rules (core/tree, from terms whose one
+ * shape entry is SHAPE) and by the import signed with every key, and refused
+ * unless the two agree byte for byte, as tree_regtest does ("rules yes").
  *
- * The import's factory_init writes past its timed-layer array from 257
- * members on and factory_set_level_arity repairs it (docs/notes/
- * tree-scale-check.md, finding 2): it is called immediately after, as in
- * tree_regtest and tree_shapes.
+ * R6 SIZES (owner, 2026-11-26): 128 and 256 members. 512 is out of scope:
+ * the wallet refuses more than 256 members, and the imported tree builder's
+ * factory_init writes out of bounds from 257 members on until
+ * factory_set_level_arity repairs it (docs/notes/tree-scale-check.md,
+ * finding 2). This driver therefore refuses more than 256. 512 returns when
+ * the wallet supports it and the import is fixed upstream
+ * (docs/notes/r6-mass-exit.md).
  *
  * Exit 0 on success, 1 on a refusal, 2 on bad arguments. */
 #include "../tree/tree_test.h"
@@ -42,7 +40,7 @@
 
 #include <secp256k1_musig.h>
 
-#define GZ_MASSEXIT_MAX 1000
+#define GZ_MASSEXIT_MAX GZ_TREE_MAX_MEMBERS   /* R6: 128 and 256; see the top */
 #define CHANNEL_SAT 100000u         /* T1's channel_sat */
 #define LSTOCK_CSV 144u
 
@@ -80,7 +78,7 @@ static size_t parse_shape(const char *s, uint8_t levels[GZ_TREE_MAX_LEVELS])
 
 /* BIP 327 KeyAgg of host then members, no sorting, then the BIP 341 tweak
  * with no script tree: the funding output key. tree_import's agg_tweak does
- * the same up to 256 members; this one has no cap. */
+ * the same; this copy is checked against it below. */
 static int funding_key(const secp256k1_pubkey *pks, size_t n, uint8_t out[32])
 {
     const secp256k1_pubkey **ptrs = malloc(n * sizeof *ptrs);
