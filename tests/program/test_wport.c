@@ -11,6 +11,7 @@
 #include <string.h>
 #include <time.h>
 
+#include <openssl/crypto.h>
 #include <secp256k1.h>
 
 #include "wport.h"
@@ -33,6 +34,14 @@ static int seed_of(void *ctx, uint8_t out64[64])
 }
 
 static secp256k1_context *secp;
+static int LOCKED;   /* the seed source refuses, as a locked wallet's does */
+
+static int seed_lockable(void *ctx, uint8_t out64[64])
+{
+    (void)ctx;
+    memset(out64, LOCKED ? 0 : 0x42, 64);
+    return LOCKED ? -1 : 0;
+}
 static uint8_t factory[34];
 
 static void open_b(gzp_wport_t *w, uint32_t burial)
@@ -154,6 +163,53 @@ static void test_holds_across_publish(void)
     /* so only the new coin is offered */
     CHECK(w.port.can_plan(w.port.ctx, 200000, 100, &have, &n) == 1 && have == 300000 && n == 1);
     CHECK(w.port.can_plan(w.port.ctx, 350000, 100, &have, &n) == 0);
+    gzp_wport_close(&w);
+}
+
+static int has_bytes(const void *hay, size_t n, const unsigned char *needle, size_t k)
+{
+    for (size_t i = 0; i + k <= n; i++)
+        if (memcmp((const uint8_t *)hay + i, needle, k) == 0) return 1;
+    return 0;
+}
+
+/* The BIP 32 master key is never kept (signer.md 2.1, keys.md 8; the signer-boundary review of
+ * #66): the port asks the seed source for each plan, signature and spend-back, and wipes what it
+ * derives. Its memory holds neither the master's private key nor its chain code, before or after
+ * a plan and its signature. While the source refuses (the wallet locked) nothing is planned or
+ * signed; once it answers again, the port plans and signs. */
+static void test_master_not_kept(void)
+{
+    static gzp_wport_t w;
+    gzp_unlock_t u;
+    gzt_coin c;
+    uint32_t h = 100;
+    static uint8_t tx[GZ_FUND_MAX_TX], out[GZ_FUND_MAX_TX];
+    uint8_t seed[64];
+    size_t len = 0, n = 0;
+    gzw_xprv m;
+    gzw_reason why;
+    memset(&u, 0, sizeof u);
+    u.seed = seed_lockable;
+    LOCKED = 0;
+    CHECK(gzp_wport_open(&w, secp, &u, GZW_NET_SIGNET, 0) == 0);
+    memset(seed, 0x42, 64);
+    CHECK(gzw_bip32_master(secp, seed, 64, &m, &why) == 1);
+    CHECK(!has_bytes(&w, sizeof w, m.key, 32) && !has_bytes(&w, sizeof w, m.chain_code, 32));
+    c = coin(&w, 0, 0, 500000, 0xe1);
+    CHECK(gzp_wport_publish(&w, &c, &h, 1, 110) == 0);
+    LOCKED = 1;                                       /* locked: no plan */
+    CHECK(plan(&w, 300000, tx, &len) == 0);
+    LOCKED = 0;                                       /* unlocked: a plan */
+    CHECK(plan(&w, 300000, tx, &len) == 1);
+    CHECK(!has_bytes(&w, sizeof w, m.key, 32) && !has_bytes(&w, sizeof w, m.chain_code, 32));
+    LOCKED = 1;                                       /* locked: the plan is not signed */
+    CHECK(w.port.sign_plan(w.port.ctx, w.plans[0].info.txid, out, sizeof out, &n) == 0);
+    LOCKED = 0;                                       /* unlocked: it is */
+    CHECK(w.port.sign_plan(w.port.ctx, w.plans[0].info.txid, out, sizeof out, &n) == 1 && n > 0);
+    CHECK(!has_bytes(&w, sizeof w, m.key, 32) && !has_bytes(&w, sizeof w, m.chain_code, 32));
+    gzw_wipe(&m, sizeof m);
+    OPENSSL_cleanse(seed, sizeof seed);
     gzp_wport_close(&w);
 }
 
@@ -1760,6 +1816,7 @@ int main(void)
     factory[0] = 0x51;
     factory[1] = 0x20;
     memset(factory + 2, 0xab, 32);
+    test_master_not_kept();
     test_can_plan_before_and_after();
     test_can_plan_agrees_with_plan();
     test_holds_across_publish();
