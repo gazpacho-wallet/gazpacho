@@ -75,9 +75,11 @@ def main():
         w.open(h, t)
         check(h.wait_for(r"slot-opened scope=%s .*role=host" % t.tag, timeout=20) is not None,
               "2: with the coin, the same open is accepted and the lobby opens")
+        # the open's answer may come just after its slot-opened line: waited for, not read at once
+        m = h.wait_for(r"command-result id=\S+ status=(\d+) error=(\S*)", timeout=20)
+        check(m is not None and m.group(1).startswith("2") and m.group(2) == "-",
+              "2: the open's answer is a success (%s)" % (m.group(0) if m else "no answer"))
         rs = results(h)
-        check(rs and rs[-1][0].startswith("2") and rs[-1][1] == "-",
-              "2: the open's answer is a success (%s)" % (rs[-1:],))
         rs = first + rs
         check(not any(e in ("no_wallet", "coins_unknown") for _, e in rs),
               "3: no answer is no_wallet or coins_unknown (%s)" % rs)
