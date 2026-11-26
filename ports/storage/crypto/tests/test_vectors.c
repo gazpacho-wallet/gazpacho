@@ -6,7 +6,10 @@
 
 #include <sodium.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
+
+#include "gz_storage_files.h"
 
 static const char PW1[] = "gazpacho test passphrase, never for coins: caf\xc3\xa9";
 static const char PW1_NFD[] = "gazpacho test passphrase, never for coins: cafe\xcc\x81";
@@ -459,6 +462,46 @@ static void e5_to_e9m(void)
     gz_sc_guard_clear(&g2);
     gb[60] ^= 1;
     CHECK_ERR(gz_sc_guard_open(v, gb, gl, &g2), GZ_SC_DAMAGED);
+
+    /* Review B of PR 54, M2: the program's keys from the seed are never a
+     * storage key: no label gives KG, its nonce key or BK (E9, E10). */
+    {
+        static const char *const labels[] = {"guard", "guard nonce", "backup", "start counter",
+                                              "start counter nonce", "high water", "journal recovery"};
+        static const char *const storage_hex[] = {
+            "339b2585661fdf58c0d401e63d10bb836bb3b272b6b7dbb5f3d9e417fb630deb",
+            "9a4617d2c2e8fb4163ddbe6b6b1968302c0a65114f261b444605aef8cf4e1b00"};
+        uint8_t o[32], sk[2][32], gn[32];
+        for (size_t i = 0; i < 2; i++)
+            for (size_t b = 0; b < 32; b++) {
+                unsigned x = 0;
+                sscanf(storage_hex[i] + 2 * b, "%2x", &x);
+                sk[i][b] = (uint8_t)x;
+            }
+        CHECK_ERR(sc_derive(SEED64, 64, "guard nonce", SIGNET, 32, gn), GZ_SC_OK);
+        for (size_t i = 0; i < sizeof labels / sizeof labels[0]; i++) {
+            CHECK_ERR(gz_sc_vault_derive(v, labels[i], o), GZ_SC_OK);
+            CHECK(memcmp(o, sk[0], 32) != 0 && memcmp(o, sk[1], 32) != 0 && memcmp(o, gn, 32) != 0);
+        }
+        sodium_memzero(o, sizeof o);
+    }
+
+    /* E9c: the start counter (storage 10.3). */
+    derive_hex("E9c KC", SEED64, 64, "start counter", SIGNET, 32, "d8e60802380ea8acdcfaea75caab9965c38a21b287b27d6977758ad310ef194f");
+    {
+        uint8_t sb[GZ_SC_STARTS_LEN];
+        uint64_t sv = 0;
+        r_queue("start counter", NULL);
+        CHECK_ERR(gz_sc_counter_seal(v, 6, sb), GZ_SC_OK);
+        eq_hex("E9c start counter", sb, sizeof sb,
+               "475a53544152543101f61eee3b63a380a477a063af32b2bbc97c9ff9f01f2c42"
+               "25e9739881080000003e1548311c3b6d3514c42130359d6d276e7ec4f8cab128"
+               "9bd7436585cc222346a83020831e7b5eed7bda6cf75aaca1a1");
+        CHECK_ERR(gz_sc_counter_open(v, sb, sizeof sb, &sv), GZ_SC_OK);
+        CHECK(sv == 6);
+        sb[50] ^= 1;
+        CHECK_ERR(gz_sc_counter_open(v, sb, sizeof sb, &sv), GZ_SC_DAMAGED);
+    }
 
     /* E9m: the mark file. */
     gz_sc_framekey_t *kh = NULL;

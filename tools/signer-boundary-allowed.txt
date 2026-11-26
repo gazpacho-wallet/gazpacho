@@ -42,13 +42,13 @@ tests/signing/world.h	secp256k1_keypair_create	6
 # signer call, or is dropped: gzw_bip32_master and gzw_phrase_to_seed go.
 # Its secp256k1_ec_seckey_verify is key_ok's check of the transport key, which
 # goes with S4's ECDH move.
-# program/unlock_standin.c: the stand-in unlock turns the words into the seed
-# outside the signer. At S4 the signer reads the seed only through its seed
-# source and does this step itself.
+# program/store_unlock.c (PR 54, B3, in place of program/unlock_standin.c and
+# main.c's own use): set-up turns the words into the seed for the storage
+# layer outside the signer: the seed source; reasoned exemption until 1.0.0's
+# separate signer process.
 program/main.c	gzw_bip32_master	1
-program/main.c	gzw_phrase_to_seed	1
 program/main.c	secp256k1_ec_seckey_verify	1
-program/unlock_standin.c	gzw_phrase_to_seed	1
+program/store_unlock.c	gzw_phrase_to_seed	1
 # ---- END S4/S5
 
 # ---- S4: everything else. The signing engine's, the lobby's and the
@@ -82,11 +82,15 @@ program/executor.c	hook:sign	1
 program/executor.c	port_secret	2
 program/executor.c	port_sign	2
 program/net.c	gzp_net_sign	1
-program/net.c	secp256k1_ec_pubkey_create	2
+# program/net.c: PR 54's review A, M-1: the lock wipes the transport's static
+# key and the unlock gives it back after checking it is the same key
+# (gzp_net_forget_key, gzp_net_key_is_zero, gzp_net_rekey): 5 more uses of
+# static_key and one of secp256k1_ec_pubkey_create; they move with the key at S4.
+program/net.c	secp256k1_ec_pubkey_create	3
 program/net.c	secp256k1_ec_seckey_verify	1
 program/net.c	secp256k1_keypair_create	1
 program/net.c	secp256k1_schnorrsig_sign32	1
-program/net.c	static_key	6
+program/net.c	static_key	11
 program/net.h	gzp_net_sign	1
 tests/funding/regtest_harness.c	gzt_funding_build	1
 tests/funding/regtest_harness.c	gzt_funding_release	1
@@ -114,6 +118,12 @@ tests/net/test_testkind.c	static_key	1
 tests/net/test_wipes.c	secp256k1_ec_pubkey_create	1
 # K1 (#95): the outsider join signs no binding (3 -> 1)
 tests/node/test_node_lobby.c	secp256k1_schnorrsig_sign32	1
+# Test only (#92): test_keys_own_role_only sets a member's key port to
+# w_any_host_secret, a port that hands out a host key to anyone who asks, so
+# that only gz_sg_keys' role check can refuse a host-role key on a member
+# (it kills sg-keys-any-role). Two uses: the assignment and the reset. It
+# goes with the key port's host_secret at S3.
+tests/node/test_node_lobby.c	host_secret	2
 tests/program/silent_peer.c	secp256k1_ec_seckey_verify	1
 tests/program/test_net.c	gzp_net_sign	2
 tests/regtest/tree_regtest.c	factory_sign_all	1

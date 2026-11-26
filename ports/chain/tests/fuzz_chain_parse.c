@@ -1,7 +1,8 @@
 /*
  * Fuzz target for everything in ports/chain that reads bytes a chain server
- * chose: the JSON tokenizer, every Esplora answer parser, the transaction
- * parser and the host and hex helpers. The first byte picks the parser, the
+ * chose: the JSON tokenizer, every Esplora answer parser (the package answer
+ * included), the transaction parser and the host and hex helpers. The first
+ * byte picks the parser, the
  * rest is the answer. The answer is copied into a heap block of exactly its
  * size, with no terminating zero, so that reading one byte too far is seen
  * by AddressSanitizer.
@@ -20,7 +21,7 @@
 #include "../esplora_parse.h"
 #include "../json.h"
 
-#define PARSERS 16
+#define PARSERS 17
 
 static void must(int ok) {
   if (!ok) abort();
@@ -147,6 +148,28 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         gz_header_parse((const uint8_t *)s, &h);
         gz_header_hash((const uint8_t *)s, id);
         for (int net = 0; net <= 5; net++) (void)gz_header_check_pow((const uint8_t *)s, (gz_network)net);
+      }
+      break;
+    }
+    case 16: {
+      /* the package answer, about two fixed txids. Whatever it says,
+       * "accepted" is exactly "success" with both listed and neither
+       * failed, and the texts are terminated within their buffers. */
+      uint8_t p[GZ_HASH_LEN], c[GZ_HASH_LEN];
+      gz_es_package pk;
+      memset(p, 0xaa, sizeof p);
+      memset(c, 0xbb, sizeof c);
+      if (gz_es_parse_package(s, len, p, c, &pk)) {
+        int both_in = pk.parent_listed && !pk.parent_failed && pk.child_listed && !pk.child_failed;
+        must(memchr(pk.message, 0, sizeof pk.message) != NULL);
+        must(memchr(pk.parent_error, 0, sizeof pk.parent_error) != NULL);
+        must(memchr(pk.child_error, 0, sizeof pk.child_error) != NULL);
+        must(pk.accepted == both_in);
+        must((strcmp(pk.message, "success") == 0) == both_in);
+        must(!pk.parent_known || pk.parent_listed);
+        must(!pk.child_known || pk.child_listed);
+        must(pk.parent_failed || pk.parent_error[0] == '\0');
+        must(pk.child_failed || pk.child_error[0] == '\0');
       }
       break;
     }

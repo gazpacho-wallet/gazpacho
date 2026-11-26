@@ -96,7 +96,8 @@ enum {
   SIM_PKG_FAIL,     /* at /txs/package: refuses the parent (and so the child) */
   SIM_PKG_DOWN,
   SIM_PKG_BUSY_FIRST, /* /txs/package answers 429; /v1/txs/package accepts */
-  SIM_PKG_KNOWN       /* at /txs/package: accepts, both already in its mempool */
+  SIM_PKG_KNOWN,      /* at /txs/package: accepts, both already in its mempool */
+  SIM_PKG_LIE         /* at /txs/package: "success" listing the parent only; takes neither */
 };
 
 typedef struct sim_view {

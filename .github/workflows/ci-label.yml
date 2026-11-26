@@ -1,0 +1,75 @@
+name: CI (label)
+# Two labels act on a pull request when they are added; any other label
+# starts nothing but two skipped jobs, and cancels nothing.
+#
+# full-ci: runs ci.yml again, heavy tier included, with the label in the
+#   event. Its checks are named "label / <job>": they neither satisfy nor
+#   hide the pull request's required checks. Later pushes run the heavy tier
+#   in the pull request's own run while the label stays.
+# signer-boundary-growth: re-runs the job "signer boundary" of the pull
+#   request's own CI run, which reads the label through the API when it
+#   runs, so the required check itself turns green or red with the label.
+#   It waits for that run to finish first. A pull request from a fork gets a
+#   read-only token here, so a maintainer re-runs the job by hand.
+# docs/notes/ci.md, "Tiers".
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-label-${{ github.event.pull_request.number }}-${{ github.event.label.name }}
+  cancel-in-progress: true
+
+jobs:
+  label:
+    name: label
+    if: github.event.label.name == 'full-ci'
+    # signer boundary reads the pull request's labels; nothing else needs
+    # more than contents: read
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/ci.yml
+
+  growth:
+    name: re-run signer boundary with the label
+    if: github.event.label.name == 'signer-boundary-growth'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    # actions: write, to re-run one job of the pull request's run; nothing else
+    permissions:
+      actions: write
+    steps:
+      - name: Re-run "signer boundary" in the pull request's own run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -eu
+          # The newest ci.yml run of this commit from a pull request event
+          # that belongs to this pull request (the same commit can head
+          # another pull request); wait while it runs (a re-run is allowed
+          # only once it is done).
+          for i in $(seq 1 170); do
+            line=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?event=pull_request&head_sha=$SHA&per_page=50" \
+                     --jq "[.workflow_runs[] | select(any(.pull_requests[]; .number == $PR))][0] | select(. != null) | \"\\(.id) \\(.status)\"")
+            if [ -n "$line" ] && [ "${line#* }" = completed ]; then break; fi
+            sleep 30
+          done
+          [ -n "$line" ] && [ "${line#* }" = completed ] ||
+            { echo "::error::no finished CI run of $SHA for pull request $PR to re-run; re-run signer boundary by hand"; exit 1; }
+          run=${line%% *}
+          job=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/jobs?per_page=100" \
+                  --jq '.jobs[] | select(.name == "signer boundary") | "\(.id) \(.conclusion)"' | head -n 1)
+          [ -n "$job" ] || { echo "::error::run $run has no job signer boundary"; exit 1; }
+          if [ "${job#* }" = success ]; then
+            echo "signer boundary already passed in run $run; nothing to re-run"
+            exit 0
+          fi
+          gh api -X POST "repos/$GITHUB_REPOSITORY/actions/jobs/${job%% *}/rerun" > /dev/null ||
+            { echo "::error::could not re-run signer boundary (a fork's pull request?); a maintainer re-runs it by hand"; exit 1; }
+          echo "re-running signer boundary in https://github.com/$GITHUB_REPOSITORY/actions/runs/$run" | tee -a "$GITHUB_STEP_SUMMARY"

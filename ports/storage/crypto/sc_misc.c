@@ -103,6 +103,14 @@ void gz_sc_attempts_wrong(gz_sc_attempts_t *a, uint64_t now_s)
     count_up(a);
 }
 
+void gz_sc_attempts_rearm(gz_sc_attempts_t *a, uint64_t now_s)
+{
+    uint64_t until = sat_add(now_s, delay_after(a->wrong_in_a_row));
+    a->last_wrong_s = now_s;
+    if (until > a->blocked_until_s)
+        a->blocked_until_s = until;
+}
+
 void gz_sc_attempts_right(gz_sc_attempts_t *a, uint64_t now_s)
 {
     a->wrong_in_a_row = 0;

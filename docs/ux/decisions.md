@@ -203,8 +203,45 @@ Order and shape:
 5. The watcher's status fields can hold more than one watcher.
 6. P2A anchors go on everything a tower might publish, even at 0.1 sat/vB.
 
+## 2026-11-26
+
+### 17. Owner decisions of 26 November (owner, 2026-11-26)
+
+**a. Idle auto-lock, right after Slice 1.** "Right after, get it on the roadmap for the next slice." The wallet locks itself after N minutes without use. N is a setting, and the lock wipes keys as the manual lock does (#54). After it: keys unlocked for one lobby only, before Slice 2, and a separate signer process, before 1.0.0. Recorded in `PLAN.md` ("Idle lock") and `SLICES.md` ("Right after Slice 1", "Key exposure").
+
+**b. Chain servers: every option covered.** "We need all the options covered." These are added, in this order:
+1. Electrum-protocol servers (Fulcrum, ElectrumX, electrs).
+2. The person's own Bitcoin node over RPC, pruned nodes included.
+3. Compact block filters (BIP 157/158), as the default private light mode before mainnet.
+
+Today's comparison of two Esplora operators stays. This moves compact block filters from "later" (16g) to "before mainnet". Trust and privacy for each, and how each closes the host wallet's single-server scan gap, are in `SLICES.md` ("Chain sources").
+
+**c. A stuck funding is bumped, never replaced.** The funding's txid is fixed by the pre-signed tree, so a replacement by fee would kill the factory (H16). The funding stays version 2.
+1. Coin selection prefers to leave a change output, adding a small coin if needed.
+2. If no change is possible, the funding preview warns plainly and offers a 240-sat P2A "speed-up output". It is on by default when the chosen fee rate is near the relay floor (0.1 to 1 sat/vB), and off otherwise.
+3. A setting, "Speed-up output on fundings": Auto (the default, as in 2), Always or Never.
+4. A "Speed up" button for the host on a stuck funding. It has a preview, spends the change or the speed-up output with a child (CPFP), and never replaces the funding.
+   - Status, for the host and for members: "Funding not confirmed: waited N blocks; the lobby ends in M blocks if it doesn't confirm". M counts to the funding deadline, the tip at the acknowledgement plus 36.
+   - The line turns amber once the funding has waited longer than normal, and red when M is small (for example 6 or fewer).
+   - Members see "The host's funding is waiting; you are released automatically in M blocks", with no button. For later: members could bump through a keyless anchor.
+5. Before mainnet, version 3 for fundings is reconsidered. It would only add zero-fee fundings, which are not needed.
+
+**Refinement (owner, 2026-11-26): the speed-up output is purely a host setting.** It is not part of the lobby terms, it is not sent to members, and members cannot object: how the host funds is the host's business. The default stays Auto. Members still see the funding-waiting countdown, because it is about their seat, not the funding's shape. The members' checks read only the funding output the tree spends, so an extra change or anchor output never affects their safety rule (`spec/safety-rule.md` C1).
+
+**Second refinement (owner, 2026-11-26).**
+- **"Never" stays fully allowed.** A funding with no change output and no anchor is a valid host choice.
+- **A warning when the funding has no speed-up handle** (no change and no anchor) **and its rate is close to what may not get through.** "Close" means within a margin, for example 2×, of the higher of two figures: the static relay floor, and the current mempool minimum fee the chain servers report (the higher of the two servers' answers).
+- The warning says plainly: "This funding can't be sped up if it gets stuck. If it doesn't confirm within M blocks, the lobby ends and the members are released. The coins stay yours."
+- **It never blocks.** The host can still go ahead.
+- **The chain port needs a "current minimum fee" read** (Esplora's fee estimates and mempool information) as part of this feature.
+- All of it is host-only, as before.
+
+**Design correction (review B of #108, 2026-11-26): the speed-up output is a host-keyed anchor, not a keyless P2A.** It is a small P2TR output to a host key, which only the host can spend. The reason: A keyless P2A on a version-2 funding would let anyone pin it with a large, low-fee child, griefing the host's bump and its deadline spend-back (review B of #108, M-1). A TRUC (version 3) funding with a P2A is the alternative, to consider before mainnet. Items 2 to 4 above read "speed-up output" in this sense.
+
+Recorded in `PLAN.md` ("Funding" and the work list), `SLICES.md` ("A stuck funding"), `spec/safety-rule.md` (C1, H16) and `spec/exit.md` (5.7, H16). It answers Q2 of the Slice 1.5 plan (PR #99).
+
 ## 2026-11-25
 
-### 17. The person's secret is called a password, not a passphrase (owner, 2026-11-25)
+### 18. The person's secret is called a password, not a passphrase (owner, 2026-11-25)
 
 In Bitcoin a "passphrase" is the BIP39 seed extension, which changes which wallet the words open; Gazpacho uses none. Its secret is a password that locks Gazpacho's files on this computer and signs the person in; the 24 words alone restore the wallet. So every shown text says "password", and the sign-in screen is kept minimal, as in Sparrow, Electrum, Ledger Live and Trezor Suite. The API's field names, error codes and paths (`passphrase`, `wrong_passphrase`, ...) are protocol and keep their names for now; renaming them is a separate decision.

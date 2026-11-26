@@ -71,6 +71,11 @@ typedef struct gz_api_config {
     void *ctx;
     /* Clock override for tests: milliseconds since the epoch. NULL = real clock. */
     int64_t (*now_ms)(void *ctx);
+    /* The backend keeps the attempts file itself (the wallet's storage,
+     * storage 12.3): the server neither loads, gates, counts nor writes it;
+     * a WRONG answer carries the backend's retry_after_s (a) and wrong_in_row
+     * (b), and a BUSY one its retry_after_s. One writer of attempts.gza. */
+    int backend_attempts;
 } gz_api_config;
 
 /* Threads (review B5). The loop thread is the one thread that calls

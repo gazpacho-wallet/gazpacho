@@ -20,6 +20,7 @@
 #define GZP_EXIT_DATA      4  /* the data folder or a file in it is unusable */
 #define GZP_EXIT_CHAIN     5  /* a chain server is on another network, or unreachable at start */
 #define GZP_EXIT_STORAGE   6  /* a failed journal write could not be undone: not restarted (store.h) */
+#define GZP_EXIT_LOCKED_OUT 8  /* gazpacho-test: the unlock from the passphrase file did not open the wallet */
 #define GZP_EXIT_LIMIT     7  /* the node needs more than a part of the program holds (watches): no restart can fix it */
 #define GZP_EXIT_TEST      70 /* a --test-crash-* hook fired (tests only) */
 
@@ -63,6 +64,7 @@ typedef struct {
     int test_storage_fail_at;      /* the K-th append of the first incarnation fails */
     int test_start_delay_ms;       /* keep the start open this long, the loop running (inputs queued) */
     int test_listen_during_start;  /* host: listen before the start, so its queue is exercised */
+    const char *test_entropy_hex;  /* a new wallet's entropy, fixed (64 hex digits) */
     const char *test_restore_from; /* put this journal in place as a restore (sets the marker) */
     int test_sync_fail_at;         /* the K-th batch is written, then its sync reports failure */
     int test_cut_fail;             /* ... and cutting it back fails too (the store is poisoned) */
@@ -78,6 +80,8 @@ typedef struct {
     int test_stop_at_restart;      /* SIGTERM to itself as an incarnation ends (a stop during a restart) */
     int test_engines;              /* test engines in the node, 0 to 2 (default 1) */
     int test_dump_journal;         /* print the journal and stop */
+    int test_lock_after_command;   /* lock once after the N-th command answered 200, then unlock again */
+    int test_lock_after_drop;      /* lock once after the first dropped message, then unlock again */
     int test_drop_kind;            /* drop received messages of this kind (0: none) */
     int test_commands;             /* read test commands from standard input */
     int test_big_reply;            /* pad every test reply with this many bytes */
@@ -86,6 +90,17 @@ typedef struct {
     int test_exit_after_send;      /* exit once the first test ping has been handed to the transport */
     int test_drop_view;            /* view objects of this kind never reach the API (0: none) */
     int test_max_conns;            /* the transport's max_conns (0: the default, GZ_NODE_MAX_CONNS) */
+    const char *test_passphrase_file; /* unlock (or set up) from this file: the passphrase's bytes */
+    int test_kdf_floor;            /* set-up at the storage library's test floor (1 pass, 8 KiB) */
+    int test_standin_store;        /* the journal stand-in instead of the sealed journal (its files are read) */
+    const char *test_append_batch; /* save this batch (hex: type, len, bytes ...) and stop */
+    int test_kill_at;
+    int test_power_cut_at;         /* as --test-kill-at, the folder first put back to what a disk keeps */
+    int test_start_as_restore;     /* files behind at the unlock: start as a restore with the passphrase */
+    int test_cut_after_derive;     /* a power cut when the derivation says wrong (the attempt count) */
+    int test_check_forged;         /* CHECK against a key file forged with this wallet's ids: statuses only */
+    int test_seed_check;           /* seed() locked, unlocked and with a storage fault: results only */
+    int test_reveal_check;         /* after the unlock: reveal and words check, statuses only */              /* SIGKILL before the K-th storage write, sync or rename (store.h) */
     unsigned test_crash_after_record; /* exit once a batch holding a record of this type is durable */
     int test_sign_outcome;         /* the signing stand-in's outcome: 1 funding, 2 retry, 3 failed, 4 unfinished */
     int test_funds;                /* the stand-in wallet's dry run (can_plan): 0 enough, 1 short, 2 cannot tell */

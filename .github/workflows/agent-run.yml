@@ -1,0 +1,346 @@
+name: Agent run
+# Tests on demand, for builders and agents, on GitHub's runners instead of a
+# server (docs/notes/ci.md, "Agent runs"). Started only by hand, by someone
+# who can write to the repository:
+#
+#   gh workflow run agent-run.yml -R gazpacho-wallet/gazpacho -r main \
+#     -f ref=<branch or full sha> -f suite=focused -f regex='^program_'
+#   gh run list -R gazpacho-wallet/gazpacho --workflow agent-run.yml -L 1
+#   gh run view <id> -R gazpacho-wallet/gazpacho --log-failed
+#   gh run download <id> -R gazpacho-wallet/gazpacho
+#
+# The workflow and its build action come from the branch named by -r (main,
+# normally); the code tested is `ref`. Builds go through the same action and
+# configurations as ci.yml (.github/actions/gz-build), so a run here builds
+# what CI builds. It is never a required check and gates nothing.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "A branch of this repository, or a full commit SHA on one (never a fork's commit)"
+        required: true
+      suite:
+        description: "focused: one build, ctest -R regex; full: CI's fast tier; heavy: CI's heavy tier; mutants: the named mutants; playwright: the browser job"
+        type: choice
+        options: [focused, full, heavy, mutants, playwright]
+        default: focused
+      regex:
+        description: "ctest -R pattern (required for focused; narrows full and heavy; a spec-file filter for playwright)"
+        default: ""
+      exclude:
+        description: "ctest -E pattern"
+        default: ""
+      mutants:
+        description: "Mutant names, space-separated, from tests/node/mutants.txt or signer/tests/mutants.txt (suite mutants)"
+        default: ""
+      sanitizer:
+        description: "focused only: none (gcc), asan (gcc ASan+UBSan) or msan (clang MemorySanitizer)"
+        type: choice
+        options: [none, asan, msan]
+        default: none
+      build_type:
+        description: "CMAKE_BUILD_TYPE instead of the build's own (default: CI's)"
+        type: choice
+        options: [default, Debug, Release, RelWithDebInfo, MinSizeRel]
+        default: default
+
+permissions:
+  contents: read
+
+# One run at a time per exact set of inputs (and workflow branch): a newer
+# identical dispatch cancels the stale one, so runners are not held by runs on
+# superseded commits. Runs that differ in any input never cancel each other.
+# A run pinned to a commit id has a group of its own. The separator is ':',
+# which a branch name cannot contain; the free-text inputs come last.
+concurrency:
+  group: agent-run:${{ github.ref }}:${{ inputs.ref }}:${{ inputs.suite }}:${{ inputs.sanitizer }}:${{ inputs.build_type }}:${{ inputs.mutants }}:${{ inputs.exclude }}:${{ inputs.regex }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.plan.outputs.sha }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: The ref is a branch of this repository, or a commit on one
+        # Only this repository's branches are fetched (no pull request refs,
+        # no tags), with no lazy fetching: a fork's commit, which GitHub
+        # would otherwise serve by its SHA, is refused (review of #96, M-2).
+        id: ref
+        env:
+          REF: ${{ inputs.ref }}
+          GIT_NO_LAZY_FETCH: "1"
+        run: |
+          set -eu
+          git init -q "$RUNNER_TEMP/src" && cd "$RUNNER_TEMP/src"
+          git remote add origin "https://github.com/$GITHUB_REPOSITORY"
+          git fetch -q --filter=blob:none --no-tags origin '+refs/heads/*:refs/remotes/origin/*'
+          sha=
+          if printf '%s\n' "$REF" | grep -Eqx '[0-9a-f]{40}'; then
+            if git cat-file -e "$REF^{commit}" 2>/dev/null &&
+               [ -n "$(git for-each-ref --contains "$REF" refs/remotes/origin)" ]; then
+              sha=$REF
+            fi
+          elif git check-ref-format --branch "$REF" > /dev/null 2>&1; then
+            sha=$(git rev-parse -q --verify "refs/remotes/origin/$REF^{commit}" || true)
+          fi
+          [ -n "$sha" ] || { echo "::error::ref must be a branch of this repository or a full commit SHA on one"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "testing $sha"
+      - name: The jobs this suite runs
+        id: plan
+        working-directory: ${{ runner.temp }}/src
+        env:
+          SHA: ${{ steps.ref.outputs.sha }}
+          SUITE: ${{ inputs.suite }}
+          REGEX: ${{ inputs.regex }}
+          MUTANTS: ${{ inputs.mutants }}
+          SANITIZER: ${{ inputs.sanitizer }}
+        run: |
+          python3 -I - <<'EOF'
+          import json, os, re, subprocess, sys
+          suite, regex, sanitizer = os.environ["SUITE"], os.environ["REGEX"], os.environ["SANITIZER"]
+          names = os.environ["MUTANTS"].split()
+          sha = os.environ["SHA"]
+          def err(msg):
+              print("::error::" + msg); sys.exit(1)
+          if regex:
+              try: re.compile(regex)
+              except re.error as e: err("regex does not compile: %s" % e)
+          if sanitizer != "none" and suite != "focused":
+              print("::notice::sanitizer applies to suite focused only; %s builds as CI does" % suite)
+          def job(id, name, kind, config="", **kw):
+              d = dict(id=id, name=name, kind=kind, config=config, shard="", names="", targets="",
+                       noslow=False, fixed_regex="", timeout="600")
+              d.update(kw); return d
+          jobs = []
+          if suite == "focused":
+              if not regex: err("suite focused needs a regex (the ctest -R pattern)")
+              cfg = {"none": "gcc-off", "asan": "gcc-on", "msan": "msan"}[sanitizer]
+              jobs.append(job("focused", "focused (%s)" % cfg, "ctest", cfg, timeout="900"))
+          elif suite == "full":
+              jobs += [job("gcc-off", "build (OFF)", "ctest", "gcc-off", noslow=True, extras=True),
+                       job("gcc-on", "build (ON)", "ctest", "gcc-on", noslow=True, scale=True),
+                       job("clang-plain", "clang (plain)", "ctest", "clang-plain", noslow=True),
+                       job("clang-asan", "clang (ASan+UBSan)", "ctest", "clang-asan", noslow=True),
+                       job("interface", "interface in a browser", "playwright", "interface", targets="gz-api-fake gazpacho-test"),
+                       job("checks", "script checks (import, addresses, vectors, handbook, signer boundary)", "checks"),
+                       job("break-checks", "wallet break-checks", "ctest", "wallet", fixed_regex="^wallet_break_checks$", timeout="1500")]
+          elif suite == "heavy":
+              jobs.append(job("msan", "clang MemorySanitizer", "ctest", "msan", noslow=True, timeout="900"))
+              jobs += [job("valgrind-%d" % i, "valgrind (shard %d of 3)" % i, "valgrind", "valgrind", shard="%d/3" % i) for i in range(3)]
+              jobs.append(job("ctime-debug", "constant time (Debug build)", "ctime", "debug"))
+              jobs.append(job("fuzz", "libFuzzer, 60 s per target", "fuzz", "fuzz"))
+              jobs += [job("node-mutants-%d" % i, "node mutants (shard %d of 6)" % i, "node-mutants", shard="%d/6" % i) for i in range(6)]
+              jobs.append(job("signer-mutants", "signer mutants", "signer-mutants"))
+          elif suite == "mutants":
+              if not names: err("suite mutants needs mutant names (suite heavy runs them all)")
+              def listed(path):
+                  r = subprocess.run(["git", "show", "%s:%s" % (sha, path)], capture_output=True, text=True)
+                  if r.returncode != 0:
+                      return set()
+                  return {l.split("\t", 1)[0] for l in r.stdout.splitlines() if l.strip() and not l.startswith("#")}
+              node, signer = listed("tests/node/mutants.txt"), listed("signer/tests/mutants.txt")
+              unknown = [n for n in names if n not in node and n not in signer]
+              if unknown: err("no such mutant in tests/node/mutants.txt or signer/tests/mutants.txt: " + " ".join(unknown))
+              both = [n for n in names if n in node and n in signer]
+              if both: print("::notice::named in both lists, run in both: " + " ".join(both))
+              nn, sn = [n for n in names if n in node], [n for n in names if n in signer]
+              if nn: jobs.append(job("node-mutants", "node mutants: " + " ".join(nn)[:80], "node-mutants", names=" ".join(nn)))
+              if sn: jobs.append(job("signer-mutants", "signer mutants: " + " ".join(sn)[:80], "signer-mutants", names=" ".join(sn)))
+          elif suite == "playwright":
+              jobs.append(job("interface", "interface in a browser", "playwright", "interface", targets="gz-api-fake gazpacho-test"))
+          else:
+              err("unknown suite " + suite)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write("sha=%s\nmatrix=%s\n" % (sha, json.dumps(jobs)))
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("## Agent run: %s on `%s`\n\n" % (suite, sha))
+              for k in ("REGEX", "MUTANTS", "SANITIZER"):
+                  if os.environ[k]: f.write("- %s: `%s`\n" % (k.lower(), os.environ[k]))
+              f.write("\nJobs: " + ", ".join(j["name"] for j in jobs) + "\n")
+          print("testing %s: %s" % (sha, ", ".join(j["id"] for j in jobs)))
+          EOF
+
+  run:
+    name: ${{ matrix.name }}
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - name: Check out the code under test
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.plan.outputs.sha }}
+      - name: Check out this workflow's build action and tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          path: .agent-run
+          sparse-checkout: |
+            .github/actions
+            tools/ci-summary.py
+            tools/ci-valgrind.py
+            tools/valgrind-tests.py
+          sparse-checkout-cone-mode: false
+      - name: Keep the tools' copy out of the tested tree
+        # tools/mutate-node.py copies untracked files too (git ls-files -o
+        # --exclude-standard)
+        run: |
+          echo ".agent-run/" >> .git/info/exclude
+          mkdir -p "$RUNNER_TEMP/out"
+          echo "OUT=$RUNNER_TEMP/out" >> "$GITHUB_ENV"
+      - name: Install, configure and build (${{ matrix.config }})
+        if: matrix.config != ''
+        uses: ./.agent-run/.github/actions/gz-build
+        with:
+          config: ${{ matrix.config }}
+          build-type: ${{ inputs.build_type != 'default' && inputs.build_type || '' }}
+          targets: ${{ matrix.targets }}
+          # Agent runs restore main's caches but never save any (the action
+          # saves only on pushes to main and nightly).
+          save-cache: "false"
+      - name: Install dependencies (the mutant runners build their own trees; as in ci.yml)
+        if: matrix.kind == 'node-mutants' || matrix.kind == 'signer-mutants'
+        env:
+          # signer mutants: valgrind runs the constant-time test
+          EXTRA: ${{ matrix.kind == 'signer-mutants' && 'valgrind' || '' }}
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libcurl4-openssl-dev $EXTRA
+      - name: Install Playwright (pinned by tests/web/package-lock.json) and Chromium
+        if: matrix.kind == 'playwright'
+        working-directory: tests/web
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Run
+        id: run
+        shell: bash
+        env:
+          KIND: ${{ matrix.kind }}
+          SHARD: ${{ matrix.shard }}
+          NAMES: ${{ matrix.names }}
+          NOSLOW: ${{ matrix.noslow }}
+          EXTRAS: ${{ matrix.extras }}
+          SCALE: ${{ matrix.scale }}
+          FIXED_REGEX: ${{ matrix.fixed_regex }}
+          TIMEOUT: ${{ matrix.timeout }}
+          REGEX: ${{ inputs.regex }}
+          EXCLUDE: ${{ inputs.exclude }}
+        run: |
+          set -o pipefail
+          run() {
+            case "$KIND" in
+            ctest)
+              a=(--test-dir build --output-on-failure --timeout "$TIMEOUT" -j "$(nproc)" --no-tests=error
+                 --output-junit "$OUT/junit.xml")
+              [ "$NOSLOW" = true ] && a+=(-LE slow)
+              if [ -n "$FIXED_REGEX" ]; then a+=(-R "$FIXED_REGEX")
+              elif [ -n "$REGEX" ]; then a+=(-R "$REGEX"); fi
+              [ -n "$EXCLUDE" ] && a+=(-E "$EXCLUDE")
+              st=0
+              ctest "${a[@]}" || st=$?
+              if [ "$EXTRAS" = true ]; then
+                sudo sysctl -w vm.mmap_rnd_bits=28
+                sh tools/chain-tsan.sh "$RUNNER_TEMP/chain-tsan" || st=1
+                [ ! -f tools/pchain-tsan.sh ] || sh tools/pchain-tsan.sh "$RUNNER_TEMP/pchain-tsan" || st=1
+              fi
+              if [ "$EXTRAS" = true ] || [ "$SCALE" = true ]; then
+                ./build/tree_shapes 64 8,ps 0 && ./build/tree_shapes defects || st=1
+              fi
+              return $st ;;
+            valgrind)
+              vg=tools/ci-valgrind.py; [ -f "$vg" ] || vg=.agent-run/tools/ci-valgrind.py
+              a=(build --shard "$SHARD")
+              [ -n "$REGEX" ] && a+=(--include "$REGEX")
+              [ -n "$EXCLUDE" ] && a+=(--exclude "$EXCLUDE")
+              st=0
+              python3 -I "$vg" "${a[@]}" || st=$?
+              if [ "$SHARD" = 0/3 ] && [ -z "$REGEX" ]; then
+                ctest --test-dir build -R '^(storage|signing|signer)_ctime$' --output-on-failure --no-tests=error || st=1
+              fi
+              return $st ;;
+            ctime)
+              tests="signing_ctime signer_ctime"
+              for t in $tests; do
+                n=$(ctest --test-dir build -N -R "^$t\$" | sed -n 's/^Total Tests: *//p')
+                [ "$n" = 1 ] || { echo "::error::$t is registered $n times, not once"; return 1; }
+              done
+              ctest --test-dir build -R "^($(echo $tests | tr ' ' '|'))\$" --output-on-failure --output-junit "$OUT/junit.xml" ;;
+            fuzz)
+              sh tools/run-fuzz.sh build 60 ;;
+            node-mutants)
+              a=(. "$RUNNER_TEMP/node-mutants" -j "$(nproc)")
+              [ -n "$SHARD" ] && a+=(--shard "$SHARD")
+              python3 -I tools/mutate-node.py "${a[@]}" $NAMES ;;
+            signer-mutants)
+              python3 -I tools/mutate-signer.py . "$RUNNER_TEMP/signer-mutants" -j "$(nproc)" $NAMES ;;
+            playwright)
+              st=0
+              export GZ_API_FAKE="$GITHUB_WORKSPACE/build/ports/api/gz-api-fake"
+              export GZ_PROGRAM="$GITHUB_WORKSPACE/build/program/gazpacho-test"
+              export PLAYWRIGHT_JUNIT_OUTPUT_NAME="$OUT/junit-web.xml"
+              (cd tests/web && npx playwright test --reporter=list,junit ${REGEX:+"$REGEX"}) || st=$?
+              if [ -z "$REGEX" ] && [ -d tests/api/browser ]; then
+                (cd tests/api/browser && ln -sfn ../../web/node_modules node_modules &&
+                 PLAYWRIGHT_JUNIT_OUTPUT_NAME="$OUT/junit-api.xml" npx playwright test --reporter=list,junit) || st=1
+              fi
+              return $st ;;
+            checks)
+              # ci.yml's script checks, one line each: NAME ok or NAME FAILED
+              st=0
+              check() { local n=$1; shift; if "$@"; then echo "$n  ok"; else echo "$n  FAILED"; st=1; fi; }
+              handbook() {
+                python3 -m venv "$RUNNER_TEMP/hb" &&
+                  "$RUNNER_TEMP/hb/bin/python" -m pip install --quiet --require-hashes -r tools/handbook-requirements.txt &&
+                  "$RUNNER_TEMP/hb/bin/python" -I tools/build-handbook.py &&
+                  git diff --exit-code -I '^<p class="lead">Every project document in one file\.' -I '^ "built": "[0-9-]*",$' -- docs/handbook.html
+              }
+              signer_tools() {
+                python3 -I tests/tools/test_check_signer_boundary.py && python3 -I tests/tools/test_check_tags.py
+              }
+              check import-check sh tools/check-import.sh
+              check no-addresses python3 -I tools/check-no-addresses.py
+              check no-addresses-tests python3 -I tests/tools/test_check_no_addresses.py
+              if [ -f tools/spec-vectors.py ]; then check spec-vectors python3 -I tools/spec-vectors.py; fi
+              check handbook handbook
+              check signer-boundary-tests signer_tools
+              check signer-boundary sh tools/check-signer-boundary.sh --no-growth
+              python3 -I tools/check-tags.py --report || true
+              check signer-vectors python3 -I tools/signer-vectors.py --check signer/tests/vectors.txt
+              return $st ;;
+            *)
+              echo "::error::unknown kind $KIND"; return 1 ;;
+            esac
+          }
+          st=0
+          run 2>&1 | tee "$OUT/log.txt" || st=$?
+          echo "status=$st" >> "$GITHUB_OUTPUT"
+          exit $st
+      - name: Summary
+        if: always()
+        env:
+          TITLE: ${{ matrix.name }}
+          STATUS: ${{ steps.run.outputs.status || 'not run' }}
+        run: |
+          python3 -I .agent-run/tools/ci-summary.py "$TITLE" "$STATUS" "$OUT/log.txt" "$OUT"/junit*.xml >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: agent-run-${{ matrix.id }}
+          path: |
+            ${{ runner.temp }}/out
+            build/Testing
+            build/program/**/*.log
+            tests/web/test-results
+          retention-days: 7
+          if-no-files-found: ignore
