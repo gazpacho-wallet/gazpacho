@@ -343,10 +343,16 @@ static int w_adopt_plan(void *ctx, const uint8_t *tx, size_t len, const gz_fund_
             goto refused;
     }
     gzp_os_random(aux, sizeof aux);
-    if (gzt_funding_adopt(w->secp, &w->master, w->net, 0, tx, len, ins, n_prev, ci, aux, &w->plans[k]) != GZT_OK ||
-        w->plans[k].info.amount != amount || memcmp(w->plans[k].priv_tx.out[0].script, script, 34) != 0) {
-        gzt_funding_wipe(&w->plans[k]);
-        goto refused;
+    {
+        /* the master for this check only, wiped at once (signer.md 2.1) */
+        gzw_xprv m;
+        int ok = master_now(w, &m) &&
+                 gzt_funding_adopt(w->secp, &m, w->net, 0, tx, len, ins, n_prev, ci, aux, &w->plans[k]) == GZT_OK;
+        gzw_wipe(&m, sizeof m);
+        if (!ok || w->plans[k].info.amount != amount || memcmp(w->plans[k].priv_tx.out[0].script, script, 34) != 0) {
+            gzt_funding_wipe(&w->plans[k]);
+            goto refused;
+        }
     }
     w->used[k] = 1;
     rehold_locked(w);

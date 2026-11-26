@@ -167,9 +167,10 @@ int gzp_wport_log_attempt(unsigned n);
  * the scan reads the change chain to it plus `gap`); every change index
  * handed out afterwards saves the mark first. Before the scan starts. 0, or -1. */
 int gzp_wport_set_marks(gzp_wport_t *w, const gzp_wport_marks_t *m);
-/* The master key is derived from the unlocked seed at gzp_wport_open, which
- * fails without it, so every port call (adopt_plan at a resume too) has it:
- * nothing waits for it to arrive later (L2, review A of PR 101). */
+/* adopt_plan takes the master key from the seed source for its check, as
+ * every signing does (master_now). A resume runs only while the wallet is
+ * unlocked; if the source refuses all the same, the plan is not held again
+ * this run (logged) and the next resume tries again (L2, review A of PR 101). */
 /* A host's port: plans and spend-backs are refused until marks are set. */
 void gzp_wport_require_marks(gzp_wport_t *w);
 /* Test build, no chain: one invented coin paying the first receive address. */

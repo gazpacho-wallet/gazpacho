@@ -2005,7 +2005,14 @@ static void test_adopt_without_change(void)
     r.fee.rate.sat_per_kvb = 100;
     r.fee.ceiling.sat_per_kvb = 10000;
     memset(aux, 3, 32);
-    CHECK(gzt_funding_build(secp, &b.master, &r, &k, 1, aux, &f) == GZT_OK && !f.info.has_change);
+    {
+        gzw_xprv m;   /* the test seed's master: the port keeps none */
+        uint8_t sd[64];
+        memset(sd, 0x42, 64);
+        CHECK(gzw_bip32_master(secp, sd, 64, &m, NULL) == 1);
+        CHECK(gzt_funding_build(secp, &m, &r, &k, 1, aux, &f) == GZT_OK && !f.info.has_change);
+        gzw_wipe(&m, sizeof m);
+    }
     CHECK(gzt_funding_unsigned(&f, tx, sizeof tx, &len) == GZT_OK);
     prev[0].amount = k.amount;
     prev[0].script_len = 34;
