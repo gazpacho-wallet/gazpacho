@@ -64,6 +64,7 @@ typedef struct {
     int test_storage_fail_at;      /* the K-th append of the first incarnation fails */
     int test_start_delay_ms;       /* keep the start open this long, the loop running (inputs queued) */
     int test_listen_during_start;  /* host: listen before the start, so its queue is exercised */
+    const char *test_entropy_hex;  /* a new wallet's entropy, fixed (64 hex digits) */
     const char *test_restore_from; /* put this journal in place as a restore (sets the marker) */
     int test_sync_fail_at;         /* the K-th batch is written, then its sync reports failure */
     int test_cut_fail;             /* ... and cutting it back fails too (the store is poisoned) */
@@ -85,6 +86,8 @@ typedef struct {
     int test_owed;                 /* the sweep counts this member (1-based, tree order) as owed */
     const char *test_spend_coin;   /* host: TXID:VOUT:AMOUNT:SCRIPT, one wallet coin spent to the first address (sweep.h) */
     const char *test_sweep_to;     /* hex of the destination script (default: the first receive address) */
+    int test_lock_after_command;   /* lock once after the N-th command answered 200, then unlock again */
+    int test_lock_after_drop;      /* lock once after the first dropped message, then unlock again */
     int test_drop_kind;            /* drop received messages of this kind (0: none) */
     int test_commands;             /* read test commands from standard input */
     int test_big_reply;            /* pad every test reply with this many bytes */
@@ -102,6 +105,8 @@ typedef struct {
     int test_power_cut_at;         /* as --test-kill-at, the folder first put back to what a disk keeps */
     int test_plan_once;            /* host: one plan of this many sat, printed, then stop */
     int test_cut_after_mark;       /* a power cut once a change mark is kept */
+    int test_start_as_restore;     /* files behind at the unlock: start as a restore with the passphrase */
+    int test_cut_after_derive;     /* a power cut when the derivation says wrong (the attempt count) */
     int test_check_forged;         /* CHECK against a key file forged with this wallet's ids: statuses only */
     int test_seed_check;           /* seed() locked, unlocked and with a storage fault: results only */
     int test_reveal_check;         /* after the unlock: reveal and words check, statuses only */              /* SIGKILL before the K-th storage write, sync or rename (store.h) */

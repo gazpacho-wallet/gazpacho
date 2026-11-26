@@ -72,7 +72,7 @@ Per incarnation (`gzp_exec_incarnation`), in this order:
 
 The stand-in (`journal.standin`, `starts.standin`, `restore.pending`) stays in `gazpacho-test` only, behind `--test-standin-store`, for the tests that read its files or rely on its cut back of a failed sync (`program_store`, `program_storage_failure`, `program_restore_counter`).
 
-**Start order** (section 2): take the folder lock; come up locked (nothing of the journal is read; no peer is listened for or connected to; the chain servers are checked and polled from the start, before the folder is opened (PR 50, L1), so a chain server sees a locked wallet polling: review A of PR 54, L2); on unlock (`unlock.h`: the local API, or `--test-passphrase-file` in `gazpacho-test`) open storage (fence, start rule, counter, incarnation); start the node; only then connect. The release program, until the local API is in it (P5), stays locked until it is stopped.
+**Start order** (section 2): take the folder lock; open the local interface (its sign-in and set-up are the wallet's, unlock.h over store_unlock.c, B3); come up locked (nothing of the journal is read; no peer is listened for or connected to; the chain servers are checked and polled from the start, before the folder is opened (PR 50, L1), so a chain server sees a locked wallet polling: review A of PR 54, L2); on unlock (`unlock.h`: the local API, or `--test-passphrase-file` in `gazpacho-test`) open storage (fence, start rule, counter, incarnation); start the node; only then connect. The release program, until the local API is in it (P5), stays locked until it is stopped.
 
 ## 5. Data folder, roles, network, options
 

@@ -947,7 +947,7 @@ static void unlocked_now(gz_api_server *srv)
 static void wallet_made(gz_api_server *srv)
 {
     gz_first_run_close(srv);                             /* every start token and code, for good (4.9) */
-    gz_attempts_fresh_file(srv);
+    if (!srv->backend_attempts) gz_attempts_fresh_file(srv);
     gz_socket_token_make(srv);
     gz_events_notify(srv, "wallet", NULL);
     gz_events_notify(srv, "status", NULL);
@@ -993,6 +993,7 @@ void gz_job_refuse(gz_api_server *srv, gz_job *j, int status, const char *code, 
 
 static void count_result(gz_api_server *srv, const gz_api_pp_job *pp, int64_t now_ms)
 {
+    if (srv->backend_attempts) return; /* the backend counts (storage 12.3) */
     if (pp->result == GZ_API_PPR_WRONG) {
         if (srv->att_last_wrong_ms && now_ms - srv->att_last_wrong_ms < 2000)
             gz_log(srv, "wrong passphrases are arriving faster than a person types: another program may be trying");
@@ -1060,14 +1061,28 @@ void gz_job_finished(gz_api_server *srv, gz_job *j)
              * open point 42): the interface holds the button for that long */
             char params[96];
             int64_t left = (srv->att_blocked_until_ms - mono + 999) / 1000;
+            unsigned long wrong = (unsigned long)srv->att_wrong;
+            if (srv->backend_attempts) {
+                left = pp->a;
+                wrong = (unsigned long)pp->b;
+            }
             snprintf(params, sizeof params, "{\"retry_after_s\":%lld,\"wrong_in_row\":%lu}",
-                     (long long)(left < 1 ? 1 : left), (unsigned long)srv->att_wrong);
+                     (long long)(left < 1 ? 1 : left), wrong);
             gz_respond_error(srv, c, 401, "wrong_passphrase", NULL, params);
         }
         goto out;
     }
     if (pp->result == GZ_API_PPR_NOT_CHECKED) {
         if (c) gz_respond_error(srv, c, 503, "passphrase_not_checked", NULL, NULL);
+        goto out;
+    }
+    if (pp->result == GZ_API_PPR_BUSY) {
+        /* the backend's own attempts delay: when to try again, nothing counted */
+        if (c) {
+            char params[48];
+            snprintf(params, sizeof params, "{\"retry_after_s\":%lld}", (long long)(pp->a < 1 ? 1 : pp->a));
+            gz_respond_error(srv, c, 429, "rate_limited", NULL, params);
+        }
         goto out;
     }
     switch (j->purpose) {

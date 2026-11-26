@@ -285,7 +285,11 @@ typedef struct {
 } gz_journal_frame_t;
 
 /* What the start rule (storage 6.3 steps 1 and 2) needs of the scanned
- * journal, after any torn-tail cut is decided and before anything is written. */
+ * journal, after any torn-tail cut is decided and before anything is written.
+ * One exception (review B of PR 54, R2-2): where the mark file names another
+ * journal but opens under its own KH with the restore marker newest (an
+ * import interrupted before its rename), the program's rule restarts the
+ * mark file for this journal and answers RESTORE (storage 6.3 step 0). */
 typedef struct {
     uint64_t highest_incarnation;
     uint64_t newest_guard_counter;  /* 0 if the kept journal holds no guard record */

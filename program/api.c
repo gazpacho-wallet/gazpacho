@@ -47,7 +47,11 @@ static void map_result(const gzp_unlock_result_t *r, gz_api_pp_job *job)
     job->a = job->b = 0;
     switch (r->status) {
     case GZP_UNLOCK_OK: job->result = GZ_API_PPR_OK; break;
-    case GZP_UNLOCK_WRONG: job->result = GZ_API_PPR_WRONG; break;
+    case GZP_UNLOCK_WRONG:
+        job->result = GZ_API_PPR_WRONG;   /* the wallet's count (storage 12.3) */
+        job->a = r->retry_after_s;
+        job->b = r->wrong_in_row;
+        break;
     case GZP_UNLOCK_NO_WALLET: job->result = GZ_API_PPR_NO_WALLET; break;
     case GZP_UNLOCK_EXISTS: job->result = GZ_API_PPR_EXISTS; break;
     case GZP_UNLOCK_WEAK:
@@ -65,7 +69,11 @@ static void map_result(const gzp_unlock_result_t *r, gz_api_pp_job *job)
         job->result = GZ_API_PPR_NODE_STOPPED;
         job->reason = r->reason && !strcmp(r->reason, "not_built") ? "not_built" : "storage_failed";
         break;
-    default: job->result = GZ_API_PPR_NOT_CHECKED; break;   /* busy, not checked: never counted */
+    case GZP_UNLOCK_BUSY:
+        job->result = GZ_API_PPR_BUSY;   /* inside the attempts delay: 429 with retry_after_s, not counted */
+        job->a = r->retry_after_s;
+        break;
+    default: job->result = GZ_API_PPR_NOT_CHECKED; break;   /* not checked: never counted */
     }
 }
 
@@ -591,6 +599,7 @@ int gzp_api_open(gzp_api_t *a, const gzp_options_t *opt, gzp_datadir_t *dir, con
     cfg.port = opt->interface_port ? opt->interface_port : strcmp(network, "testnet4") == 0 ? 39736 : 39735;
     gzp_backend.network = network;
     cfg.backend = &gzp_backend;
+    cfg.backend_attempts = 1;   /* the wallet keeps attempts.gza (storage 12.3): one writer */
     cfg.backend_ctx = a;
     cfg.log = server_log;
     cfg.on_first_run_file = first_run_file;

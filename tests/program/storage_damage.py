@@ -180,12 +180,99 @@ def main():
         # (confirmation review, N3; review B, L1).
         ff = os.path.join(work, "forged-floor")
         shutil.copytree(base, ff)
-        forged(ff, 0, (1 << 63) - 2)
+        forged(ff, 1000, (1 << 63) - 2)  # base above the journal: unanswered
         st, inc, _ = outcome(ff)
         check(st == "ready" and inc < 1 << 32, "forged-floor: an ordinary start (%s %s)" % (st, inc))
         check(not os.path.exists(os.path.join(ff, "restore.gzr")), "forged-floor: the forged marker is removed")
         st, inc, _ = outcome(ff, "--test-restore-from", backup)
         check(st == "ready" and inc < 1 << 32, "forged-floor: a later import does not take the forged floor (%s)" % (inc,))
+
+        # A forged floor beside a real import: the floor is never used
+        # (review B of PR 54, L7: b_floor_trusted).
+        fr = os.path.join(work, "forged-floor-import")
+        shutil.copytree(base, fr)
+        forged(fr, 1000, (1 << 63) - 2)
+        st, inc, p = outcome(fr, "--test-restore-from", backup)
+        check(st == "ready" and p.find(r"start steps=\d+ restored=1")[0] is not None and inc < 1 << 32,
+              "forged-floor-import: a restore, its incarnation %s far below the forged floor" % (inc,))
+
+        # An import of another file_id interrupted after its mark file (review
+        # B of PR 54, R2-2): the start rule restarts the mark file for the
+        # journal here and the start is a restore.
+        b2 = os.path.join(work, "base-other")
+        shutil.copytree(base, b2)
+        for gone in ("journal.gzj", "mark.gzm"):
+            os.unlink(os.path.join(b2, gone))
+        outcome(b2)
+        outcome(b2)
+        found = None
+        for k in range(1, 80):
+            fk2 = os.path.join(work, "interrupted-import-%d" % k)
+            shutil.copytree(b2, fk2)
+            q = start(fk2, "--test-restore-from", backup, "--test-kill-at", str(k))
+            km = q.wait_for(r"test-kill before=\S+|ready incarnation=", timeout=60)
+            if km is not None and km.group(0).startswith("ready"):
+                q.stop()
+                break
+            q.exit_code(timeout=30)
+            mk = open(os.path.join(fk2, "mark.gzm"), "rb").read()
+            jn = open(os.path.join(fk2, J), "rb").read(73)
+            if mk[41:57] != jn[57:73]:
+                found = fk2
+                break
+        check(found is not None, "interrupted-import: a kill leaves a mark file for another file_id")
+        if found:
+            st, inc, p = outcome(found)
+            e2 = p.find(r"restore-batch seq=1 epoch=([0-9a-f]{8})")[1]
+            check(st == "ready" and p.find(r"start steps=\d+ restored=1")[0] is not None and e2 is not None and
+                  e2.group(1) != "00000000", "interrupted-import: a restore with a new epoch (%s %s)" % (st, inc))
+            mk = open(os.path.join(found, "mark.gzm"), "rb").read()
+            jn = open(os.path.join(found, J), "rb").read(73)
+            check(mk[41:57] == jn[57:73], "interrupted-import: the mark file is started again for the journal here")
+
+        # A current journal with a forged restore.gzr: an ordinary start, the
+        # mark file not rewritten (review B of PR 54, L7).
+        fc = os.path.join(work, "current-forged-marker")
+        shutil.copytree(base, fc)
+        forged(fc, 1000, 0)
+        mark_before = open(os.path.join(fc, "mark.gzm"), "rb").read()
+        st, inc, p = outcome(fc)
+        check(st == "ready" and p.find(r"start steps=\d+ restored=0")[0] is not None,
+              "current-forged-marker: an ordinary start (%s %s)" % (st, inc))
+        check(open(os.path.join(fc, "mark.gzm"), "rb").read()[:len(mark_before)] == mark_before,
+              "current-forged-marker: mark.gzm not rewritten")
+
+        # An unreadable start counter (a directory of that name) refuses the
+        # start: never taken as missing, which would lose its floor (L7).
+        fu = os.path.join(work, "counter-unreadable")
+        shutil.copytree(base, fu)
+        os.unlink(os.path.join(fu, "starts.gzs"))
+        os.mkdir(os.path.join(fu, "starts.gzs"))
+        st, info, p = outcome(fu)
+        check(st == "refused" and p.find(r"start-counter state=missing")[0] is None and
+              p.find(r"cannot read the start counter")[0] is not None,
+              "counter-unreadable: refused at its read, not taken as missing (%s)" % (info,))
+
+        # The clock set back a day during a delay (storage 12.3): the delay
+        # still holds, and never more than the 15-minute cap.
+        import time as _t
+        fa = os.path.join(work, "clock-back")
+        shutil.copytree(base, fa)
+        chain = open(os.path.join(fa, J), "rb").read(41)[9:41]
+        now = int(_t.time())
+        body = (b"GZTRIES1" + chain + struct.pack(">QIQQ", 9, 6, now + 86400, now + 86400 + 2) + bytes([1]))
+        open(os.path.join(fa, "attempts.gza"), "wb").write(body + hashlib.sha256(body).digest()[:16])
+        st, info, p = outcome(fa)
+        ra = p.find(r"unlock op=\w+ status=busy .*retry_after_s=(\d+)")[1]
+        check(st == "refused" and ra is not None and 1 <= int(ra.group(1)) <= 900,
+              "clock-back: the delay holds, at most the 15-minute cap (%s)" % (ra.group(0) if ra else info))
+
+        # A key file open to others is refused (storage 4.5; L7).
+        fk = os.path.join(work, "keyfile-open")
+        shutil.copytree(base, fk)
+        os.chmod(os.path.join(fk, "keys.gzk"), 0o644)
+        st, info, p = outcome(fk)
+        check(st == "refused", "keyfile-open: a key file open to others is refused (%s)" % (info,))
         st, inc, _ = outcome(ff)
         check(st == "ready", "forged-floor: and the next start goes on (%s)" % (st,))
 

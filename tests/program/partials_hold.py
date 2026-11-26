@@ -16,6 +16,20 @@ Funding. Case 2, the pause (local-api.md 11.3, PR 55): m1 is paused while its
 partial signatures are out: held for signing (202), the slot stays open, and
 after a start without the drop m1 acks and the host reaches Funding. Every process is checked for no node-error, repair or fatal
 line.
+
+Case 2 (review A of PR 54, M-2): the same, but m1 locks once its partials
+are out (--test-lock-after-drop) and unlocks again from its passphrase,
+without the drop: while locked, the node's and the signing engine's memory
+read zero (no gate secret, nonce or keypair kept); after the unlock a leave
+is still refused, from the journal (C1), no round begins afresh (no new
+nonces), m1 acks and the host reaches Funding.
+
+Case 3 (the same review, the AT_JOIN path): an AT_JOIN member readies with
+its passphrase, which opens its gate with the factory secret set, and locks
+at once (--test-lock-after-command): while locked the node's and the
+signing engine's memory read zero; after the unlock its gate is closed
+(ready=0) and none of its rounds begins until it readies again; readied,
+the lobby reaches Funding.
 """
 import os
 import sys
@@ -125,11 +139,93 @@ def pause_held(exe, work):
         kill_all(w.procs)
 
 
+def lock_held(exe, work):
+    name = "2 lock"
+    w = World(exe, work, "case2")
+    tick = ("--test-sign-tick-ms", "100")
+    try:
+        h = w.host("--tip", str(TIP), *tick)
+        if not check(started(h) and w.hkey is not None, "%s: the host starts" % name):
+            return
+        t = signing.Terms(w.hkey, 900, target=3)
+        w.open(h, t)
+        check(h.wait_for(r"slot-opened scope=%s .*role=host" % t.tag, timeout=10) is not None, "%s: the lobby opens" % name)
+        ms = {"m1": w.member("m1", "--member-signing", "auto", "--tip", str(TIP),
+                             "--test-drop-kind", str(ROUND_COMPLETE_KIND), "--test-lock-after-drop", *tick)}
+        for n in ("m2", "m3"):
+            ms[n] = w.member(n, "--member-signing", "auto", "--tip", str(TIP), *tick)
+        check(all(started(m) for m in ms.values()), "%s: three members start" % name)
+        for n in ("m1", "m2", "m3"):
+            w.join(ms[n], t)
+        m1 = ms["m1"]
+        check(m1.wait_for(r"test-lock after-drop", timeout=120) is not None,
+              "%s: m1 locks with its partial signatures out" % name)
+        z = m1.wait_for(r"locked-memory node-zero=(\d) sign-zero=(\d)", timeout=20)
+        check(z is not None and z.group(1) == "1" and z.group(2) == "1",
+              "%s: while locked the node's and the signing engine's memory read zero (%s)" % (name, z.group(0) if z else None))
+        check(m1.wait_for(r"ready incarnation=2 ", timeout=60) is not None, "%s: the unlock starts m1's node again" % name)
+        mk = m1.mark()
+        m1.send(cmd(LEAVE, (12, t.scope)))
+        r = m1.wait_for(r"command-result id=\S+ status=(\d+)", timeout=10, start=mk)
+        check(r is not None and r.group(1) == "409", "%s: a leave after the unlock: answered 409, from the journal (got %s)"
+              % (name, r.group(1) if r else None))
+        check(m1.wait_for(r"sign-outcome scope=%s .*outcome=1 " % t.tag, timeout=90) is not None,
+              "%s: m1 acks: Funding" % name)
+        check(m1.count(r"sign-begin scope=%s .*resume=0" % t.tag, start=mk) == 0,
+              "%s: no round begins afresh after the unlock (no new nonces for it)" % name)
+        check(state(h, t, "host", FUNDING, timeout=60), "%s: the host reaches Funding" % name)
+        w.clean(name)
+    finally:
+        kill_all(w.procs)
+
+
+def at_join_lock(exe, work):
+    import lobby
+    name = "3 at-join lock"
+    w = World(exe, work, "case3")
+    tick = ("--test-sign-tick-ms", "100")
+    try:
+        h = w.host("--tip", str(TIP), *tick)
+        if not check(started(h) and w.hkey is not None, "%s: the host starts" % name):
+            return
+        t = signing.Terms(w.hkey, 900, target=3)
+        w.open(h, t)
+        check(h.wait_for(r"slot-opened scope=%s .*role=host" % t.tag, timeout=10) is not None, "%s: the lobby opens" % name)
+        ms = {n: w.member(n, "--member-signing", "auto", "--tip", str(TIP), *tick) for n in ("m1", "m2")}
+        # Its 2nd command answered 200 is the ready (the 1st, the join).
+        ms["m3"] = w.member("m3", "--member-signing", "at-join", "--tip", str(TIP), "--test-lock-after-command", "2", *tick)
+        check(all(started(m) for m in ms.values()), "%s: three members start" % name)
+        for n in ("m1", "m2", "m3"):
+            w.join(ms[n], t)
+        m3 = ms["m3"]
+        check(m3.wait_for(r"lobby scope=%s role=member state=\d+ seat=\d+ joined=1" % t.tag, timeout=30) is not None,
+              "%s: the AT_JOIN member is seated" % name)
+        m3.send(cmd(lobby.READY, (12, t.scope), (14, bytes([1])), (16, lobby.th("gazpacho/terms/current", t.current))))
+        check(m3.wait_for(r"test-lock after-drop", timeout=30) is not None, "%s: readied with the passphrase, it locks" % name)
+        z = m3.wait_for(r"locked-memory node-zero=(\d) sign-zero=(\d)", timeout=20)
+        check(z is not None and z.group(1) == "1" and z.group(2) == "1",
+              "%s: while locked the node's and the signing engine's memory read zero (%s)" % (name, z.group(0) if z else None))
+        check(m3.wait_for(r"ready incarnation=2 ", timeout=60) is not None, "%s: the unlock starts its node again" % name)
+        mk = m3.mark()
+        check(m3.wait_for(r"lobby scope=%s role=member state=1 .*ready=0" % t.tag, timeout=30, start=mk) is not None,
+              "%s: after the unlock its gate is closed: not ready" % name)
+        time.sleep(3)
+        check(m3.count(r"sign-begin scope=%s" % t.tag, start=mk) == 0,
+              "%s: none of its rounds begins before it readies again (no key used)" % name)
+        m3.send(cmd(lobby.READY, (12, t.scope), (14, bytes([1])), (16, lobby.th("gazpacho/terms/current", t.current))))
+        check(state(h, t, "host", FUNDING, timeout=180), "%s: readied again, the lobby reaches Funding" % name)
+        w.clean(name)
+    finally:
+        kill_all(w.procs)
+
+
 def main():
     exe, work = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
     os.makedirs(work, exist_ok=True)
     leave_held(exe, work)
     pause_held(exe, work)
+    lock_held(exe, work)
+    at_join_lock(exe, work)
     return check.result("partials_hold", work)
 
 

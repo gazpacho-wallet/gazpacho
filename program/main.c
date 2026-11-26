@@ -141,11 +141,6 @@ static int dump_journal(gzp_datadir_t *d, const gzp_options_t *o)
 }
 #endif
 
-static void on_illegal(const char *msg, void *data)
-{
-    (void)data;
-    gzp_log("secp-illegal-argument %s", msg ? msg : "");
-}
 #ifdef GZP_TEST_BUILD
 /* --test-append-batch: one batch through the store the unlock opened, under
  * its new incarnation, sequence 1. */
@@ -180,6 +175,11 @@ static int append_batch(const char *hex)
     return rc;
 }
 #endif
+static void on_illegal(const char *msg, void *data)
+{
+    (void)data;
+    gzp_log("secp-illegal-argument %s", msg ? msg : "");
+}
 
 static int key_ok(const uint8_t key[32], void *ctx)
 {
@@ -318,17 +318,40 @@ static void reveal_check(const gzp_options_t *o)
 /* --test-check-forged (review B of PR 54, M1): a wrong CHECK, then keys.gzk
  * forged with this wallet's ids over another passphrase and a CHECK with
  * that passphrase. Statuses and the count only. */
-static void check_forged(void)
+static void check_forged(const gzp_options_t *o)
 {
     static gzp_unlock_job_t job;
     static const char wrong[] = "not this wallet's passphrase at all";
     static const char forged[] = "the passphrase of a forged key file";
+    gzp_unlock_result_t a;
     int st;
     memset(&job, 0, sizeof job);
     job.op = GZP_UNLOCK_OP_CHECK;
     job.passphrase = (const uint8_t *)wrong;
     job.passphrase_len = sizeof wrong - 1;
     gzp_log("test-check wrong status=%s", gzp_unlock_status_name(run_job(&job)));
+    {
+        uint8_t *pw = gz_sc_salloc(GZ_SC_PASS_IN_MAX + 1);
+        int fd = pw ? open(o->test_passphrase_file, O_RDONLY | O_CLOEXEC) : -1;
+        ssize_t r = fd >= 0 ? read(fd, pw, GZ_SC_PASS_IN_MAX + 1) : -1;
+        size_t n = r > 0 ? (size_t)r : 0;
+        if (fd >= 0) close(fd);
+        if (n && pw[n - 1] == 10) n--;
+        memset(&job, 0, sizeof job);
+        job.op = GZP_UNLOCK_OP_CHECK;
+        job.passphrase = pw;
+        job.passphrase_len = n;
+        st = pw && r > 0 ? run_job(&job) : GZP_UNLOCK_NOT_CHECKED;
+        memset(&a, 0, sizeof a);
+        gzp_wallet_attempts(wallet, wall_ms(), &a);
+        gzp_log("test-check right status=%s wrong_in_row=%u", gzp_unlock_status_name(st), a.wrong_in_row);
+        if (pw) gz_sc_sfree(pw);
+        memset(&job, 0, sizeof job);
+        job.op = GZP_UNLOCK_OP_CHECK;
+        job.passphrase = (const uint8_t *)wrong;
+        job.passphrase_len = sizeof wrong - 1;
+        (void)run_job(&job);
+    }
     if (gzp_wallet_test_forge_keyfile(wallet, (const uint8_t *)forged, sizeof forged - 1) != 0) {
         gzp_log("test-check forged status=not-made wrong_in_row=0");
         return;
@@ -338,10 +361,9 @@ static void check_forged(void)
     job.passphrase = (const uint8_t *)forged;
     job.passphrase_len = sizeof forged - 1;
     st = run_job(&job);
-    /* the count as the CHECK left it (unlock.h: WRONG carries wrong_in_row).
-     * gzp_wallet_attempts gives it only while the one-second delay runs, so
-     * read after it, past a second's turn, it said 0 (CI of PR 91) */
-    gzp_log("test-check forged status=%s wrong_in_row=%u", gzp_unlock_status_name(st), job.result.wrong_in_row);
+    memset(&a, 0, sizeof a);
+    gzp_wallet_attempts(wallet, wall_ms(), &a);
+    gzp_log("test-check forged status=%s wrong_in_row=%u", gzp_unlock_status_name(st), a.wrong_in_row);
     OPENSSL_cleanse(&job, sizeof job);
 }
 #endif
@@ -416,7 +438,9 @@ static int wait_unlocked(const gzp_options_t *o)
         /* One attempt a second, right or wrong (local-api.md 4.3): a test
          * restarting at once waits that second out, as a client would; a
          * delay after wrong passphrases is reported, not waited for. */
-        if (pre.status == GZP_UNLOCK_BUSY && pre.wrong_in_row == 0 && pre.retry_after_s <= 2) {
+        /* Within the five free tries the only wait is that second (an attempt
+         * a killed start counted before its check, 12.3, included). */
+        if (pre.status == GZP_UNLOCK_BUSY && pre.wrong_in_row < 5 && pre.retry_after_s <= 2) {
             struct timespec d = {(time_t)pre.retry_after_s, 100000000L};
             nanosleep(&d, NULL);
             gzp_wallet_attempts(wallet, wall_ms(), &pre);
@@ -427,25 +451,114 @@ static int wait_unlocked(const gzp_options_t *o)
             gzp_wallet_begin(wallet, &job);
             gzp_wallet_finish(wallet, &job, wall_ms());
         }
+        if (o->test_start_as_restore && job.op == GZP_UNLOCK_OP_UNLOCK &&
+            job.result.status == GZP_UNLOCK_FILES_BEHIND) {
+            /* --test-start-as-restore: files behind, then the start as a
+             * restore with the same passphrase (storage 6.3 step 4), as the
+             * local interface's start-as-restore asks. */
+            gzp_log("unlock op=unlock status=%s wrong_in_row=%u attempts_left=%u retry_after_s=%u reason=%s",
+                    gzp_unlock_status_name(job.result.status), job.result.wrong_in_row, job.result.attempts_left,
+                    job.result.retry_after_s, job.result.reason ? job.result.reason : "-");
+            memset(&job.result, 0, sizeof job.result);
+            job.op = GZP_UNLOCK_OP_START_AS_RESTORE;
+            (void)run_job(&job);
+        }
         gz_sc_sfree(pw);
         OPENSSL_cleanse(job.words, sizeof job.words);
         gzp_log("unlock op=%s status=%s wrong_in_row=%u attempts_left=%u retry_after_s=%u reason=%s",
-                job.op == GZP_UNLOCK_OP_CREATE ? "create" : "unlock", gzp_unlock_status_name(job.result.status),
+                job.op == GZP_UNLOCK_OP_CREATE              ? "create"
+                : job.op == GZP_UNLOCK_OP_START_AS_RESTORE ? "start_as_restore"
+                                                           : "unlock",
+                gzp_unlock_status_name(job.result.status),
                 job.result.wrong_in_row, job.result.attempts_left, job.result.retry_after_s,
                 job.result.reason ? job.result.reason : "-");
         if (job.result.status != GZP_UNLOCK_OK) return GZP_EXIT_LOCKED_OUT;
         gzp_log("wallet state=%s", state_name(gzp_wallet_state(wallet)));
         if (o->test_reveal_check) reveal_check(o);
         if (o->test_seed_check) seed_check(1);
-        if (o->test_check_forged) check_forged();
+        if (o->test_check_forged) {
+            /* review A's L3: right after check_forged's last wrong CHECK, begin
+             * at once, inside that answer's delay */
+            static gzp_unlock_job_t bj;
+            gzp_unlock_result_t b0, b1;
+            static const char bw[] = "not this wallet's passphrase, in the delay";
+            {
+                /* A finish taken late (the API's loop takes the job when it next
+                 * runs): the wrong answer's delay runs from the answer, so a try
+                 * after it is checked, whenever the finish ran. */
+                struct timespec d1 = {1, 200000000L}, d2 = {2, 200000000L};
+                uint8_t *pw = gz_sc_salloc(GZ_SC_PASS_IN_MAX + 1);
+                int fd = pw ? open(o->test_passphrase_file, O_RDONLY | O_CLOEXEC) : -1;
+                ssize_t r = fd >= 0 ? read(fd, pw, GZ_SC_PASS_IN_MAX + 1) : -1;
+                size_t n = r > 0 ? (size_t)r : 0;
+                if (fd >= 0) close(fd);
+                if (n && pw[n - 1] == 10) n--;
+                nanosleep(&d1, NULL);
+                memset(&bj, 0, sizeof bj);
+                bj.op = GZP_UNLOCK_OP_CHECK;
+                bj.passphrase = (const uint8_t *)bw;
+                bj.passphrase_len = sizeof bw - 1;
+                gzp_wallet_begin(wallet, &bj);
+                nanosleep(&d2, NULL);
+                gzp_wallet_finish(wallet, &bj, wall_ms());
+                memset(&bj, 0, sizeof bj);
+                bj.op = GZP_UNLOCK_OP_CHECK;
+                bj.passphrase = pw;
+                bj.passphrase_len = n;
+                if (pw && r > 0) {
+                    gzp_wallet_begin(wallet, &bj);
+                    gzp_wallet_finish(wallet, &bj, wall_ms());
+                }
+                gzp_log("test-deferred-finish right status=%s", gzp_unlock_status_name(bj.result.status));
+                if (pw) gz_sc_sfree(pw);
+                OPENSSL_cleanse(&bj, sizeof bj);
+            }
+            check_forged(o);
+            memset(&b0, 0, sizeof b0);
+            gzp_wallet_attempts(wallet, wall_ms(), &b0);
+            memset(&bj, 0, sizeof bj);
+            bj.op = GZP_UNLOCK_OP_CHECK;
+            bj.passphrase = (const uint8_t *)bw;
+            bj.passphrase_len = sizeof bw - 1;
+            gzp_wallet_begin(wallet, &bj);
+            gzp_wallet_finish(wallet, &bj, wall_ms());
+            memset(&b1, 0, sizeof b1);
+            gzp_wallet_attempts(wallet, wall_ms(), &b1);
+            gzp_log("test-begin-in-delay status=%s before=%u after=%u", gzp_unlock_status_name(bj.result.status),
+                    b0.wrong_in_row, b1.wrong_in_row);
+        }
         return 0;
     }
 #else
     (void)o;
 #endif
-    /* No unlock path in this build yet (the local interface is P5/P6): stay
-     * locked, with nothing read, listening or connecting, until a stop. */
+    /* Locked until the local interface's sign-in or set-up opens storage
+     * (unlock.h): nothing of the journal is read and no peer is listened for
+     * or connected to meanwhile. Without the interface, until a stop. */
     gzp_log("locked: waiting for the local interface");
+    if (!o->no_interface) {
+        size_t cap = 1 + gzp_api_max_fds(&api), n;
+        struct pollfd *fds = calloc(cap, sizeof *fds);
+        int t = -1, rc = -1;
+        if (!fds) return GZP_EXIT_FAILED;
+        gzp_api_node_starting(&api); /* no node: the API's held calls are answered */
+        while (!stop_flag) {
+            if (gzp_wallet_state(wallet) == GZP_WALLET_UNLOCKED) {
+                gzp_log("wallet state=unlocked");
+                rc = 0;
+                break;
+            }
+            fds[0].fd = stop_pipe[0];
+            fds[0].events = POLLIN;
+            fds[0].revents = 0;
+            n = gzp_api_pollfds(&api, fds + 1, cap - 1, &t);
+            if (poll(fds, (nfds_t)(1 + n), t) < 0 && errno != EINTR) break;
+            if (fds[0].revents) break;
+            gzp_api_dispatch(&api, fds + 1, n);
+        }
+        free(fds);
+        return rc;
+    }
     while (!stop_flag) {
         struct pollfd pf;
         pf.fd = stop_pipe[0];
@@ -602,12 +715,27 @@ int main(int argc, char **argv)
         gzp_store_test_power_cut();
         test_cut_after_mark = 1;
     }
+    if (opt.test_cut_after_derive && wallet) {
+        gzp_store_test_power_cut();
+        gzp_wallet_test_cut_after_derive(wallet);
+    }
     if (opt.test_power_cut_at) {
         gzp_store_test_power_cut();
         gzp_store_test_kill_at((unsigned)opt.test_power_cut_at);
     }
     if (opt.test_restore_from && !opt.test_standin_store) gzp_wallet_test_restore_from(wallet, opt.test_restore_from);
+    if (opt.test_entropy_hex && gzp_wallet_test_entropy(wallet, opt.test_entropy_hex) != 0) {
+        fprintf(stderr, "gazpacho: --test-entropy-hex takes 64 hex digits\n");
+        rc = GZP_EXIT_USAGE;
+        goto out;
+    }
 #endif
+    /* The local interface (P5) opens now, with the folder lock held and the
+     * wallet locked: its sign-in and set-up drive the wallet (unlock.h over
+     * store_unlock.c), and the locked wait serves it. It outlives every
+     * incarnation, as the transport does (B3). */
+    if ((rc = gzp_api_open(&api, &opt, &dir, network == GZ_NET_TESTNET4 ? "testnet4" : "signet", &chain)) != 0) goto out;
+    have_api = 1;
     rc = wait_unlocked(&opt);
     if (rc == -1) {
         rc = 0;
@@ -756,11 +884,7 @@ int main(int argc, char **argv)
         gzp_log("member key=%s host-peer=%016llx", hex, (unsigned long long)gzp_peer_id(opt.connect_key));
     }
 
-    /* The local interface (P5): the API server in the one loop, fed by the
-     * node's notices. It outlives every incarnation, as the transport does. */
-    if ((rc = gzp_api_open(&api, &opt, &dir, network == GZ_NET_TESTNET4 ? "testnet4" : "signet", &chain)) != 0) goto out;
-    have_api = 1;
-    if (opt.role == GZP_ROLE_HOST) api.wport = &wport;   /* status.coins (local-api.md 11.2) */
+    if (opt.role == GZP_ROLE_HOST) api.wport = &wport;   /* status.coins (local-api.md 11.2); the API is open from before the unlock (#54, B3) */
 
 #ifdef GZP_TEST_BUILD
     gzp_testping_init(&tp, opt.test_pings, opt.test_ping_ms, opt.name, opt.test_engines);
@@ -788,6 +912,13 @@ int main(int argc, char **argv)
 
     for (i = 1;; i++) {
         int r = gzp_exec_incarnation(&ex, i);
+#ifdef GZP_TEST_BUILD
+        {
+            int nz, sz;
+            gzp_exec_test_memory_zero(&ex, &nz, &sz);
+            gzp_log("incarnation-end rc=%d node-zero=%d sign-zero=%d", r, nz, sz);
+        }
+#endif
         uint64_t now;
         if (r == GZP_RUN_STOP) {
             rc = 0;
@@ -810,11 +941,38 @@ int main(int argc, char **argv)
                 rc = GZP_EXIT_FAILED;
                 break;
             }
+            /* The transport's static key comes from the seed: it goes with the
+             * lock, as MSK and the seed do (review A's confirmation of PR 54, M-1). */
+            gzp_net_forget_key(&net);
+            gzp_log("transport-key wiped zero=%d peers=%d", gzp_net_key_is_zero(&net), net.peers != NULL);
+#ifdef GZP_TEST_BUILD
+            if (opt.test_lock_after_drop || opt.test_lock_after_command) {
+                int nz, sz;
+                gzp_wallet_lock(wallet);
+                gzp_exec_test_memory_zero(&ex, &nz, &sz);
+                gzp_log("locked-memory node-zero=%d sign-zero=%d", nz, sz);
+                net.drop_kind = 0;
+                if (wait_unlocked(&opt) != 0) {
+                    rc = GZP_EXIT_LOCKED_OUT;
+                    break;
+                }
+            } else
+#endif
             if (gzp_exec_wait_unlocked(&ex) == GZP_RUN_STOP) {
                 rc = 0;
                 stopped = 1;
                 break;
             }
+            /* Derived again from the unlocked seed; the same wallet's, or no start. */
+            if (gzp_wallet_transport_key(wallet, key_ok, secp, priv) != 0 || gzp_net_rekey(&net, priv) != 0) {
+                OPENSSL_cleanse(priv, sizeof priv);
+                fprintf(stderr, "gazpacho: the unlocked wallet does not give this transport's key\n");
+                rc = GZP_EXIT_DATA;
+                break;
+            }
+            OPENSSL_cleanse(priv, sizeof priv);
+            gzp_hex(net.pub, 33, hex);
+            gzp_log("transport-key restored key=%s", hex);
             continue;
         }
         if (r == GZP_RUN_POISONED) {
