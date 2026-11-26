@@ -405,7 +405,6 @@ gzt_err gzt_funding_spend_back(const secp256k1_context *ctx, const gzw_xprv *mas
 static gzt_err adopt(const secp256k1_context *ctx, const gzw_xprv *master, gzt_network net, uint32_t account,
                      const uint8_t *raw, size_t len, const gzt_adopt_input *ins, size_t n_in, uint32_t change_index,
                      gzt_feerate ceiling, const uint8_t aux32[32], gzt_funding *f) {
-    (void)ceiling;   /* step 1: not checked */
     gzt_tx *tx = &f->priv_tx;
     gzw_network knet;
     gzw_bip86_output o;
@@ -447,6 +446,21 @@ static gzt_err adopt(const secp256k1_context *ctx, const gzw_xprv *master, gzt_n
         outs += tx->out[i].value;
     }
     if (in < outs || in > GZT_MAX_MONEY) return GZT_ERR_ARG;
+    /* the fee within the plan's ceiling, for the signed size, before anything
+     * is signed: a journal that was changed cannot get a dear funding signed
+     * (the boundary review of PR 101). A key-path witness is one 64-byte item. */
+    uint64_t est_vsize;
+    {
+        gzt_tx est = *tx;
+        uint64_t ew;
+        for (uint32_t i = 0; i < est.n_in; i++) {
+            est.in[i].witness_count = 1;
+            est.in[i].witness[0].len = 64;
+            memset(est.in[i].witness[0].data, 0, 64);
+        }
+        if (gzt_tx_weight(&est, &ew, &est_vsize)) return GZT_ERR_INTERNAL;
+        if (in - outs > gzt_fee_for_vsize(ceiling, est_vsize)) return GZT_ERR_FEE_CEILING;
+    }
     f->priv_net = net;
     f->priv_account = account;
     if (gzt_tx_txid(tx, f->info.txid)) return GZT_ERR_INTERNAL;
@@ -456,6 +470,7 @@ static gzt_err adopt(const secp256k1_context *ctx, const gzw_xprv *master, gzt_n
     if (!e) e = gzt_tx_weight(&work, &weight, &vsize);
     gzw_wipe(&work, sizeof work);
     if (e) return e;
+    if (vsize != est_vsize) return GZT_ERR_INTERNAL;
     f->info.vout = 0;
     f->info.amount = tx->out[0].value;
     f->info.fee = in - outs;
