@@ -34,6 +34,7 @@ runs:
         BUILD_DIR: ${{ inputs.build-dir }}
         TARGETS: ${{ inputs.targets }}
         EVENT: ${{ github.event_name }}
+        BASE_REF: ${{ github.base_ref }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
         set -eu
@@ -46,8 +47,14 @@ runs:
         . "$ACTION_PATH/configs.sh"
         gz_config "$CONFIG"
         # The merge queue builds with no cache at all (review of #96, M-2):
-        # the result that gates main depends on no cache entry.
-        if [ "$EVENT" = merge_group ]; then caches=false; else caches=true; fi
+        # the result that gates main depends on no cache entry. So do pull
+        # requests into the long-lived branches without a queue, whose own
+        # run is their gate (R-1).
+        caches=true
+        if [ "$EVENT" = merge_group ]; then caches=false; fi
+        if [ "$EVENT" = pull_request ]; then
+          case "$BASE_REF" in integration-slice1|composite-p6a) caches=false ;; esac
+        fi
         # Saved only from main's own runs: a push to main or the nightly run.
         if [ "$EVENT" = push ] || [ "$EVENT" = schedule ]; then save=true; else save=false; fi
         { echo "caches=$caches"; echo "save=$save"; } >> "$GITHUB_OUTPUT"

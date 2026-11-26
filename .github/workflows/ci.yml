@@ -37,9 +37,10 @@ permissions:
 # merge queue run has a ref of its own (gh-readonly-queue/...) and is never
 # cancelled here. The event is part of the group, so a nightly or dispatched
 # run never waits behind, or replaces, a push's run of the same branch; and a
-# label's run (ci-label.yml) never cancels the pull request's own run.
+# label's run (ci-label.yml) never cancels the pull request's own run, nor
+# the run of another label (the label's name is in its group).
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}-${{ github.event.action == 'labeled' && 'label' || 'run' }}
+  group: ci-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}-${{ github.event.action == 'labeled' && format('label-{0}', github.event.label.name) || 'run' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Every third-party action is pinned to a full commit SHA; the comment names
@@ -606,7 +607,11 @@ jobs:
       - name: Signing and secret-key symbols outside signer/ (no growth, and the allow list only shrinks)
         # A pull request whose allow list must grow says so with the label
         # signer-boundary-growth, which a reviewer of the signer boundary sets.
-        # In the merge queue the base is the queue's base_sha, and the label is
+        # On a pull request the label is read through the API when the job
+        # runs, not from the event, so a re-run of this job sees a label added
+        # since (ci-label.yml re-runs it when the label is added). If the
+        # lookup fails, it fails closed: the list may not grow. In the merge
+        # queue the base is the queue's base_sha, and the label is
         # read from the pull request the queue's head ref names (the queue
         # event carries no labels). If that lookup fails in any way, the
         # queue fails closed: the list may not grow. A growth PR whose
@@ -614,7 +619,7 @@ jobs:
         # (docs/notes/ci.md).
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'signer-boundary-growth') }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           QUEUE_BASE: ${{ github.event.merge_group.base_sha }}
           QUEUE_REF: ${{ github.event.merge_group.head_ref }}
         run: |
@@ -623,7 +628,11 @@ jobs:
           case "$GITHUB_EVENT_NAME" in
           pull_request)
             base=HEAD^1
-            growth=$PR_LABEL
+            if labels=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/labels" --jq '.[].name' 2>/dev/null); then
+              if printf '%s\n' "$labels" | grep -qx signer-boundary-growth; then growth=true; fi
+            else
+              echo "::warning::could not read the pull request's labels: the allow list may not grow"
+            fi
             ;;
           merge_group)
             git fetch --no-tags --depth=1 origin "$QUEUE_BASE"
