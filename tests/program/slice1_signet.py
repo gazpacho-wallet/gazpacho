@@ -12,14 +12,19 @@ its wallet's coins; with none, it prints the address to fund (about 0.001
 signet BTC, at 0.1 sat/vB, from the test coins the funds record lists) and
 exits 77. With a coin:
 
-  One host and three AUTO members, each a separate gazpacho-test process
+  One host and four AUTO members, each a separate gazpacho-test process
   with --network signet and both operators' servers (the chain port
-  compares them). The lobby fills, the round is signed, the host's funding
-  engine plans the funding from its coin, runs H1 and broadcasts at
-  0.1 sat/vB; the funding confirms and is buried (3 blocks, about half an
-  hour); the host and every member go Active, each by its own chain view
-  (C11). Nothing is mined here: the test waits for signet, up to
-  GZ_SIGNET_WAIT_S seconds (default 10800).
+  compares them). The fourth (mr) takes at most 1 sat/kvB of tree fee, below
+  the terms' 100: it refuses on its conditions, is never seated, never
+  funded. The lobby fills with the other three, the round is signed, the
+  host's funding engine plans the funding from its own coin, runs H1 and
+  broadcasts at 0.1 sat/vB; the funding confirms and is buried (3 blocks,
+  about half an hour); the host and every seated member go Active, each by
+  its own chain view (C11). Then every process is stopped and started again
+  on its folder: each comes back Active, nothing judged, begun or refused
+  again. Nothing is mined here: the test waits for signet, up to
+  GZ_SIGNET_WAIT_S seconds (default 10800). Every folder (host and members)
+  lives in GZ_SIGNET_DIR, so a run cut short can be resumed by hand.
 
 The factory's coins come back to the host through the tree's host timeout
 after its end height; the test prints the funding's txid.
@@ -45,14 +50,14 @@ SERVERS = ("https://mempool.space/signet/api", "https://blockstream.info/signet/
 
 
 class SignetWorld(World):
-    """lobby.World on signet: the host's folder kept in GZ_SIGNET_DIR, the members' new each run."""
+    """lobby.World on signet: every folder kept in GZ_SIGNET_DIR."""
 
     def __init__(self, exe, work, name, keep):
         super().__init__(exe, work, name)
         self.keep = keep
 
     def folder(self, who):
-        return os.path.join(self.keep, who) if who == "host" else os.path.join(self.work, who)
+        return os.path.join(self.keep, who)
 
     def args(self, who, role):
         a = [self.exe, "--data-dir", self.folder(who), "--role", role, "--name", who, "--network", "signet"]
@@ -122,7 +127,12 @@ def main():
         w.open(h, t)
         check(h.wait_for(r"slot-opened scope=%s .*role=host" % t.tag, timeout=30) is not None, "the lobby opens")
         ms = {n: w.member(n, "--member-signing", "auto") for n in ("m1", "m2", "m3")}
-        check(all(started(p) for p in ms.values()), "three members start on signet")
+        mr = w.member("mr", "--member-signing", "auto")
+        check(all(started(p) for p in ms.values()) and started(mr), "four members start on signet")
+        # T1's tree fee rate is 100 sat/kvB: a member that takes at most 1 refuses on its conditions.
+        w.join(mr, t, lobby.conditions(max_tree_feerate=1))
+        check(mr.wait_for(r"lobby-note code=0x4c02", timeout=120) is not None,
+              "the member whose fee ceiling the terms pass refuses")
         for p in ms.values():
             w.join(p, t)
         if not check(state(h, t, "host", FUNDING, timeout=900), "the round is signed: Funding"):
@@ -142,6 +152,23 @@ def main():
               "buried on signet: the host and every member Active, each by its own funding engine")
         check(not any(slice1.has(p, r"fund-report scope=%s kind=[234]" % t.tag) for p in procs),
               "nobody judged it abandoned, dead or live late")
+        check(slice1.has(h, r"sign-begin scope=%s .*members=3" % t.tag) and
+              mr.count(r"role=member .*joined=1") == 0 and not slice1.has(mr, r"sign-begin|sign-outcome|fund-"),
+              "the refusing member was never seated, signed nothing and watches no funding")
+        w.clean("signet, first run")
+        # Every process stopped and started again once on its folder.
+        w.stop()
+        h2 = w.host()
+        ms2 = {n: w.member(n, "--member-signing", "auto") for n in ms}
+        mr2 = w.member("mr", "--member-signing", "auto")
+        check(started(h2) and all(started(p) for p in ms2.values()) and started(mr2), "every process starts again")
+        check(state(h2, t, "host", ACTIVE, timeout=600) and
+              all(state(p, t, "member", ACTIVE, timeout=600) for p in ms2.values()),
+              "after the restart the host and every seated member show the factory Active")
+        check(not any(slice1.has(p, r"fund-report scope=\S+ kind=[234]|sign-begin|funding-adopt-refused")
+                      for p in [h2, mr2] + list(ms2.values())),
+              "nothing judged, begun or refused again after the restart")
+        check(not slice1.has(mr2, r"sign-|fund-"), "the refusing member still has no round and no funding")
         w.clean("signet")
     finally:
         w.stop()
