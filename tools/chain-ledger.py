@@ -41,19 +41,31 @@ the ones against what the caller knows without the chain:
   - --funding SAT (required): the satoshis the set takes from outside, as
     the test knows them (what it sent, or the host's coin);
   - every output left must be in a named group: --group NAME=SCRIPT_HEX
-    (repeatable, several scripts may share a name); a pay-to-anchor output
-    is in group "anchor" and an OP_RETURN output in "data" unless named. An
-    output left to any other script is refused, unless --allow-unnamed, when
-    it is counted in a group named after its script;
+    (repeatable, several scripts may share a name), and every group so
+    named needs its total, --expect NAME=SAT, unless --unchecked-groups. A
+    240-sat pay-to-anchor output is in group "anchor" and a zero-value
+    OP_RETURN output in "data" unless named; a pay-to-anchor or OP_RETURN
+    output of any other value is like any other script. An output left to
+    a script in no group is refused, unless --allow-unnamed, when it is
+    counted in a group named after its script;
   - the host's tree (plan 1.4, steps 2 and 3), the txids it printed at
-    signing: --tree TXID, or --tree-file FILE of its "sweep-tree ... txid=T"
-    lines or bare txids. Each transaction of that set in the set followed
-    must be version 3 with a 240-sat pay-to-anchor output last; one of that
-    set confirmed but not in the set followed is refused; a transaction of
-    the set followed that spends the followed output, or that is version 3
-    with a pay-to-anchor last and spends a non-anchor output of a tree
-    transaction, and is not in the host's set, is refused. --no-tree skips
-    these checks, for a set that is not a factory's.
+    signing: --tree TXID, or --tree-file FILE (its "sweep-tree ... txid=T"
+    lines and the other sweep- lines it prints, bare lowercase txids, blank
+    lines and # comments; any other line is a usage error).
+      - Each transaction of the host's set that is in the set must be
+        version 3 with a 240-sat pay-to-anchor output last.
+      - One of the host's set confirmed but not in the set is refused.
+      - With --follow, the followed output must be spent by a transaction
+        of the host's set, or by none.
+      - A transaction of the set shaped like a tree transaction (version 3,
+        a pay-to-anchor output last) that is not in the host's set is
+        refused, unless every input it spends is a pay-to-anchor output (a
+        child on an anchor). This rule sees tree-shaped transactions only: a
+        stranger that is not version 3 with an anchor last passes it, and is
+        caught, if at all, by the funding and the groups above.
+      - With a list, at least one transaction of the host's set must be in
+        the list.
+    --no-tree skips these checks, for a set that is not a factory's.
 --expect NAME=SAT checks a group's total ("in" and "fees" check money in and
 the fees; a name that is neither these, "anchor", "data" nor a --group is a
 usage error); --expect-fee TXID=SAT checks one transaction's fee.
@@ -61,7 +73,9 @@ usage error); --expect-fee TXID=SAT checks one transaction's fee.
 Servers: https:// URLs (http:// only to a loopback address, for a regtest
 shim; a redirect is refused), or fixture:FILE, a recorded set of answers
 for tests: a JSON object {"paths": {"/tx/T/hex": {"status": 200, "body":
-"..."}, ...}}; a path not in it is answered 404. At least two servers unless --one-server.
+"..."}, ...}}; a path not in it is answered 404. At least two servers
+unless --one-server. At most MAX_TXS transactions in the set, MAX_FETCHED
+read in all, and MAX_OUTSPENDS spenders asked for.
 
 Exit codes: 0 every check passed; 1 a check failed (servers disagree, a
 transaction not confirmed or not buried, an answer that is not the
@@ -81,11 +95,14 @@ import urllib.request
 MAX_BODY = 4 * 1024 * 1024
 MAX_TXS = 20000                  # the set; 1,000 members make about 2,600 tree transactions and their children
 MAX_FETCHED = 3 * MAX_TXS        # the set and the transactions its inputs spend
+MAX_OUTSPENDS = 5 * MAX_TXS      # spenders asked for, each from every server
 MAX_TREE_FILE = 64 * 1024 * 1024
 ANCHOR_SAT = 240
 MAX_MONEY = 21000000 * 100000000
-HEX64 = re.compile(r"^[0-9a-f]{64}$")
-HEXRE = re.compile(r"^[0-9a-f]*$")
+# Always used with fullmatch: ASCII only, and "$" would let a newline through.
+HEX64 = re.compile(r"[0-9a-f]{64}")
+HEXRE = re.compile(r"[0-9a-f]*")
+DIGITS = re.compile(r"[0-9]{1,16}")
 P2A = bytes.fromhex("51024e73")
 
 
@@ -275,6 +292,11 @@ def need(cond, what):
         raise Malformed(what)
 
 
+def natural(x):
+    """A JSON whole number of at least 0 (true and false are not numbers here)."""
+    return isinstance(x, int) and not isinstance(x, bool) and x >= 0
+
+
 class Chain:
     """Every question asked of every server; answers compared."""
 
@@ -283,13 +305,14 @@ class Chain:
         self.min_conf = min_conf
         self.txs = {}
         self.tip = None
+        self.outspends = 0
 
     def tip_height(self):
         if self.tip is None:
             tips = []
             for s in self.servers:
                 t = s.ok("/blocks/tip/height").strip()
-                need(t.isdigit() and len(t) < 12, "%s: tip height is not a number" % s.spec)
+                need(DIGITS.fullmatch(t) and len(t) < 12, "%s: tip height is not a number" % s.spec)
                 tips.append(int(t))
             self.tip = min(tips)
         return self.tip
@@ -302,7 +325,7 @@ class Chain:
         raws = []
         for s in self.servers:
             h = s.ok("/tx/%s/hex" % txid).strip().lower()
-            need(h and len(h) % 2 == 0 and HEXRE.match(h), "%s: /tx/%s/hex is not hex" % (s.spec, txid))
+            need(h and len(h) % 2 == 0 and HEXRE.fullmatch(h), "%s: /tx/%s/hex is not hex" % (s.spec, txid))
             raw = bytes.fromhex(h)
             t = parse_tx(raw)
             if t["txid"] != txid:
@@ -321,8 +344,8 @@ class Chain:
             need(isinstance(st, dict) and isinstance(st.get("confirmed"), bool),
                  "%s: /tx/%s/status has no confirmed flag" % (s.spec, txid))
             if st["confirmed"]:
-                need(isinstance(st.get("block_height"), int) and isinstance(st.get("block_hash"), str)
-                     and HEX64.match(st["block_hash"]), "%s: /tx/%s/status has no block" % (s.spec, txid))
+                need(natural(st.get("block_height")) and isinstance(st.get("block_hash"), str)
+                     and HEX64.fullmatch(st["block_hash"]), "%s: /tx/%s/status has no block" % (s.spec, txid))
                 seen.append((st["block_height"], st["block_hash"]))
             else:
                 seen.append(None)
@@ -359,6 +382,9 @@ class Chain:
     def outspend(self, txid, vout, allow_pending):
         """The confirmed spender (txid, vin), or None. A spend still in a mempool is
         an error unless allow_pending, when the output counts as left."""
+        self.outspends += 1
+        if self.outspends > MAX_OUTSPENDS:
+            raise Mismatch("more than %d spenders to ask for" % MAX_OUTSPENDS)
         seen, pending = [], False
         for s in self.servers:
             o = s.json("/tx/%s/outspend/%d" % (txid, vout))
@@ -368,7 +394,7 @@ class Chain:
                 seen.append(None)
                 continue
             st = o.get("status")
-            need(isinstance(o.get("txid"), str) and HEX64.match(o["txid"]) and isinstance(o.get("vin"), int)
+            need(isinstance(o.get("txid"), str) and HEX64.fullmatch(o["txid"]) and natural(o.get("vin"))
                  and isinstance(st, dict) and isinstance(st.get("confirmed"), bool),
                  "%s: /tx/%s/outspend/%d is malformed" % (s.spec, txid, vout))
             if not st["confirmed"]:
@@ -387,10 +413,11 @@ class Chain:
 # ---- the ledger ----------------------------------------------------------
 
 def build(chain, txids, follow, allow_pending):
-    order, spent_by = [], {}
+    order, seen, spent_by = [], set(), {}
     if follow:
         root, vout = follow
         order.append(root)
+        seen.add(root)
         queue = [(root, vout)]
         t = chain.tx(root)
         if vout >= len(t["outputs"]):
@@ -405,15 +432,17 @@ def build(chain, txids, follow, allow_pending):
             if vin >= len(ct["inputs"]) or (ct["inputs"][vin]["prev_txid"], ct["inputs"][vin]["prev_vout"]) != (txid, n):
                 raise Mismatch("the servers' spender %s input %d does not spend %s:%d" % (child, vin, txid, n))
             spent_by[(txid, n)] = (child, vin)
-            if child not in order:
+            if child not in seen:
                 if len(order) >= MAX_TXS:
                     raise Mismatch("more than %d transactions to follow" % MAX_TXS)
                 order.append(child)
+                seen.add(child)
                 queue.extend((child, i) for i in range(len(ct["outputs"])))
     else:
         for t in txids:
-            if t not in order:
+            if t not in seen:
                 order.append(t)
+                seen.add(t)
     return order, spent_by
 
 
@@ -464,7 +493,10 @@ def ledger(chain, order, spent_by_follow, groups, listed=False, allow_pending=Fa
                 raise Mismatch("%s:%d is spent by %s, which is not in the set" % (key[0], key[1], spent_by_follow[key][0]))
             g = groups.get(o["script"])
             if g is None:
-                g = {"p2a": "anchor", "op_return": "data"}.get(o["kind"])
+                if o["kind"] == "p2a" and o["value"] == ANCHOR_SAT:
+                    g = "anchor"
+                elif o["kind"] == "op_return" and o["value"] == 0:
+                    g = "data"
             if g is None:
                 if not allow_unnamed:
                     unnamed.append("%s:%d %d sat to %s" % (key[0], key[1], o["value"], o["script"]))
@@ -498,11 +530,16 @@ def tree_checks(chain, order, tree, follow):
             if follow and key == tuple(follow):
                 raise Mismatch("the followed output %s:%d is spent by %s, not a tree transaction of the host's set"
                                % (key[0], key[1], txid))
-            if shaped and x["prev_txid"] in tree:
+        if shaped:
+            # A child on an anchor spends pay-to-anchor outputs only; anything else
+            # shaped like a tree transaction must be one of the host's.
+            for x in t["inputs"]:
                 prev = chain.tx(x["prev_txid"])
-                if x["prev_vout"] != len(prev["outputs"]) - 1:
+                if x["prev_vout"] >= len(prev["outputs"]) or prev["outputs"][x["prev_vout"]]["script"] != P2A.hex():
                     raise Mismatch("%s looks like a tree transaction (version 3, a pay-to-anchor last) and spends "
-                                   "%s:%d, but is not in the host's set" % (txid, key[0], key[1]))
+                                   "%s:%d, but is not in the host's set" % (txid, x["prev_txid"], x["prev_vout"]))
+    if not follow and not (tree & inset):
+        raise Mismatch("none of the host's tree transactions is in the set")
     for txid in sorted(tree - inset):
         said = chain.on_chain(txid)
         if said:
@@ -564,17 +601,21 @@ def read_tree_file(path):
     except UnicodeDecodeError:
         raise Usage("%s is not text" % path)
     tree = set()
-    for line in text.splitlines():
+    for n, line in enumerate(text.splitlines(), 1):
         w = line.split()
         if not w or w[0].startswith("#"):
             continue
         if w[0] == "sweep-tree":
             t = [x[5:] for x in w[1:] if x.startswith("txid=")]
-            if len(t) != 1 or not HEX64.match(t[0]):
-                raise Usage("%s: a sweep-tree line without one txid" % path)
+            if len(t) != 1 or not HEX64.fullmatch(t[0]):
+                raise Usage("%s line %d: a sweep-tree line without one lowercase txid" % (path, n))
             tree.add(t[0])
-        elif len(w) == 1 and HEX64.match(w[0]):
+        elif w[0] in ("sweep-round", "sweep-spend", "sweep-refused"):
+            continue                       # the host's other lines about the same round
+        elif len(w) == 1 and HEX64.fullmatch(w[0]):
             tree.add(w[0])
+        else:
+            raise Usage("%s line %d: neither the host's sweep- lines nor a lowercase txid" % (path, n))
     if not tree:
         raise Usage("%s holds no tree txid" % path)
     if len(tree) > MAX_TXS:
@@ -585,7 +626,7 @@ def read_tree_file(path):
 def parse_args(argv):
     a = {"servers": [], "txids": [], "follow": None, "groups": {}, "expect": [], "expect_fee": [],
          "min_conf": 3, "json": False, "one": False, "pending": False, "funding": None, "tree": None,
-         "tree_txids": [], "tree_file": None, "no_tree": False, "unnamed": False}
+         "tree_txids": [], "tree_file": None, "no_tree": False, "unnamed": False, "unchecked": False}
     i = 0
 
     def val():
@@ -596,7 +637,7 @@ def parse_args(argv):
         return argv[i]
 
     def sat(s):
-        if not s.isdigit() or len(s) > 16:
+        if not DIGITS.fullmatch(s):
             raise Usage("not an amount in satoshis: %s" % s)
         return int(s)
 
@@ -606,13 +647,13 @@ def parse_args(argv):
             a["servers"].append(val())
         elif x == "--follow":
             t, _, v = val().partition(":")
-            if not HEX64.match(t) or not v.isdigit():
+            if not HEX64.fullmatch(t) or not DIGITS.fullmatch(v):
                 raise Usage("--follow takes TXID:VOUT")
             a["follow"] = (t, int(v))
         elif x == "--group":
             name, _, h = val().partition("=")
             h = h.lower()
-            if not name or not h or len(h) % 2 or not HEXRE.match(h) or name in ("in", "fees"):
+            if not name or not h or len(h) % 2 or not HEXRE.fullmatch(h) or name in ("in", "fees"):
                 raise Usage("--group takes NAME=SCRIPT_HEX")
             if h in a["groups"] and a["groups"][h] != name:
                 raise Usage("script %s is in two groups" % h)
@@ -624,19 +665,19 @@ def parse_args(argv):
             a["expect"].append((name, sat(v)))
         elif x == "--expect-fee":
             t, _, v = val().partition("=")
-            if not HEX64.match(t):
+            if not HEX64.fullmatch(t):
                 raise Usage("--expect-fee takes TXID=SAT")
             a["expect_fee"].append((t, sat(v)))
         elif x == "--min-conf":
             v = val()
-            if not v.isdigit() or int(v) < 1 or int(v) > 1000000:
+            if not DIGITS.fullmatch(v) or int(v) < 1 or int(v) > 1000000:
                 raise Usage("--min-conf takes a count of at least 1")
             a["min_conf"] = int(v)
         elif x == "--funding":
             a["funding"] = sat(val())
         elif x == "--tree":
             t = val()
-            if not HEX64.match(t):
+            if not HEX64.fullmatch(t):
                 raise Usage("--tree takes a txid")
             a["tree_txids"].append(t)
         elif x == "--tree-file":
@@ -645,6 +686,8 @@ def parse_args(argv):
             a["no_tree"] = True
         elif x == "--allow-unnamed":
             a["unnamed"] = True
+        elif x == "--unchecked-groups":
+            a["unchecked"] = True
         elif x == "--json":
             a["json"] = True
         elif x == "--one-server":
@@ -656,7 +699,7 @@ def parse_args(argv):
         elif x.startswith("-"):
             raise Usage("unknown option %s" % x)
         else:
-            if not HEX64.match(x):
+            if not HEX64.fullmatch(x):
                 raise Usage("not a txid: %s" % x)
             a["txids"].append(x)
         i += 1
@@ -676,6 +719,12 @@ def parse_args(argv):
     for name, _ in a["expect"]:
         if name not in names:
             raise Usage("--expect %s: no group of that name (give it with --group)" % name)
+    if not a["unchecked"]:
+        expected = {name for name, _ in a["expect"]}
+        missing = sorted(set(a["groups"].values()) - expected)
+        if missing:
+            raise Usage("no --expect for the group%s %s: give each named group its total, or --unchecked-groups"
+                        % ("s" if len(missing) > 1 else "", ", ".join(missing)))
     if len(a["servers"]) < (1 if a["one"] else 2):
         raise Usage("give at least two --server (or --one-server)")
     return a
