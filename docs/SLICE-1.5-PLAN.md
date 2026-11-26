@@ -212,7 +212,7 @@ Regtest: on 29.1 and 29.0 nodes, a minute each. Signet: not in the milestone set
 
 **Answered by the owner (Q2, decision 17c, 2026-11-26; PR #108).** The funding stays version 2. It cannot be replaced by fee, because the tree is pre-signed against its txid (C-7, H16), so a stuck funding is helped only by a child (CPFP).
 1. Coin selection prefers leaving a change output, adding a small coin if needed.
-2. When no change is possible, the funding preview says so and offers a 240-sat P2A "speed-up output". The host setting "Speed-up output on fundings" is Auto (the default: on near the relay floor, 0.1 to 1 sat/vB), Always or Never. **It is a host setting only:** not in the lobby terms, not sent to members, and members cannot object. Their checks read only the output the tree spends (`spec/safety-rule.md` C1).
+2. When no change is possible, the funding preview says so and offers a **host-keyed speed-up anchor**: a small P2TR output to a host key, which only the host can spend, so that nobody can pin it. It is not a keyless P2A, because a keyless P2A on a version-2 funding would let anyone pin it with a large, low-fee child, griefing the host's bump and its deadline spend-back (review B of #108, M-1). A TRUC funding with a P2A is the alternative, to consider before mainnet. The host setting "Speed-up output on fundings" is Auto (the default: on near the relay floor, 0.1 to 1 sat/vB), Always or Never. **It is a host setting only:** not in the lobby terms, not sent to members, and members cannot object. Their checks read only the output the tree spends (`spec/safety-rule.md` C1).
 3. "Never", with no change and no anchor, is allowed. When the funding has no speed-up handle and its rate is within a margin (for example 2×) of the higher of the relay floor and the servers' current mempool minimum (the higher of the two answers), the preview warns: "This funding can't be sped up if it gets stuck. If it doesn't confirm within M blocks, the lobby ends and the members are released. The coins stay yours." The warning never blocks.
 4. The host gets a "Speed up" button with a preview. It spends the change or the speed-up output, and never replaces the funding.
 5. Status for the host and members: "Funding not confirmed: waited N blocks; the lobby ends in M blocks if it doesn't confirm". It turns amber after a normal wait and red when M is 6 or fewer. Members see "The host's funding is waiting; you are released automatically in M blocks" and have no button.
@@ -223,7 +223,8 @@ Regtest: on 29.1 and 29.0 nodes, a minute each. Signet: not in the milestone set
 | Run | Funding shape | Expected |
 |---|---|---|
 | a | Change output | The host's "Speed up" child on the change confirms the same funding txid; members go Live at burial |
-| b | No change possible, Auto near the floor | The speed-up output is added, and a child on it confirms the same txid |
+| b | No change possible, Auto near the floor | The host-keyed speed-up anchor is added, and the host's child on it confirms the same txid |
+| b2 | As b, and a third wallet tries to attach a large, low-fee child to the funding | It cannot: the anchor needs the host's key, so only the host's child spends it. (With a keyless P2A this pin would work, which is the reason for the design) |
 | c | "Never" (no change, no anchor) at a rate within the warning margin | The preview warns and does not block; the host goes ahead. If the funding does not confirm, members are released at the funding deadline, and the coins stay the host's |
 | d | Run c, read against two servers whose mempool minimums differ (shim option, P7) | The warning uses the higher of the two answers |
 | e | A version-2 funding below every server's floor (the negative half, as before) | Refused alone and in a package; nothing confirms; members are Abandoned at the deadline |
@@ -233,12 +234,12 @@ Regtest: on 29.1 and 29.0 nodes, a minute each. Signet: not in the milestone set
 - P6c's test switches set the funding's shape and rate.
 - **P9** is the feature itself, host-only:
   - coin selection preferring change;
-  - the speed-up output and its setting;
+  - the host-keyed speed-up anchor (a small P2TR output only the host can spend; not a keyless P2A, which anyone could pin) and its setting;
   - the warning;
   - the "Speed up" button and its preview;
   - the waiting status;
   - the chain port's "current minimum fee" read (Esplora's fee estimates and mempool information, the higher of the servers' answers).
-- Two host-side checks have to change first, because each refuses a funding with a P2A output or with no change:
+- Two host-side checks have to change first, because each refuses a funding with a speed-up anchor or with no change:
   - the funding engine's plan check, which requires exactly two outputs (`core/funding/funding.c`, `plan_ok`);
   - the signer's adopt check, which requires every other output to be change (`docs/notes/signer.md`, `gz_sg_fund_adopt` step 3).
 
@@ -451,12 +452,12 @@ S13 needs no program switch: the hiding is in the test's shim (P7), so the progr
 - **Spec:** owner decision 17c (`docs/ux/decisions.md`); `spec/safety-rule.md` C1 (the member reads only the output the tree spends) and H16; `spec/exit.md` 5.7; `local-api.md`, new: the speed-up setting, the funding preview's warning, the "Speed up" preview and call, and the waiting status for host and members.
 - **What:**
   - coin selection preferring change;
-  - the 240-sat P2A speed-up output (Auto, Always, Never);
+  - the host-keyed speed-up anchor (Auto, Always, Never), with its key derived on the host wallet's own branch;
   - the warning when there is no speed-up handle and the rate is within 2× of the higher of the floor and the servers' current mempool minimum;
   - "Speed up" by CPFP only;
   - the countdown to the funding deadline, amber and red;
   - the chain port's "current minimum fee" read.
-- **Tests first:** S7 runs a to f (2.7). The funding engine's plan check and the signer's adopt check accept a P2A output and a funding with no change, with tests for each. No member check changes, and a test shows that a member's verdict is the same for each funding shape.
+- **Tests first:** S7 runs a to f, with b2 (2.7). The funding engine's plan check and the signer's adopt check accept a host-keyed speed-up anchor and a funding with no change, with tests for each. No member check changes, and a test shows that a member's verdict is the same for each funding shape.
 - **Depends on:** the wallet port (integration), P2 for packages, #55 for the views.
 
 ---
@@ -546,7 +547,7 @@ Its record, with every txid, is the public proof the audit proposed (a page of s
 - **Q3, A.** The suite becomes required after seven consecutive green runs, which may be dispatched back to back. R1 and R2 stay on the roadmap (1.3, 6.4).
 - **Q4, A.** P5 is the local-API recover call with a preview of the transactions, amounts, fees and destination, which the host confirms, plus the automatic recovery after each timeout while no member is owed (H15). It is on the roadmap (P5, 6.4).
 
-- **Q2, decision 17c.** A stuck funding is bumped by a child on its change or on a 240-sat P2A speed-up output, and is never replaced. The speed-up output is a host-only setting (Auto, Always, Never). "Never" is allowed, with a non-blocking warning near the floor. The host gets a "Speed up" button with a preview; host and members see a waiting status. The funding stays version 2, and version 3 is reconsidered before mainnet (2.7, P9).
+- **Q2, decision 17c.** A stuck funding is bumped by a child on its change or on a host-keyed speed-up anchor (a keyless P2A could be pinned; review B of #108), and is never replaced. The speed-up output is a host-only setting (Auto, Always, Never). "Never" is allowed, with a non-blocking warning near the floor. The host gets a "Speed up" button with a preview; host and members see a waiting status. The funding stays version 2, and version 3 is reconsidered before mainnet (2.7, P9).
 
 No question is open.
 
