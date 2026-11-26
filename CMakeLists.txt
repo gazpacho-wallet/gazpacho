@@ -467,6 +467,9 @@ if(Python3_FOUND)
   add_test(NAME lobby_model COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/lobby/lobby_model.py
            check $<TARGET_FILE:lobby_model_driver> 30000 1)
   add_test(NAME lobby_model_selftest COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/lobby/lobby_model.py selftest)
+  # The independent coin ledger (docs/SLICE-1.5-PLAN.md, P1), on recorded
+  # answers only: no network.
+  add_test(NAME chain_ledger COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/tools/test_chain_ledger.py)
 endif()
 # The lobby calls the core (gz_action_list_add), so the check runs on the two
 # built together: the pair may call nothing outside itself.
