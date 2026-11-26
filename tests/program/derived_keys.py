@@ -30,6 +30,16 @@ with tools/keys_ref.py, which shares no code with the program.
      the passphrase flag; the key port opens that lobby's scope before the
      node gets the ready (one scope held), and wipes it when the seat ends
      (none held).
+  9. A node error while a ready with the passphrase is being handled
+     (--test-node-error-on-command 0103): the scope it opened is wiped on that
+     path, the incarnation restarts from storage holding no scope, and the
+     key port gives the slot's factory key to no one (review of PR 53).
+  10. A forged slot_opened record naming a key index of 2^31 or more (only a
+      damaged or forged journal can). 0xffffffff, whose contribution index would
+      be the sentinel GZP_NET_KEY_STATIC, is refused by the core as corrupt, so
+      the member does not start. 0x80000000 loads, gets no keys and is left out:
+      it never comes back as a lobby and never connects. No node path reaches a
+      generic key hook with such an index; their refusals (L2) are a second line.
   6. One set of words as host and as member (keys.md 3, K2): a member made
      from the host's own words joins the host's lobby with two others; every
      seat is accepted and the lobby reaches Funding on the host and on that
@@ -84,6 +94,44 @@ def key_index_values(proc):
     "key-index" lines (the executor logs each durable key_index record), so the
     test reads no journal file: it holds for any journal format (integration B1)."""
     return [int(x) for ln in proc.lines for x in re.findall(r"key-index value=(\d+)", ln)]
+
+
+def forge_slot_index(folder, tag, value):
+    """Rewrite the key index (field 14) of the slot_opened record of lobby `tag`
+    in the member's journal stand-in, and the entry's SHA-256, as a damaged or
+    forged journal could. True if it was found."""
+    import struct
+    path = os.path.join(folder, "journal.standin")
+    with open(path, "rb") as f:
+        data = bytearray(f.read())
+    off, done = 16, False
+    while off + 8 <= len(data):
+        tag4, ln = struct.unpack(">II", data[off:off + 8])
+        body = off + 8
+        if tag4 == 0x42544348:
+            n = struct.unpack(">I", data[body + 16:body + 20])[0]
+            p = body + 20
+            for _ in range(n):
+                t, l = struct.unpack(">II", data[p:p + 8])
+                rec = p + 8
+                if t == L.SLOT_OPENED:
+                    fields, q = {}, rec
+                    while q < rec + l:  # TLV with one-byte types and lengths (all of slot_opened's are small)
+                        ft, fl = data[q], data[q + 1]
+                        fields[ft] = (q + 2, fl)
+                        q += 2 + fl
+                    sc = fields.get(4)
+                    if sc and bytes(data[sc[0]:sc[0] + 4]).hex() == tag and fields.get(14, (0, 0))[1] == 4:
+                        data[fields[14][0]:fields[14][0] + 4] = struct.pack(">I", value)
+                        done = True
+                p = rec + l
+            if done:
+                data[body + ln:body + ln + 32] = hashlib.sha256(bytes(data[off:off + 8 + ln])).digest()
+                break
+        off += 8 + ln + 32
+    with open(path, "wb") as f:
+        f.write(bytes(data))
+    return done
 
 
 def main():
@@ -202,6 +250,16 @@ def main():
         check(h.wait_for(r"connected peer=%s key=%s" % (peer(ke), ke), timeout=15, start=mark) is not None and
               h.count(r"connected peer=%s" % peer(k01), start=mark) == 0,
               "5: it reconnects with the (E, %d) key, never an old one" % idx)
+
+        def ask(what, e, i):
+            mk = m.mark()
+            m.send("%s %d %d" % (what, e, i))
+            got = m.wait_for(r"test-%s epoch=%d index=%d ok=(\d)" % (what, e, i), timeout=10, start=mk)
+            return got.group(1) if got else None
+        check(ask("key-secret", epoch, idx) == "1",
+              "5: the key hook gives the (E, %d) key (an AUTO member)" % idx)
+        check(ask("key-secret", epoch, 4294967295) == "0" and ask("key-secret", epoch, 2147483648) == "0",
+              "5: the key hook reaches neither the transport's own key nor any index of 2^31 or more (L2)")
         # 6. one seed, both roles (K2) ------------------------------------------
         # Fresh folders, so the host's first lobby pair and the member's are
         # both (1, 2): with both on one branch they would be the same keys.
@@ -238,6 +296,9 @@ def main():
         check(L.started(aj), "7: an AT_JOIN member starts")
         w6.join(aj, e7)
         check(aj.wait_for(r"lobby scope=%s role=member .*joined=1" % e7.tag, timeout=20) is not None, "7: it joins")
+        so7 = aj.find(r"slot-opened scope=%s .*role=member index=(\d+)" % e7.tag)[1]
+        i7 = int(so7.group(1)) if so7 else -1
+        check(i7 > 0, "7: the member's slot names its pair (index %d)" % i7)
         check(aj.count(r"key-scope-open") == 0, "7: no scope is open before the person readies")
         aj.send(L.cmd(L.READY, (12, e7.scope), (14, b"\x00")))
         time.sleep(1)
@@ -247,14 +308,102 @@ def main():
         procs.append(aj)
         check(L.started(aj) and aj.wait_for(r"lobby scope=%s role=member .*joined=1" % e7.tag, timeout=20) is not None,
               "7: restarted, the member is still in the lobby (its slot read back)")
-        aj.send(L.cmd(L.READY, (12, e7.scope), (14, b"\x01")))
+
+        def key_secret(index):
+            mk = aj.mark()
+            aj.send("key-secret 0 %d" % index)
+            got = aj.wait_for(r"test-key-secret epoch=0 index=%d ok=(\d)" % index, timeout=10, start=mk)
+            return got.group(1) if got else None
+        check(key_secret(i7) == "1" and key_secret(i7 + 1) == "0",
+              "7: before the ready the key port gives the slot's contribution key (12.2), never its factory key")
+        seen7 = L.th("gazpacho/terms/current", e7.current)  # the values the person reviewed (node.h, LOBBY_READY 16)
+        aj.send(L.cmd(L.READY, (12, e7.scope), (14, b"\x01"), (16, seen7)))
         check(aj.wait_for(r"key-scope-open scope=%s ok=1 held=1" % e7.tag, timeout=10) is not None,
               "7: the ready with the passphrase opens that lobby's scope in the key port, before the node gets it")
+        check(aj.wait_for(r"key-scope-closed scope=%s ready used=\d+ held=0" % e7.tag, timeout=10) is not None,
+              "7: once the node has its gate secret, the key port holds no factory key (one-shot scope)")
+        check(aj.wait_for(r"lobby scope=%s role=member .*joined=1 ready=1" % e7.tag, timeout=20) is not None,
+              "7: the gate opened from the scope: the AT_JOIN member is ready")
+        check(key_secret(i7 + 1) == "0", "7: after the ready, the factory key is not given again (the node holds the gate's)")
         aj.send(L.cmd(L.LEAVE, (12, e7.scope)))
         check(aj.wait_for(r"key-forget scope=%s held=0" % e7.tag, timeout=15) is not None,
-              "7: leaving closes the gate, and the key port wipes the scope (none held)")
-        bad = [(p.name, ln) for p in procs for ln in p.lines if "node-error" in ln or " fatal" in ln]
-        check(not bad, "no node-error or fatal line in any process %r" % bad[:2])
+              "7: leaving closes the gate, and the key port holds no scope (none held)")
+        # 8. A join with the passphrase (#79's LOBBY_JOIN field 24) arms the key port for that one
+        # command: until #79 the node asks for no key at a join, so nothing is opened or held.
+        e8 = L.Terms(w6.hkey, 605)
+        w6.open(h6, e8)
+        check(h6.wait_for(r"slot-opened scope=%s .*role=host" % e8.tag, timeout=10) is not None, "8: a lobby")
+        aj.send(L.cmd(L.JOIN, (12, e8.scope), (14, bytes.fromhex(w6.hkey)),
+                      (16, ("127.0.0.1:%d" % w6.port).encode()), (24, b"\x01"),
+                      (26, L.th("gazpacho/terms/current", e8.current))))
+        check(aj.wait_for(r"key-join-armed scope=%s" % e8.tag, timeout=10) is not None and
+              aj.wait_for(r"key-scope-closed scope=%s join used=0 held=0" % e8.tag, timeout=10) is not None,
+              "8: the join is armed for its own command only; unasked, it opens and holds nothing")
+        # 9. A restart inside a command with an open scope ----------------------
+        e9 = L.Terms(w6.hkey, 606)
+        w6.open(h6, e9)
+        check(h6.wait_for(r"slot-opened scope=%s .*role=host" % e9.tag, timeout=10) is not None, "9: a lobby")
+        rj = w6.member("rj", "--test-node-error-on-command", "0103")
+        procs.append(rj)
+        check(L.started(rj), "9: an AT_JOIN member starts")
+        w6.join(rj, e9)
+        check(rj.wait_for(r"lobby scope=%s role=member .*joined=1" % e9.tag, timeout=20) is not None, "9: it joins")
+        so9 = rj.find(r"slot-opened scope=%s .*role=member index=(\d+)" % e9.tag)[1]
+        i9 = int(so9.group(1)) if so9 else -1
+        mk = rj.mark()
+        rj.send(L.cmd(L.READY, (12, e9.scope), (14, b"\x01"), (16, L.th("gazpacho/terms/current", e9.current))))
+        err = rj.index_of(r"node-error ", timeout=10, start=mk)
+        closed = rj.index_of(r"key-scope-closed scope=%s ready used=\d+ held=0" % e9.tag, timeout=10, start=mk)
+        check(rj.find(r"key-scope-open scope=%s ok=1 held=1" % e9.tag, mk)[0] is not None and err is not None and
+              closed is not None and closed > err,
+              "9: the ready opened its scope, the node failed on it, and the scope was wiped on that path")
+        check(rj.wait_for(r"keys epoch=00000000 frozen=0 held=0", timeout=20, start=closed or mk) is not None and
+              rj.wait_for(r"ready incarnation=", timeout=20, start=closed or mk) is not None,
+              "9: the incarnation restarted from storage, holding no scope")
+        mk = rj.mark()
+        rj.send("key-secret 0 %d" % (i9 + 1))
+        got9 = rj.wait_for(r"test-key-secret epoch=0 index=%d ok=(\d)" % (i9 + 1), timeout=10, start=mk)
+        check(i9 > 0 and got9 is not None and got9.group(1) == "0",
+              "9: after the restart the slot's factory key is given to no one")
+        check(rj.count(r"lobby scope=%s role=member .*ready=1" % e9.tag) == 0, "9: and the failed ready counted for nothing")
+        # 10. Forged slot_opened records (indexes of 2^31 or more) ----------------
+        def forged(name, port_tag, value):
+            t = L.Terms(w6.hkey, port_tag)
+            w6.open(h6, t)
+            check(h6.wait_for(r"slot-opened scope=%s .*role=host" % t.tag, timeout=10) is not None, "10: a lobby")
+            p = w6.member(name, "--member-signing", "auto")
+            procs.append(p)
+            check(L.started(p), "10: an AUTO member starts")
+            w6.join(p, t)
+            check(p.wait_for(r"lobby scope=%s role=member .*joined=1" % t.tag, timeout=20) is not None, "10: it joins")
+            p.stop()
+            check(forge_slot_index(os.path.join(w6.work, name), t.tag, value),
+                  "10: its slot_opened record now names key index 0x%08x" % value)
+            mk = h6.mark()
+            p = w6.member(name, "--member-signing", "auto")
+            procs.append(p)
+            return t, p, mk
+        t10, cj, mk = forged("cj", 607, 0x80000000)
+        check(L.started(cj) and cj.wait_for(r"lobby-left-out scope=%s" % t10.tag, timeout=20) is not None,
+              "10: key index 0x80000000 loads, gets no keys and is left out")
+        time.sleep(2)
+        check(cj.count(r"lobby scope=%s role=member" % t10.tag) == 0 and cj.count(r" connected peer=") == 0,
+              "10: it never comes back as a lobby and never connects")
+        t11, cs, mk = forged("cs", 608, 0xFFFFFFFF)
+        check(cs.wait_for(r"node-error engine=0x0004 status=corrupt", timeout=20) is not None and
+              cs.wait_for(r"start-storage-corrupt", timeout=20) is not None,
+              "10: key index 0xffffffff, the sentinel's, is refused by the core as corrupt (lobbyslot.c L4)")
+        time.sleep(2)
+        check(cs.count(r"ready incarnation=") == 0 and cs.count(r" connected peer=") == 0,
+              "10: that member never starts, and never connects")
+        cs.stop()
+        # Step 9's member fails once on purpose (--test-node-error-on-command); every other process never.
+        # Step 9's and step 10's forged member fail on purpose; every other process never.
+        bad = [(p.name, ln) for p in procs if p is not rj and not p.name.startswith("cs-")
+               for ln in p.lines if "node-error" in ln or " fatal" in ln]
+        check(not bad, "no node-error or fatal line in any other process %r" % bad[:2])
+        check(rj.count(r"node-error engine=") == 1 and rj.count(r"fatal why=node-error ") == 1,
+              "9: exactly the one induced node error in step 9's member")
         for p in procs:
             p.stop()
     finally:

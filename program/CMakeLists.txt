@@ -98,7 +98,7 @@ if(GZ_MEMCHECK)
     # triages every report by function and line in every build (integration
     # B10: a Release build had no lines, and nothing could be triaged).
     add_executable(ct_keys ${CMAKE_SOURCE_DIR}/tests/program/ct_keys.c ${CMAKE_CURRENT_SOURCE_DIR}/keys.c
-                   ${CMAKE_SOURCE_DIR}/wallet/src/address.c ${CMAKE_SOURCE_DIR}/wallet/src/bip32.c
+                   ${CMAKE_SOURCE_DIR}/wallet/src/address.c ${CMAKE_SOURCE_DIR}/tests/program/ct_bip32.c
                    ${CMAKE_SOURCE_DIR}/wallet/src/phrase.c ${CMAKE_SOURCE_DIR}/wallet/src/taproot.c)
     target_include_directories(ct_keys PRIVATE ${GZP_VALGRIND_INCLUDE} ${CMAKE_CURRENT_SOURCE_DIR}
                                ${CMAKE_SOURCE_DIR}/wallet/include ${CMAKE_SOURCE_DIR}/core/superscalar/src)
@@ -295,6 +295,7 @@ if(Python3_Interpreter_FOUND)
   endif()
   # P8: the vectors header is what tools/keys_ref.py computes; T13 and T2
   # step 3, keys derived from the seed end to end (docs/notes/keys.md 10).
+  add_test(NAME program_keys_join_window COMMAND ${GZP_PY} ${GZP_T}/join_window.py ${CMAKE_SOURCE_DIR})
   add_test(NAME program_keys_vectors
     COMMAND ${GZP_PY} ${CMAKE_SOURCE_DIR}/tools/keys-vectors.py --check ${GZP_T}/keys_vectors.h)
   add_test(NAME program_derived_keys

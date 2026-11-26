@@ -203,12 +203,15 @@ int gzp_net_connected(const gzp_net_t *n, const uint8_t key[33]);
  * such key (none for another epoch than the current one). With `single_key`
  * (a test build run with test engines, whose CONNECTs and test pings name
  * the transport key under any index, as before P4.2) every index is the
- * transport key. gzp_net_sign_host signs with the transport key itself (the
+ * transport key. The index GZP_NET_KEY_STATIC names the transport key itself (the
  * host's long-term key on a host). The signatures are BIP 340, for the
  * lobbies (node.h, gz_node_crypto_t). */
 int gzp_net_key(const gzp_net_t *n, uint32_t epoch, uint32_t index, uint8_t sec[32], uint8_t pub[33]);
 int gzp_net_sign(const gzp_net_t *n, uint32_t epoch, uint32_t index, const uint8_t msg[32], uint8_t sig[64]);
-int gzp_net_sign_host(const gzp_net_t *n, const uint8_t msg[32], uint8_t sig[64]);
+/* The transport's own static key, for gzp_net_key and gzp_net_sign: the host
+ * key on a host. Above every lobby index (2^31), so no CONNECT can name it
+ * (signer.md S2: no new signing function before the signer). */
+#define GZP_NET_KEY_STATIC 0xffffffffu
 int gzp_net_verify(const gzp_net_t *n, const uint8_t pub[33], const uint8_t msg[32], const uint8_t sig[64]);
 int gzp_net_point_ok(const gzp_net_t *n, const uint8_t pub[33]);
 

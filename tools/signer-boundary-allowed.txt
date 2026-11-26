@@ -28,6 +28,11 @@ tests/signing/world.h	secp256k1_keypair_create	6
 # ---- END S3
 
 # ---- BEGIN S4/S5, must move to signer/ (review A of #71, re-review).
+# program/main.c: wallet_open, which derived the master key from the words a second time,
+# is gone with #53 (P8): keys_open asks program/keys.c, the derivation layer the signer will
+# wrap (signer.md S2); keys.c moves into signer/ at S4. program/keys_standin.c: the STAND-IN
+# seed source turns its words into the seed until #54's storage gives it through unlock.h.
+# (Original note on wallet_open:)
 # program/main.c: wallet_open derives the master key from the words outside
 # the signer to check the first receive address, a second path from the words
 # to the master key. At S4 (S5 for the funding wallet) the check becomes a
@@ -37,6 +42,9 @@ tests/signing/world.h	secp256k1_keypair_create	6
 # program/unlock_standin.c: the stand-in unlock turns the words into the seed
 # outside the signer. At S4 the signer reads the seed only through its seed
 # source and does this step itself.
+program/keys.c	gzw_bip32_child_priv	2
+program/keys.c	gzw_bip32_master	1
+program/keys_standin.c	gzw_phrase_to_seed	1
 program/main.c	secp256k1_ec_seckey_verify	1
 program/unlock_standin.c	gzw_phrase_to_seed	1
 # ---- END S4/S5
@@ -63,17 +71,17 @@ ports/net/noise.c	secp256k1_ec_seckey_verify	1
 ports/net/noise.c	secp256k1_ecdh	2
 ports/net/peers.c	static_key	5
 ports/net/peers.h	static_key	2
-program/executor.c	gzp_net_sign	1
+program/executor.c	gzp_net_sign	2
 program/executor.c	hook:secret	1
 program/executor.c	hook:sign	1
-program/executor.c	port_secret	2
+program/executor.c	port_secret	3
 program/executor.c	port_sign	2
 program/net.c	gzp_net_sign	1
 program/net.c	secp256k1_ec_pubkey_create	2
 program/net.c	secp256k1_ec_seckey_verify	1
-program/net.c	secp256k1_keypair_create	2
-program/net.c	secp256k1_schnorrsig_sign32	2
-program/net.c	static_key	6
+program/net.c	secp256k1_keypair_create	1
+program/net.c	secp256k1_schnorrsig_sign32	1
+program/net.c	static_key	5
 program/net.h	gzp_net_sign	1
 tests/funding/regtest_harness.c	gzt_funding_build	1
 tests/funding/regtest_harness.c	gzt_funding_release	1
@@ -101,8 +109,11 @@ tests/node/test_node_lobby.c	secp256k1_schnorrsig_sign32	3
 # (it kills sg-keys-any-role). Two uses: the assignment and the reset. It
 # goes with the key port's host_secret at S3.
 tests/node/test_node_lobby.c	host_secret	2
+tests/program/fuzz_keys.c	secp256k1_ec_pubkey_create	1
 tests/program/silent_peer.c	secp256k1_ec_seckey_verify	1
-tests/program/test_net.c	gzp_net_sign	1
+tests/program/test_keys_rare.c	gzw_bip32_derive_priv	1
+tests/program/test_keys_rare.c	gzw_bip32_master	1
+tests/program/test_net.c	gzp_net_sign	2
 tests/regtest/tree_regtest.c	factory_sign_all	1
 tests/regtest/tree_regtest.c	secp256k1_keypair_create	1
 tests/scale/tree_shapes.c	factory_sign_all	1
@@ -217,61 +228,3 @@ wallet/vectors/official_vectors.c	secp256k1_keypair_create	1
 wallet/vectors/official_vectors.c	secp256k1_keypair_sec	1
 wallet/vectors/official_vectors.c	secp256k1_schnorrsig_sign32	1
 wallet/vectors/official_vectors.c	secp256k1_schnorrsig_sign_custom	1
-
-# ---- BEGIN integration-slice1 (P4.6), written at the merge of main 6f8df58.
-# Each file's uses and why; the signer-boundary review of these is due before
-# they reach main (docs/notes/integration.md).
-# raised in place above: program/net.c secp256k1_keypair_create from 1 to 2
-# raised in place above: program/net.c secp256k1_schnorrsig_sign32 from 1 to 2
-# program/executor.c: the key port's host-key hook calls gzp_net_sign_host
-#   (#53). S4.
-# program/keys.c: P8's derived keys (#53): the per-lobby factory keys and the
-#   host key derived from the seed (gzw_bip32_master, gzw_bip32_child_priv).
-#   Moves into signer/ at S4.
-# program/keys_standin.c: the stand-in key file (#53): words to seed for the
-#   stand-in keys. Goes with the stand-in at S4.
-# program/net.c: the transport's host-key signature (#53, gzp_net_sign_host): a
-#   second keypair_create and schnorrsig_sign32 for the host key. Moves into
-#   signer/ at S4 with the transport's own keys.
-# program/net.h: the declaration of gzp_net_sign_host (#53). S4.
-# program/store_unlock.c: the real unlock (#54, storage): turns the words into
-#   the seed outside the signer, as unlock_standin.c does. At S4 the signer
-#   reads the seed through its seed source and does this step itself.
-# program/sweep.c: test build only (GZP_TEST_BUILD, gazpacho-test): the host's
-#   timeout sweep and the one-coin spend used for the signet recovery
-#   (integration.md 9): the host's per-lobby factory key
-#   (secp256k1_keypair_create), the wallet's master key and a BIP86 key-path
-#   signature (gzw_bip32_master, gzw_bip86_tweaked_keypair, gzt_sign_keypath).
-#   Never in the release program (program_release_build). Needs the
-#   signer-boundary review before main; removed or moved into signer/ at S4/S5.
-# program/wport.c: the wallet port (P4.6, #80/#83/#85/#88/#93): the host's
-#   funding and its spend-backs are signed with the wallet's own keys
-#   (gzw_bip32_master, then gzt_funding_build, gzt_funding_release,
-#   gzt_funding_spend_back). Moves into signer/ at S5 (the funding wallet).
-# tests/program/fuzz_keys.c: P8's key fuzzer (#53): public keys made from
-#   fuzzed secrets. Tests: allowed by target name at S4.
-# tests/program/test_keys_rare.c: P8's key tests (#53): a master key and a
-#   derivation checked against the key port. Tests: allowed by target name at
-#   S4.
-# tests/program/test_net.c: the transport's tests of gzp_net_sign_host (#53).
-#   Tests: allowed by target name at S4.
-program/executor.c	gzp_net_sign_host	1
-program/keys.c	gzw_bip32_child_priv	2
-program/keys.c	gzw_bip32_master	1
-program/keys_standin.c	gzw_phrase_to_seed	1
-program/net.c	gzp_net_sign_host	1
-program/net.h	gzp_net_sign_host	1
-program/store_unlock.c	gzw_phrase_to_seed	1
-program/sweep.c	gzt_sign_keypath	1
-program/sweep.c	gzw_bip32_master	1
-program/sweep.c	gzw_bip86_tweaked_keypair	1
-program/sweep.c	secp256k1_keypair_create	1
-program/wport.c	gzt_funding_build	1
-program/wport.c	gzt_funding_release	1
-program/wport.c	gzt_funding_spend_back	1
-program/wport.c	gzw_bip32_master	1
-tests/program/fuzz_keys.c	secp256k1_ec_pubkey_create	1
-tests/program/test_keys_rare.c	gzw_bip32_derive_priv	1
-tests/program/test_keys_rare.c	gzw_bip32_master	1
-tests/program/test_net.c	gzp_net_sign_host	1
-# ---- END integration-slice1

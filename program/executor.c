@@ -71,6 +71,14 @@ static uint64_t port_mono(void *ctx)
 static int port_pub(void *ctx, uint32_t epoch, uint32_t index, uint8_t pub33[33])
 {
     gzp_exec_t *ex = ctx;
+    /* A lobby index only (L2), as gzp_net_connect: never GZP_NET_KEY_STATIC.
+     * A second line: the core refuses a slot naming 0xffffffff, and a slot
+     * naming any other index of 2^31 or more gets no key from the key port's
+     * policy anyway (T13 step 10). */
+    if (index >= 0x80000000u) {
+        memset(pub33, 0, 33);
+        return 0;
+    }
     return gzp_net_key(ex->net, epoch, index, NULL, pub33);
 }
 
@@ -88,7 +96,10 @@ static int port_point_ok(void *ctx, const uint8_t pub[33])
 static int port_sign(void *ctx, int host, uint32_t epoch, uint32_t index, const uint8_t msg[32], uint8_t sig[64])
 {
     gzp_exec_t *ex = ctx;
-    if (host) return ex->opt->role == GZP_ROLE_HOST ? gzp_net_sign_host(ex->net, msg, sig) : 0;
+    /* A lobby index only: never GZP_NET_KEY_STATIC or anything at or above 2^31
+     * (review of PR 53's boundary, L2; as gzp_net_connect). */
+    if (!host && index >= 0x80000000u) return 0;
+    if (host) return ex->opt->role == GZP_ROLE_HOST ? gzp_net_sign(ex->net, 0, GZP_NET_KEY_STATIC, msg, sig) : 0;
     return gzp_net_sign(ex->net, epoch, index, msg, sig);
 }
 
@@ -122,13 +133,19 @@ static void port_forget(void *ctx, const uint8_t scope[32])
             gzp_keys_scopes_held(ex->keys));
 }
 
-/* A secret for a round (the key hook, P4.3). Under AT_JOIN, only from the
- * scoped table, by position: the pair of a scope the person readied for
- * (keys.md 7, audit M2). Otherwise derived now, under the current epoch only. */
+/* A secret for the node (the key hook, P4.3), by position. Under AT_JOIN the
+ * factory key comes only from a scope the person's ready or join opened for
+ * that one command, and the contribution key of a known member slot is
+ * derived, as composite-node.md 12.2 says (keys.md 7, audit M2). Otherwise
+ * derived now, under the current epoch only. */
 static int port_secret(void *ctx, uint32_t epoch, uint32_t index, uint8_t sec32[32])
 {
     gzp_exec_t *ex = ctx;
-    if (ex->keys->scoped_only) return gzp_keys_scoped_at(ex->keys, epoch, index, sec32);
+    if (index >= 0x80000000u) { /* a lobby index only (L2) */
+        memset(sec32, 0, 32);
+        return 0;
+    }
+    if (ex->keys->scoped_only) return gzp_keys_at_join_secret(ex->keys, epoch, index, sec32);
     return gzp_net_key(ex->net, epoch, index, sec32, NULL);
 }
 
@@ -301,8 +318,9 @@ static void keys_note_record(gzp_exec_t *ex, const gz_record_t *r, int saved)
             gzp_log("key-slots full");
     } else if (r->type == GZ_RECORD_SLOT_CLOSED && gz_rec_find(r->bytes, 2, &v) == 1 && v.len == 4) {
         gzp_keys_drop_slot(ex->keys, gz_get_u32(v.data));
-    } else if (saved && r->type == GZ_RECORD_KEY_INDEX && gz_rec_find(r->bytes, 2, &v) == 1 && v.len == 4) {
-        gzp_log("key-index value=%u", (unsigned)gz_get_u32(v.data));
+    } else if (r->type == GZ_RECORD_KEY_INDEX && gz_rec_find(r->bytes, 2, &v) == 1 && v.len == 4) {
+        gzp_keys_note_index(ex->keys, gz_get_u32(v.data));
+        if (saved) gzp_log("key-index value=%u", (unsigned)gz_get_u32(v.data));
     }
 }
 
@@ -553,10 +571,72 @@ static void submit(gzp_exec_t *ex)
     else if (st != GZ_OK) fail(ex, st == GZ_ERR_REFUSED ? "runner-refused-list" : status_name(st));
 }
 
+/* LOBBY_JOIN's unlock record (#79: given with the passphrase under AT_JOIN,
+ * the gate is open from the join; local-api.md 14.3). */
+#define GZP_JOIN_REC_UNLOCK 24
+
+/* A ready (record 14 = 1) or a join (record 24 = 1, #79) given with the
+ * passphrase, on a member under AT_JOIN. The passphrase was checked before
+ * the command came here (the local API checks it), so the key port opens
+ * that lobby's scope now, before the node gets the command (node.h,
+ * LOBBY_READY; keys.md 7, integration W4): for a ready, the slot's pair; for
+ * a join, whose pair the node allocates inside the command, the join is
+ * armed for one fresh factory key (gzp_keys_arm_join). Either way the scope
+ * lives for that one command only: the node keeps the gate's secret itself
+ * (gate_secret), so afterwards the key port holds no factory key. It runs in deliver() for every
+ * USER_COMMAND, the local API's and the test command line's alike (review of
+ * PR 53, H1). Returns 1 (ready) or 2 (join) with the scope, or 0. Without it the node's gate would
+ * open on the flag alone with no key behind it (audit M4): it fails safe,
+ * signing nothing. */
+static int keys_command_gate(gzp_exec_t *ex, const uint8_t *tlv, size_t len, uint8_t sc[32])
+{
+    gz_bytes_t all, scope, flag, cv;
+    uint16_t code;
+    gzp_keys_err_t e;
+    unsigned field;
+    int ok;
+    all.data = tlv;
+    all.len = len;
+    /* The command's own records (command.h: 0 to 8) come first; its arguments from 12. */
+    if (gz_rec_find(all, GZ_CMD_REC_COMMAND, &cv) != 1 || cv.len != 2) return 0;
+    code = gz_get_u16(cv.data);
+    field = code == GZ_CMD_LOBBY_READY ? 14u : code == GZ_CMD_LOBBY_JOIN ? GZP_JOIN_REC_UNLOCK : 0u;
+    if (!field || !ex->keys->scoped_only || gz_rec_find(all, 12, &scope) != 1 || scope.len != 32 ||
+        gz_rec_find(all, field, &flag) != 1 || flag.len != 1 || flag.data[0] != 1)
+        return 0;
+    memcpy(sc, scope.data, 32);
+    if (code == GZ_CMD_LOBBY_JOIN) {
+        gzp_keys_arm_join(ex->keys, sc);
+        gzp_log("key-join-armed scope=%02x%02x%02x%02x", sc[0], sc[1], sc[2], sc[3]);
+        return 2;
+    }
+    ok = gzp_keys_open_ready(ex->keys, sc, &e);
+    gzp_log("key-scope-open scope=%02x%02x%02x%02x ok=%d held=%zu", sc[0], sc[1], sc[2], sc[3], ok,
+            gzp_keys_scopes_held(ex->keys));
+    return ok;
+}
+
+/* The scope a command opened lives for that command only: disarm and forget
+ * once the node has handled it and its actions have been carried out, on
+ * every path out, a node error included. */
+static void keys_command_done(gzp_exec_t *ex, int gate, const uint8_t sc[32])
+{
+    int used;
+    if (!gate) return;
+    used = gate == 2 ? gzp_keys_disarm_join(ex->keys) : 1;
+    gzp_keys_forget(ex->keys, sc);
+    gzp_log("key-scope-closed scope=%02x%02x%02x%02x %s used=%d held=%zu", sc[0], sc[1], sc[2], sc[3],
+            gate == 2 ? "join" : "ready", used, gzp_keys_scopes_held(ex->keys));
+}
+
 static void deliver(gzp_exec_t *ex, const gz_event_t *ev)
 {
     gz_status_t st;
+    uint8_t gscope[32] = {0};
+    int gate = 0;
     if (ex->fatal) return; /* nothing reaches a node after its incarnation's fatal error */
+    if (ev->kind == GZ_EVENT_USER_COMMAND)
+        gate = keys_command_gate(ex, ev->u.user.bytes.data, ev->u.user.bytes.len, gscope);
     gz_action_list_reset(&ex->list);
     st = gz_node_handle(ex->node, ev, &ex->list);
     ex->delivered++;
@@ -566,15 +646,29 @@ static void deliver(gzp_exec_t *ex, const gz_event_t *ev)
         gz_action_list_reset(&ex->list);
         st = GZ_ERR_NO_SPACE; /* as if the node had refused the event */
     }
+    /* Tests: a node error right after the node has handled one command (and
+     * taken its key), so the incarnation restarts from storage with that
+     * command's scope still open until keys_command_done (review of PR 53). */
+    if (ex->number == 1 && ex->opt->test_node_error_on_command && ev->kind == GZ_EVENT_USER_COMMAND) {
+        gz_bytes_t all, cv;
+        all = ev->u.user.bytes;
+        if (gz_rec_find(all, GZ_CMD_REC_COMMAND, &cv) == 1 && cv.len == 2 &&
+            gz_get_u16(cv.data) == (uint16_t)ex->opt->test_node_error_on_command) {
+            gz_action_list_reset(&ex->list);
+            st = GZ_ERR_NO_SPACE;
+        }
+    }
 #endif
     if (st != GZ_OK) {
         /* Fatal for the whole node (node.h, ERRORS): the list is as it was,
          * the node is poisoned and never called again; start from storage. */
         gzp_log("node-error engine=0x%04x status=%s", (unsigned)gz_node_error_area(ex->node), status_name(st));
         fail(ex, "node-error");
+        keys_command_done(ex, gate, gscope);
         return;
     }
     submit(ex);
+    keys_command_done(ex, gate, gscope);
 }
 
 /* Confirm the oldest durable batch not yet confirmed. 1 if there was one. */
@@ -734,30 +828,11 @@ static int api_command(void *ctx, const uint8_t *tlv, size_t len)
 
 #ifdef GZP_TEST_BUILD
 
-/* A ready given with the passphrase (record 14 = 1) on a member under
- * AT_JOIN. The passphrase was checked before the command came here (the
- * local API checks it), so the key port opens that lobby's scope now, before
- * the node gets the command (node.h, LOBBY_READY; keys.md 7, integration W4).
- * Without it the node's gate would open on the flag alone with no key behind
- * it (audit M4): it fails safe, signing nothing. */
-static void keys_ready_gate(gzp_exec_t *ex, const uint8_t *args, size_t len)
-{
-    gz_bytes_t all, scope, flag;
-    gzp_keys_err_t e;
-    int ok;
-    all.data = args;
-    all.len = len;
-    if (!ex->keys->scoped_only || gz_rec_find(all, 12, &scope) != 1 || scope.len != 32 ||
-        gz_rec_find(all, 14, &flag) != 1 || flag.len != 1 || flag.data[0] != 1)
-        return;
-    ok = gzp_keys_open_ready(ex->keys, scope.data, &e);
-    gzp_log("key-scope-open scope=%02x%02x%02x%02x ok=%d held=%zu", scope.data[0], scope.data[1], scope.data[2],
-            scope.data[3], ok, gzp_keys_scopes_held(ex->keys));
-}
 /* A USER_COMMAND: request_id, command code, then the arguments (already a
  * TLV stream of records 10 and up). With `api_rid`, it is shaped as the API
  * server sends a request (local-api.md 7.4): that id, a method, a path and a
- * digest (here 32 bytes derived from the arguments, not RFC 8785's). */
+ * digest (here 32 bytes derived from the arguments, not RFC 8785's). The key
+ * port's command gate runs on every USER_COMMAND as it is delivered (#53, H1). */
 static void deliver_command(gzp_exec_t *ex, uint16_t code, const uint8_t *args, size_t args_len, const char *api_rid)
 {
     uint8_t *buf = malloc(args_len + 192), c2[2], dig[32];
@@ -765,7 +840,6 @@ static void deliver_command(gzp_exec_t *ex, uint16_t code, const uint8_t *args, 
     size_t at = 0, cap = args_len + 192;
     gz_event_t ev;
     if (!buf) abort();
-    if (code == GZ_CMD_LOBBY_READY) keys_ready_gate(ex, args, args_len);
     if (api_rid) snprintf(rid, sizeof rid, "%s", api_rid);
     else snprintf(rid, sizeof rid, "p-%llu-%llu", (unsigned long long)ex->incarnation,
                   (unsigned long long)++ex->next_request);
@@ -852,6 +926,11 @@ static void test_line(gzp_exec_t *ex, char *line)
         free(tx);
     } else if (!strcmp(w, "raw-kind") && a1) {
         gzp_net_test_raw(ex->net, (uint16_t)strtoul(a1, NULL, 10), a2 && !strcmp(a2, "zero"));
+    } else if (!strcmp(w, "key-secret") && a1 && a2) {
+        uint8_t sk[32];
+        int ok = port_secret(ex, (uint32_t)strtoul(a1, NULL, 10), (uint32_t)strtoul(a2, NULL, 10), sk);
+        gzw_wipe(sk, sizeof sk);
+        gzp_log("test-key-secret epoch=%s index=%s ok=%d", a1, a2, ok);
     } else if (!strcmp(w, "sync-fail-ping")) {
         if (ex->store.ops->test_fail_next_ping) ex->store.ops->test_fail_next_ping(ex->store.ctx);
         gzp_log("test-sync-fail armed for the next ping record");
@@ -921,20 +1000,25 @@ static void keys_from_storage(gzp_exec_t *ex, int restored)
     uint32_t epoch = 0;
     size_t i;
     memset(ex->keys->slots, 0, sizeof ex->keys->slots);
+    gzp_keys_set_epoch(ex->keys, 0);
+    ex->keys->highest_index = 0;
     ex->store.ops->rewind(ex->store.ctx);
     while (ex->store.ops->next(ex->store.ctx, &sb))
         for (i = 0; i < sb.n_records; i++) {
             gz_bytes_t v;
             keys_note_record(ex, &sb.records[i], 0);
             if (sb.records[i].type == GZ_RECORD_KEY_EPOCH && gz_rec_find(sb.records[i].bytes, 2, &v) == 1 &&
-                v.len == 4)
+                v.len == 4) {
                 epoch = gz_get_u32(v.data);
+                gzp_keys_set_epoch(ex->keys, epoch); /* key_index records after it are this epoch's */
+            }
         }
     ex->store.ops->rewind(ex->store.ctx);
     gzp_keys_forget_all(ex->keys);
     gzp_keys_set_epoch(ex->keys, epoch);
     gzp_keys_freeze(ex->keys, restored);
-    gzp_log("keys epoch=%08x frozen=%d", (unsigned)ex->keys->epoch, ex->keys->frozen);
+    gzp_log("keys epoch=%08x frozen=%d held=%zu", (unsigned)ex->keys->epoch, ex->keys->frozen,
+            gzp_keys_scopes_held(ex->keys));
 }
 
 /* node.h's stepped start. Between steps, storage confirmations (and only
