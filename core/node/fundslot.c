@@ -277,13 +277,15 @@ gz_status_t gz_fd_init(gz_node_t *c)
 {
     gz_fund_config_t fc;
     c->fund_on = 0;
+    const gz_wallet_port_t *wp = c->cfg.wallet;
     /* A host funds only with a wallet port (the program's); without one, a test build keeps the
-     * stand-in plan of signslot.c and a release build begins no round. */
-    if (!c->sign_on || !c->cfg.sign_mem || (c->cfg.host && !c->cfg.wallet)) return GZ_OK;
+     * stand-in plan of signslot.c and a release build begins no round. A port with the funds
+     * check alone (can_plan, no plan: #55's node tests) is the same here: no funding engine. */
+    if (!c->sign_on || !c->cfg.sign_mem || (c->cfg.host && (!wp || !wp->plan))) return GZ_OK;
     c->fund = &((sg_mem_t *)c->cfg.sign_mem)->fund;
     gz_fund_config_default(&fc, c->cfg.host);
     fc.mode = c->cfg.host_funding;
-    if (c->cfg.host && c->cfg.wallet) fc.wallet = *(const gz_wallet_port_t *)c->cfg.wallet;
+    if (c->cfg.host) fc.wallet = *wp;
     if (c->cfg.funding_burial) fc.burial = c->cfg.funding_burial;
     fc.hooks.ctx = c;
     fc.hooks.report = fd_report;
