@@ -114,6 +114,7 @@ typedef struct {
     int test_sign_outcome;         /* the signing stand-in's outcome: 1 funding, 2 retry, 3 failed, 4 unfinished */
     int test_funds;                /* can_plan overridden: 0 the host's own wallet answers, 1 short, 2 cannot tell */
     int test_sign_delay_ms;        /* ... reported this long after the hand-off */
+    int test_ready_cap;            /* a member's ready built in this many bytes (an over-limit ready: K1) */
     int test_sign_tick_ms;         /* the signing engine's tick (0: its own, 1 s) */
     int tip;                       /* --tip: the tip to start from until the chain reports one (0: none) */
     /* a setting, both builds */

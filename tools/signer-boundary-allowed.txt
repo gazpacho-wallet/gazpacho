@@ -13,8 +13,11 @@
 # the other 4 go at S4).
 core/gazpacho/include/gazpacho/ports.h	host_secret	1
 core/node/internal.h	gate_secret	1
-core/node/lobbyslot.c	gate_secret	5
-core/node/lobbyslot.c	hook:secret	1
+# #55 (boundary review, label OK): 5 to 7, the join-ready derive deferred to gz_ls_after
+# (memcpy into gate_secret) and the wipe of gate_secret on a failed join (slot_begin).
+core/node/lobbyslot.c	gate_secret	7
+# #55 (boundary review, label OK): 1 to 2, keys.secret() at the deferred join-ready derive.
+core/node/lobbyslot.c	hook:secret	2
 core/node/signslot.c	gate_secret	1
 core/node/signslot.c	hook:secret	2
 core/node/signslot.c	hook:sign	2
@@ -22,8 +25,13 @@ core/node/signslot.c	host_secret	2
 core/node/signslot.c	secp256k1_keypair_create	3
 core/signing/signing.c	secp256k1_keypair_sec	1
 program/executor.c	host_secret	1
+# #55 (boundary review, label OK): test_join_ready_key_hook reads gate_secret, comparing it with zero
+# (no key before the terms, none for other values, every byte wiped at a lock).
+tests/node/test_node_lobby.c	gate_secret	3
 tests/node/test_node_lobby.c	hook:secret	1
-tests/node/test_node_lobby.c	hook:sign	2
+# K1 (#95, review B L-4), growth: test_k1_ls_sign_no_factory asks the slots' signing hook to sign with
+# the factory key (member, host: refused) and the contribution key (signs) (2 -> 5)
+tests/node/test_node_lobby.c	hook:sign	5
 tests/signing/world.h	secp256k1_keypair_create	6
 # ---- END S3
 
@@ -34,13 +42,13 @@ tests/signing/world.h	secp256k1_keypair_create	6
 # signer call, or is dropped: gzw_bip32_master and gzw_phrase_to_seed go.
 # Its secp256k1_ec_seckey_verify is key_ok's check of the transport key, which
 # goes with S4's ECDH move.
-# program/store_unlock.c (PR 54, B3, in place of program/unlock_standin.c and
-# main.c's own use): set-up turns the words into the seed for the storage
-# layer outside the signer: the seed source; reasoned exemption until 1.0.0's
-# separate signer process.
+# program/unlock_standin.c: the stand-in unlock turns the words into the seed
+# outside the signer. At S4 the signer reads the seed only through its seed
+# source and does this step itself.
 program/main.c	gzw_bip32_master	1
+program/main.c	gzw_phrase_to_seed	1
 program/main.c	secp256k1_ec_seckey_verify	1
-program/store_unlock.c	gzw_phrase_to_seed	1
+program/unlock_standin.c	gzw_phrase_to_seed	1
 # ---- END S4/S5
 
 # ---- S4: everything else. The signing engine's, the lobby's and the
@@ -50,11 +58,14 @@ program/store_unlock.c	gzw_phrase_to_seed	1
 # to wallet/tx/tests/test_tx_funding_port.c (12 to 14) after #71's list.
 core/gazpacho/include/gazpacho/node.h	hook:sign	1
 core/gazpacho/include/gazpacho/ports.h	hook:secret	1
-core/lobby/host.c	hook:sign	5
+# K1 (#95): the host no longer signs its binding with the factory key (5 -> 4)
+core/lobby/host.c	hook:sign	4
 core/lobby/include/gazpacho/lobby.h	hook:sign	1
-core/lobby/member.c	hook:sign	2
+# K1 (#95): the join is unsigned; the factory key signs nothing (2 -> 1)
+core/lobby/member.c	hook:sign	1
 core/lobby/wire.c	hook:sign	1
-core/node/lobbyslot.c	hook:sign	4
+# K1 (#95, review B L-4): ls_sign refuses the factory key, its branch gone (4 -> 3)
+core/node/lobbyslot.c	hook:sign	3
 core/node/lobbyslot.c	ls_sign	2
 core/signing/signing.c	secp256k1_musig_nonce_gen	1
 core/signing/signing.c	secp256k1_musig_partial_sign	1
@@ -71,15 +82,11 @@ program/executor.c	hook:sign	1
 program/executor.c	port_secret	2
 program/executor.c	port_sign	2
 program/net.c	gzp_net_sign	1
-# program/net.c: PR 54's review A, M-1: the lock wipes the transport's static
-# key and the unlock gives it back after checking it is the same key
-# (gzp_net_forget_key, gzp_net_key_is_zero, gzp_net_rekey): 5 more uses of
-# static_key and one of secp256k1_ec_pubkey_create; they move with the key at S4.
-program/net.c	secp256k1_ec_pubkey_create	3
+program/net.c	secp256k1_ec_pubkey_create	2
 program/net.c	secp256k1_ec_seckey_verify	1
 program/net.c	secp256k1_keypair_create	1
 program/net.c	secp256k1_schnorrsig_sign32	1
-program/net.c	static_key	11
+program/net.c	static_key	6
 program/net.h	gzp_net_sign	1
 tests/funding/regtest_harness.c	gzt_funding_build	1
 tests/funding/regtest_harness.c	gzt_funding_release	1
@@ -88,7 +95,12 @@ tests/funding/regtest_harness.c	gzw_bip32_master	1
 tests/lobby/lobby_test.h	hook:sign	1
 tests/lobby/lobby_test.h	secp256k1_keypair_create	1
 tests/lobby/lobby_test.h	secp256k1_schnorrsig_sign32	1
-tests/lobby/test_lobby.c	hook:sign	2
+# K1 (#95), growth: test_k1_member counts what each key signs through the hook (k1_sign: the factory
+# key must sign nothing) (2 -> 3)
+tests/lobby/test_lobby.c	hook:sign	3
+# K1 (#95), growth: review H1's tests make a second valid binding signature (k1_sign_aux, other aux
+# randomness) to show the host accepts it and keeps the first (0 -> 1)
+tests/lobby/test_lobby.c	secp256k1_schnorrsig_sign32	1
 tests/lobby/test_lobby_hostile.c	hook:sign	1
 tests/lobby/test_lobby_vectors.c	hook:sign	5
 tests/net/fuzz_noise.c	secp256k1_ec_pubkey_create	1
@@ -100,13 +112,8 @@ tests/net/test_peers.c	static_key	1
 tests/net/test_testkind.c	secp256k1_ec_pubkey_create	1
 tests/net/test_testkind.c	static_key	1
 tests/net/test_wipes.c	secp256k1_ec_pubkey_create	1
-tests/node/test_node_lobby.c	secp256k1_schnorrsig_sign32	3
-# Test only (#92): test_keys_own_role_only sets a member's key port to
-# w_any_host_secret, a port that hands out a host key to anyone who asks, so
-# that only gz_sg_keys' role check can refuse a host-role key on a member
-# (it kills sg-keys-any-role). Two uses: the assignment and the reset. It
-# goes with the key port's host_secret at S3.
-tests/node/test_node_lobby.c	host_secret	2
+# K1 (#95): the outsider join signs no binding (3 -> 1)
+tests/node/test_node_lobby.c	secp256k1_schnorrsig_sign32	1
 tests/program/silent_peer.c	secp256k1_ec_seckey_verify	1
 tests/program/test_net.c	gzp_net_sign	2
 tests/regtest/tree_regtest.c	factory_sign_all	1

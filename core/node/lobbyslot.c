@@ -83,7 +83,10 @@ static int ls_point_ok(void *ctx, const uint8_t pub[33])
 /* The slot's pair: the contribution key at key_index, the factory key at
  * key_index + 1; the host signs with its long-term key and has no
  * contribution key. A key the port will not sign with is 0: the lobby
- * gives a notice and does nothing (lobby.h, ERRORS). */
+ * gives a notice and does nothing (lobby.h, ERRORS). The factory key signs
+ * nothing in the lobby (BD): this hook refuses it outright, without asking
+ * the port; its only signatures are the signing engine's MuSig2 partials
+ * (review B of PR 95, L-4). */
 static int ls_sign(void *ctx, uint32_t which, const uint8_t msg[32], uint8_t sig[64])
 {
     const slot_t *s = ctx;
@@ -91,8 +94,7 @@ static int ls_sign(void *ctx, uint32_t which, const uint8_t msg[32], uint8_t sig
     if (!k->sign) return 0;
     if (which == GZ_LOBBY_KEY_HOST) return s->host ? k->sign(k->ctx, 1, 0, 0, msg, sig) : 0;
     if (which == GZ_LOBBY_KEY_CONTRIBUTION) return s->host ? 0 : k->sign(k->ctx, 0, s->key_epoch, s->key_index, msg, sig);
-    if (which == GZ_LOBBY_KEY_FACTORY) return k->sign(k->ctx, 0, s->key_epoch, s->key_index + 1, msg, sig);
-    return 0;
+    return 0;                                         /* RULE-NODE:LS_NO_FACTORY */
 }
 
 /* The signing gate (12.2): none with AUTO, the node-wide gate with
@@ -246,6 +248,9 @@ int gz_ls_init(gz_node_t *c, int i)
     mc.address_len = s->address_len;
     mc.key_epoch = s->key_epoch;
     mc.key_index = s->key_index;
+#ifdef GZ_TEST_KINDS
+    mc.test_ready_cap = c->cfg.test_ready_cap;          /* tests only: an over-limit ready (K1) */
+#endif
     mc.auto_join = s->auto_join;
     mc.max_tree_nodes = c->sign_on ? GZ_SIGN_MAX_ITEMS : 0;
     gate.may_answer = ls_may_answer;
@@ -1082,11 +1087,20 @@ gz_status_t gz_ls_after(gz_node_t *c, int i, gz_action_list_t *out)
     if (st == GZ_OK && !s->host && s->gate_derive && s->gate_open && s->gate_have && s->lobby.m.have_terms) {
         const gz_lobby_member_t *m = &s->lobby.m;
         uint8_t fresh[32];
-        if (memcmp(m->frozen ? m->frozen_digest : m->current_digest, s->gate_digest, 32) == 0) {
-            s->gate_derive = 0;
-            if (c->cfg.keys.secret && c->cfg.keys.secret(c->cfg.keys.ctx, s->key_epoch, s->key_index + 1, fresh) == 1)
-                memcpy(s->gate_secret, fresh, 32);
-            gz_ls_wipe32(fresh);
+        int derived = 0;
+        s->gate_derive = 0;
+        if (memcmp(m->frozen ? m->frozen_digest : m->current_digest, s->gate_digest, 32) == 0 &&
+            c->cfg.keys.secret && c->cfg.keys.secret(c->cfg.keys.ctx, s->key_epoch, s->key_index + 1, fresh) == 1) {
+            memcpy(s->gate_secret, fresh, 32);
+            derived = 1;
+        }
+        gz_ls_wipe32(fresh);
+        /* Other values than the ones joined for, or no secret from the port: the gate
+         * never claims a key it does not have (review of #55's boundary, Low). It closes
+         * as at a lock, and the lobby is told; the person readies again. */
+        if (!derived) {
+            gate_close(c, s);
+            st = gz_c_slot_inline(c, ENG_SLOT0 + i, gate_closed_inline, out);
         }
     }
     /* ... and when the seat ends (14.3 rule 1): left, refused, removed or the lobby
@@ -1939,7 +1953,7 @@ gz_status_t gz_ls_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action
      * ready opens it, and there was none (review A of PR 44, L3); a gate that was open keeps the
      * secret and the digest it had (review A of PR 52, L5). */
     if (refused && opened && s->state == SLOT_OPEN) gate_close(c, s);
-    else if (refused && rebound && s->state == SLOT_OPEN) {
+    else if (refused && rebound && s->state == SLOT_OPEN && s->gate_open) {   /* never behind a closed gate (review A of #55) */
         memcpy(s->gate_secret, old_secret, 32);
         memcpy(s->gate_digest, old_digest, 32);
         s->gate_have = had;

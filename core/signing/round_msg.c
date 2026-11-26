@@ -165,7 +165,7 @@ enum {
 static const fld_t PROPOSE[P_N] = {
     {2, REQ, F_FIX, 32, 0, 0}, {4, REQ, F_FIX, 32, 0, 0}, {6, REQ, F_FIX, 1, 0, 0}, {7, OPT, F_FIX, 2, 0, 0},
     {8, REQ, F_FIX, 4, 0, 0}, {10, REQ, F_FIX, 32, 0, 0}, {12, REQ, F_FIX, 36, 0, 0}, {14, REQ, F_FIX, 8, 0, 0},
-    {16, REQ, F_FIX, 34, 0, 0}, {18, REQ, F_VAR, 0, 60, 100000}, {20, REQ, F_LIST, 194, 2, 1001},
+    {16, REQ, F_FIX, 34, 0, 0}, {18, REQ, F_VAR, 0, 60, 100000}, {20, REQ, F_LIST, 130, 2, 1001},
     {22, REQ, F_LIST, 4, 1, 8}, {24, REQ, F_FIX, 4, 0, 0}, {28, REQ, F_FIX, 1, 0, 0}, {30, REQ, F_FIX, 8, 0, 0},
     {32, REQ, F_FIX, 4, 0, 0}, {34, REQ, F_LIST, 36, 0, 4096}, {36, REQ, F_FIX, 1, 0, 0}, {38, REQ, F_FIX, 1, 0, 0},
     {40, REQ, F_FIX, 2, 0, 0}, {42, REQ, F_FIX, 2, 0, 0}, {44, OPT, F_VAR, 0, 4 + 9, 4 + 255 * 43},
@@ -194,7 +194,7 @@ gz_rmsg_err_t gz_rmsg_propose_decode(const uint8_t *records, size_t len, gz_rmsg
     memset(m, 0, sizeof *m);
     if (e != GZ_RMSG_OK) return e;
     if (g[P_DIST].present && !distribution_ok(g[P_DIST].v, g[P_DIST].len)) return GZ_RMSG_E_VALUE;
-    size_t np = g[P_PARTICIPANTS].len / 194;
+    size_t np = g[P_PARTICIPANTS].len / 130;
     if (np > GZ_RMSG_MAX_PARTICIPANTS) return GZ_RMSG_E_CAPACITY;
     gz_tree_proposal_t *p = &m->p;
     m->round_id = g[P_ROUND_ID].v; m->check_id = g[P_CHECK_ID].v; m->host_random = g[P_RANDOM].v; m->sig = g[P_SIG].v;
@@ -210,11 +210,10 @@ gz_rmsg_err_t gz_rmsg_propose_decode(const uint8_t *records, size_t len, gz_rmsg
     p->funding_script_len = 34;
     p->funding_tx = g[P_FUNDING_TX].v; p->funding_tx_len = g[P_FUNDING_TX].len;
     for (size_t i = 0; i < np; i++) {
-        const uint8_t *q = g[P_PARTICIPANTS].v + 194 * i;
+        const uint8_t *q = g[P_PARTICIPANTS].v + 130 * i;   /* K1: 130-byte entries */
         memcpy(m->parts[i].factory_key, q, 33);
         memcpy(m->parts[i].contribution_key, q + 33, 33);
-        memcpy(m->parts[i].bind_by_factory, q + 66, 64);
-        memcpy(m->parts[i].bind_by_contribution, q + 130, 64);
+        memcpy(m->parts[i].bind_by_contribution, q + 66, 64);
     }
     p->participants = m->parts; p->n_participants = np;
     p->n_tiers = (uint8_t)(g[P_TIERS].len / 4);
@@ -259,13 +258,13 @@ size_t gz_rmsg_propose_encode(const gz_rmsg_propose_in_t *in, uint8_t *out, size
     wr64(b, p->funding_amount); gz_rmsg_put(&w, 14, b, 8);
     gz_rmsg_put(&w, 16, p->funding_script, 34);
     gz_rmsg_put(&w, 18, p->funding_tx, p->funding_tx_len);
-    /* participants: one record of 194-byte entries, written in place */
-    q = gz_rmsg_reserve(&w, 20, 194 * p->n_participants);
-    for (size_t i = 0; q && i < p->n_participants; i++, q += 194) {
+    /* participants: one record of 130-byte entries (factory key, contribution key, the contribution
+     * key's binding; K1), written in place */
+    q = gz_rmsg_reserve(&w, 20, 130 * p->n_participants);
+    for (size_t i = 0; q && i < p->n_participants; i++, q += 130) {
         memcpy(q, p->participants[i].factory_key, 33);
         memcpy(q + 33, p->participants[i].contribution_key, 33);
-        memcpy(q + 66, p->participants[i].bind_by_factory, 64);
-        memcpy(q + 130, p->participants[i].bind_by_contribution, 64);
+        memcpy(q + 66, p->participants[i].bind_by_contribution, 64);
     }
     for (size_t i = 0; i < p->n_tiers; i++) wr32(tiers + 4 * i, p->tier_sizes[i]);
     gz_rmsg_put(&w, 22, tiers, 4u * p->n_tiers);
