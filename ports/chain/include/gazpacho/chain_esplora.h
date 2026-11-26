@@ -66,6 +66,35 @@ void gz_esplora_config_default(gz_esplora_config *cfg);
 gz_chain_result gz_esplora_create(const gz_esplora_config *cfg, const gz_http *http,
                                   gz_chain *out);
 
+/*
+ * The package-endpoint probe (plan S12, step 1). Sends GZ_ESPLORA_PROBE_BODY,
+ * which is not JSON and so cannot be read as a list of transactions, to the
+ * package endpoint: nothing can be broadcast. A server with the endpoint
+ * refuses it with 400; one without answers 404 (or 405).
+ */
+#define GZ_ESPLORA_PROBE_BODY "gazpacho package probe: not a package"
+#define GZ_ESPLORA_PROBE_PATH_MAX 24
+
+typedef struct gz_package_probe {
+  /* GZ_CHAIN_OK: the endpoint is there (400 to the probe), at `path`.
+   * GZ_CHAIN_UNSUPPORTED: 404 or 405 at every path tried.
+   * GZ_CHAIN_REJECTED: another 4xx; cannot tell (the words are in `reason`).
+   * GZ_CHAIN_MALFORMED: a 2xx or other status to a body that is no package.
+   * GZ_CHAIN_UNREACHABLE, GZ_CHAIN_TOO_LARGE: as for any request. */
+  gz_chain_result result;
+  long server_status; /* HTTP status of the last answer, or 0 if not reached */
+  char path[GZ_ESPLORA_PROBE_PATH_MAX]; /* the path of the last answer, e.g. "/txs/package" */
+  /* The server's words, printable ASCII, zero-terminated. */
+  char reason[GZ_REASON_MAX];
+} gz_package_probe;
+
+/* Probes one Esplora backend made by gz_esplora_create (anything else is
+ * GZ_CHAIN_INVALID_ARG and nothing is sent). Tries the same paths, in the
+ * same order, as gz_chain_broadcast_package. `out` is filled whatever the
+ * result and out->result equals the return value. Safe on every network:
+ * the body is never a transaction. */
+gz_chain_result gz_esplora_probe_package(const gz_chain *c, gz_package_probe *out);
+
 #ifdef __cplusplus
 }
 #endif

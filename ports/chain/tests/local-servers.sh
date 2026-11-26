@@ -166,4 +166,38 @@ expect "broadcast --network mainnet is refused before any request" 2 "refusing t
   "$tool" --network mainnet --server $H/honest broadcast "$(cat "$tests/data/tx_a_hex.txt")"
 if [ -s posts.log ]; then echo "FAIL a transaction was posted to a server"; fail=1; fi
 
+
+# --- packages (plan P2) and the endpoint probe (plan S12 step 1). honest2
+# has a package endpoint, honest has none.
+PARENT=$(tr -d '\r\n' < "$tests/data/tx_a_hex.txt")
+CHILD=$(tr -d '\r\n' < "$tests/data/tx_spender_hex.txt")
+P2="--server $L/honest2 --operator second-operator"
+: > posts.log
+expect "package --network mainnet is refused before any request" 2 "refusing to broadcast on mainnet" \
+  "$tool" --network mainnet --server $H/honest package "$PARENT" "$CHILD"
+expect "package is refused when a server is on mainnet, whatever the flag" 2 "is a mainnet server" \
+  "$tool" --network signet $A --server $L/mainnet --operator second-operator package "$PARENT" "$CHILD"
+if [ -s posts.log ]; then echo "FAIL a package was posted to a server"; cat posts.log; fail=1; fi
+expect "--probe goes with package only" 2 "usage: gz-chain" "$tool" $A $P2 tip --probe
+expect "package needs a parent and a child" 2 "usage: gz-chain" "$tool" $A $P2 package "$PARENT"
+expect "package: taken by the server with an endpoint" 0 "verdict: ok" \
+  "$tool" $A $P2 package "$PARENT" "$CHILD"
+printf '%s\n' "$out" | grep -q "no package endpoint" ||
+  { echo "FAIL the server without an endpoint was not reported as such"; fail=1; }
+printf '%s\n' "$out" | grep -q "parent accepted $TXA" ||
+  { echo "FAIL the accepting server's parent result was not shown"; fail=1; }
+expect "package: nobody has an endpoint, exit 1" 1 "verdict: unsupported" \
+  "$tool" $A --server $L/hider --operator second-operator package "$PARENT" "$CHILD"
+: > posts.log
+expect "probe: one server with an endpoint, one without" 0 "package endpoint: 1 of 2 server" \
+  "$tool" $A $P2 package --probe
+printf '%s\n' "$out" | grep -q "present: HTTP 400 at /txs/package" ||
+  { echo "FAIL the probe did not report the endpoint present"; fail=1; }
+printf '%s\n' "$out" | grep -q "absent: HTTP 404" ||
+  { echo "FAIL the probe did not report the endpoint absent"; fail=1; }
+# the probe sent nothing but its fixed 37-byte body, to package paths only
+if grep -qv ' 37$' posts.log || grep -qv 'txs/package ' posts.log; then
+  echo "FAIL the probe posted something else:"; cat posts.log; fail=1
+fi
+
 exit $fail

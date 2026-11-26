@@ -1205,3 +1205,13 @@ gz_chain_result gz_esplora_create(const gz_esplora_config *cfg, const gz_http *h
   out->ops = &es_ops;
   return GZ_CHAIN_OK;
 }
+
+/* Not written yet: the tests come first. */
+gz_chain_result gz_esplora_probe_package(const gz_chain *c, gz_package_probe *out) {
+  (void)c;
+  if (out != NULL) {
+    memset(out, 0, sizeof *out);
+    out->result = GZ_CHAIN_INVALID_ARG;
+  }
+  return GZ_CHAIN_INVALID_ARG;
+}
