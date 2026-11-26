@@ -13,6 +13,9 @@ LISTEN_PORT_FILE. Reads the RPC cookie of the regtest node in BITCOIN_DATADIR.
 With GZ_ESPLORA_LOG set to a file name, one line per GET is appended to it:
 the time, the client's port, the wait for the lock, the time taken, the
 status and the path (what a chain worker asked, and when).
+With GZ_ESPLORA_THROTTLE set to N:W, it throttles as a public server does:
+a GET beyond N in the last W seconds, from any client, is answered 429 Too
+Many Requests (program_chain_throttle; signet run 2's preparation).
 Refuses to serve anything but regtest (getblockchaininfo.chain). Standard
 library only. Test tool: never used against signet or any public network.
 
@@ -34,6 +37,21 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 DATADIR, RPC_PORT, PORT_FILE = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 LOCK = threading.Lock()
+THROTTLE = os.environ.get("GZ_ESPLORA_THROTTLE", "")
+RECENT = []   # when each GET answered in the throttle's window started
+
+
+def throttled(now):
+    """True if a GET now is one too many for GZ_ESPLORA_THROTTLE (N:W); counts it if not."""
+    if not THROTTLE:
+        return False
+    n, w = THROTTLE.split(":")
+    while RECENT and RECENT[0] < now - float(w):
+        RECENT.pop(0)
+    if len(RECENT) >= int(n):
+        return True
+    RECENT.append(now)
+    return False
 
 
 def rpc(method, *params):
@@ -239,7 +257,7 @@ class H(BaseHTTPRequestHandler):
         with LOCK:
             t1 = time.time()
             try:
-                r = answer(self.path)
+                r = (429, "text/plain", b"Too Many Requests") if throttled(t0) else answer(self.path)
                 self.send(*r)
             except Exception as e:  # a test tool: say what failed
                 r = (500, "text/plain", str(e).encode())

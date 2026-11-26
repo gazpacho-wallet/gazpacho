@@ -272,6 +272,10 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME program_host_funds
     COMMAND ${GZP_PY} ${GZP_T}/host_funds.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/host_funds)
   set_tests_properties(program_host_funds PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77)
+  # B22, F22: a chain server that throttles (429, as public servers do) still gives the host its coins.
+  add_test(NAME program_chain_throttle
+    COMMAND ${GZP_PY} ${GZP_T}/chain_throttle.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/chain_throttle)
+  set_tests_properties(program_chain_throttle PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
   # F13 (H3): the key routing follows the signing setting in force, not --member-signing; real signing.
   add_test(NAME program_keys_setting
     COMMAND ${GZP_PY} ${GZP_T}/keys_setting.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/keys_setting)
