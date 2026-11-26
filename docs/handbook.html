@@ -170,6 +170,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="sec" href="#c10-slice-2-a-payment" title="Slice 2: a payment">Slice 2: a payment</a>
 <a class="sec" href="#c10-slice-3-leaving-alone" title="Slice 3: leaving alone">Slice 3: leaving alone</a>
 <a class="sec" href="#c10-later-slices" title="Later slices">Later slices</a>
+<a class="sec" href="#c10-a-stuck-funding-owner-2026-11-26" title="A stuck funding (owner, 2026-11-26)">A stuck funding (owner, 2026-11-26)</a>
 <a class="sec" href="#c10-chain-sources-owner-2026-11-26" title="Chain sources (owner, 2026-11-26)">Chain sources (owner, 2026-11-26)</a>
 <a class="sec" href="#c10-where-slices-run" title="Where slices run">Where slices run</a>
 <a class="sec" href="#c10-what-slices-do-not-replace" title="What slices do not replace">What slices do not replace</a>
@@ -799,7 +800,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>Funding</td>
-<td>One funder per factory, the host, who signs funding only after the whole tree is signed. Members start at zero. Funding is automatic and on by default: once H1 passes, the host broadcasts without asking; consent is at opening the lobby and at the start. Before real money it becomes a setting that still defaults to automatic (owner decision 16a, 2026-11-13)</td>
+<td>One funder per factory, the host, who signs funding only after the whole tree is signed. Members start at zero. Funding is automatic and on by default: once H1 passes, the host broadcasts without asking; consent is at opening the lobby and at the start. Before real money it becomes a setting that still defaults to automatic (owner decision 16a, 2026-11-13). A stuck funding is bumped by a child on its change or on a 240-sat P2A "speed-up output", never replaced, since the tree is signed against its txid. The funding stays version 2 (owner, 2026-11-26, decision 17c; <code>SLICES.md</code>, "A stuck funding")</td>
 </tr>
 <tr>
 <td>Lobbies per wallet</td>
@@ -1028,6 +1029,10 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <tr>
 <td>Keys unlocked for one lobby only (the rest stay sealed), before Slice 2; a separate signer process, before 1.0.0</td>
 <td>Owner, 2026-11-26 (follow-ons of the idle lock)</td>
+</tr>
+<tr>
+<td>A stuck funding (decision 17c): coin selection that prefers leaving change; the 240-sat P2A speed-up output when no change is possible (setting Auto, Always, Never; Auto turns it on near the relay floor, 0.1 to 1 sat/vB); the host's "Speed up" button with a preview (CPFP only); the waiting status for host and members, with amber and red; version 3 for fundings reconsidered before mainnet</td>
+<td>Owner, 2026-11-26</td>
 </tr>
 <tr>
 <td>Chain sources, in order: Electrum-protocol servers; the person's own node over RPC, pruned included; compact block filters as the default light mode before mainnet. Each closes the host wallet's single-server scan gap (<code>THREAT-MODEL.md</code> 2.4 on <code>integration-slice1</code>, from #97) as <code>SLICES.md</code> says</td>
@@ -4027,6 +4032,42 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <p><strong>Done when:</strong> the exit completes with the host gone, the amount equals what the member was owed, and the screen showed the dates correctly beforehand.</p></div></details>
 <details id="c10-later-slices"><summary>Later slices</summary><div class="body"><p>Rotation into the next factory (M4); paying and being paid across the wider Lightning network through the host's node; finding hosts through discovery (<code>spec/discovery.md</code>). Liquidity changes and timed levels are 1.1.0 (owner decision 9).</p>
 <p><strong>Many factories and rolling forward</strong> (1.1.0, <code>MULTI-FACTORY.md</code>): one member in three factories with two hosts moves its balance from an ending factory into a live one over Lightning, by a standing rule and without anyone acting, and the app settles to chain by its own deadline when no lobby is available.</p></div></details>
+<details id="c10-a-stuck-funding-owner-2026-11-26"><summary>A stuck funding (owner, 2026-11-26)</summary><div class="body"><p>The funding's txid is fixed before anything is signed, because the whole tree is signed against it. A replacement by fee therefore kills the factory (H16), so a funding that waits can only be helped by a child transaction (CPFP). The funding stays version 2.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Piece</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Coin selection</td>
+<td>Prefers a plan that leaves a change output, adding a small coin if needed</td>
+</tr>
+<tr>
+<td>Speed-up output</td>
+<td>When no change is possible, the funding preview says so plainly and offers a 240-sat P2A output that anyone can bump from. Setting "Speed-up output on fundings": <strong>Auto</strong> (the default: on when the chosen rate is near the relay floor, 0.1 to 1 sat/vB, off otherwise), <strong>Always</strong> or <strong>Never</strong></td>
+</tr>
+<tr>
+<td>"Speed up" (host)</td>
+<td>On a funding that is waiting, a button with a preview of the child: what it spends (the change or the speed-up output), its fee and the package rate. It never replaces the funding</td>
+</tr>
+<tr>
+<td>Status (host and members)</td>
+<td>"Funding not confirmed: waited N blocks; the lobby ends in M blocks if it doesn't confirm", where M counts to the funding deadline (the tip at the acknowledgement plus 36). Amber once the wait is longer than normal; red when M is small (for example 6 or fewer)</td>
+</tr>
+<tr>
+<td>Status (members)</td>
+<td>"The host's funding is waiting; you are released automatically in M blocks." No button. For later: members could bump through a keyless anchor</td>
+</tr>
+<tr>
+<td>Version 3</td>
+<td>Reconsidered before mainnet. It would only add zero-fee fundings, which are not needed</td>
+</tr>
+</tbody>
+</table></div>
+<p>Tested in the Slice 1.5 plan's S7 (PR #99), on regtest at 0.1 and 1 sat/vB floors.</p></div></details>
 <details id="c10-chain-sources-owner-2026-11-26"><summary>Chain sources (owner, 2026-11-26)</summary><div class="body"><p>The owner: "we need all the options covered". Today's comparison of two Esplora operators stays. These are added in this order:</p>
 <div class="tw"><table>
 <thead>
