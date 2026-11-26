@@ -1,0 +1,250 @@
+/* SPDX-License-Identifier: MIT */
+/* Keys (docs/notes/keys.md, P8): every key the program signs with, derived
+ * from the wallet's BIP 39 seed.
+ *
+ *   m/254315617'/net'/0'/epoch'/index'   per-lobby keys: the contribution
+ *                                        (BOLT 8) key at i, the factory key
+ *                                        at i + 1 (contract-v2.md 13)
+ *   m/254315617'/net'/2'/epoch'/index'   the same on a host: its own pairs,
+ *                                        apart from any member's (K2)
+ *   m/254315617'/net'/1'/k'              the host's long-term key, k the
+ *                                        first valid of 0, 1, 2, ...
+ *   m/86'/coin'/0'/{0,1}/j               the on-chain wallet (BIP 86); a
+ *                                        payout script is receive index j
+ *
+ * What is held. The key port keeps no seed, no master key and no
+ * intermediate node: each derivation asks the seed source for the seed,
+ * walks the path, keeps the one result it was asked for and wipes the rest
+ * before it returns. It keeps the BIP 86 account's PUBLIC key (payout
+ * scripts need no secret), the current epoch, and, under AT_JOIN, the
+ * scoped table: per open per-lobby gate, that lobby's factory and
+ * contribution secrets, bound to (scope, values digest), wiped at forget.
+ *
+ * Policy (keys.md 3). gzp_keys_lobby derives only under the current epoch
+ * (the newest key_epoch record the node has read or saved; 0 before one)
+ * and nothing while frozen (a restore start, until the new epoch is saved):
+ * safety-rule.md C12 and R3. gzp_keys_lobby_raw has no policy and exists for
+ * the vectors and the test-engine single key.
+ *
+ * Returns. 1 on success, 0 on failure; on failure every output holding key
+ * material is zeroed, and *why (may be NULL) says why. Secrets handed out
+ * are the caller's to wipe (gzw_wipe). Nothing here logs, prints or stores
+ * a secret. Not thread-safe: the loop thread only. */
+#ifndef GZP_KEYS_H
+#define GZP_KEYS_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include <secp256k1.h>
+
+#include "gazpacho/wallet_keys.h"
+#include "unlock.h"
+
+/* SHA256("gazpacho keys")[0..4] & 0x7fffffff (contract-v2.md 13). */
+#define GZP_KEYS_PURPOSE 254315617u
+#define GZP_KEYS_BRANCH_LOBBY 0u
+#define GZP_KEYS_BRANCH_HOST 1u
+#define GZP_KEYS_BRANCH_HOST_LOBBY 2u /* a host's own per-lobby pairs (keys.md 3, K2) */
+#define GZP_KEYS_MAX_SCOPES 8     /* GZ_NODE_MAX_SLOTS */
+#define GZP_KEYS_INDEX_LIMIT 0x80000000u
+#define GZP_KEYS_MAX_SLOTS 32     /* member slots the key port knows (open and closing) */
+/* The pairs the core tries when a new slot's pair has an invalid child (#55:
+ * LS_KEY_TRIES, the skip of contract-v2.md 13). An armed join answers only a
+ * pair the core can choose: the first after the highest index, or one of the
+ * next GZP_KEYS_JOIN_TRIES - 1 (review of PR 53, L1). tests/program/
+ * join_window.py holds the two equal. */
+#define GZP_KEYS_JOIN_TRIES 8u
+
+/* Where the seed comes from: the storage layer while it is unlocked, or the
+ * stand-in seed file until storage lands (keys.md 9). seed() fills out with
+ * the 64-byte BIP 39 seed and returns 1, or returns 0 when there is none
+ * (locked); the caller wipes out. */
+typedef struct {
+    int (*seed)(void *ctx, uint8_t out[64]);
+    void *ctx;
+} gzp_seed_source_t;
+
+/* The seed source over the passphrase layer (program/unlock.h, seed(): 0
+ * with the seed while UNLOCKED, -1 when not unlocked, -2 when storage cannot
+ * give it). Anything but 0 is "no seed", with out wiped. `u` must outlive the
+ * source. This is the program's seed source once storage lands; until then
+ * the stand-in of keys_standin.h stands in for it. */
+gzp_seed_source_t gzp_keys_seed_from_unlock(const gzp_unlock_t *unlock);
+
+/* Why a call failed. */
+typedef enum {
+    GZP_KEYS_OK = 0,
+    GZP_KEYS_NO_SEED,        /* the seed source has none (locked) */
+    GZP_KEYS_BAD_ARGUMENT,   /* an epoch or index at or above 2^31, a network with no level, NULL */
+    GZP_KEYS_POLICY,         /* another epoch than the current one, or frozen (a restore start) */
+    GZP_KEYS_INVALID_CHILD,  /* BIP 32's rare case; *level says where (keys.md 3) */
+    GZP_KEYS_UNUSABLE,       /* the seed cannot be used with Gazpacho (an invalid level above the epoch) */
+    GZP_KEYS_FULL,           /* the scoped table is full */
+    GZP_KEYS_INTERNAL
+} gzp_keys_why_t;
+
+typedef struct {
+    gzp_keys_why_t why;
+    unsigned level;          /* GZP_KEYS_INVALID_CHILD: the path step that failed, 0 the master */
+} gzp_keys_err_t;
+
+typedef struct {
+    int used;
+    uint8_t scope[32];
+    uint8_t digest[32];
+    uint32_t epoch, index;       /* the pair: contribution at index, factory at index + 1 */
+    uint8_t factory[32];         /* SECRET */
+    uint8_t contribution[32];    /* SECRET */
+} gzp_keys_scope_t;
+
+/* A member slot as its slot_opened record names it: public, kept so that a
+ * ready with the passphrase can open that slot's scope (keys.md 7). */
+typedef struct {
+    int used;
+    uint32_t serial, epoch, index;
+    uint8_t scope[32];
+} gzp_keys_slot_t;
+
+typedef struct {
+    const secp256k1_context *secp;
+    gzw_network wnet;
+    uint32_t net_level;
+    gzp_seed_source_t src;
+    gzw_xpub account;            /* m/86'/coin'/0', public */
+    uint32_t epoch;              /* the current restore epoch */
+    int frozen;                  /* a restore start: no per-lobby key until the new epoch is saved */
+    int scoped_only;             /* AT_JOIN: secrets for rounds only from the scoped table */
+    uint32_t lobby_branch;       /* 0' on a member, 2' on a host (gzp_keys_set_role) */
+    uint32_t highest_index;      /* the highest key_index seen under the current epoch */
+    int join_armed;              /* a join with the passphrase is being delivered (keys.md 7) */
+    uint8_t join_scope[32];
+    gzp_keys_scope_t scopes[GZP_KEYS_MAX_SCOPES];
+    gzp_keys_slot_t slots[GZP_KEYS_MAX_SLOTS];
+} gzp_keys_t;
+
+/* The network level below the purpose: testnet4 1, signet 2, testnet3 3,
+ * regtest 4. 0 (and nothing in *out) for mainnet and any other value. */
+int gzp_keys_net_level(gzw_network net, uint32_t *out);
+
+/* Set up over a seed source, and check the seed can be used: the master,
+ * every level above the epoch on both Gazpacho branches, and the BIP 86
+ * account. *err: NO_SEED, BAD_ARGUMENT, UNUSABLE or INTERNAL. `secp` must
+ * outlive k. The epoch starts at 0, not frozen, the table empty. */
+int gzp_keys_init(gzp_keys_t *k, const secp256k1_context *secp, gzw_network net, const gzp_seed_source_t *src,
+                  gzp_keys_err_t *err);
+
+/* Wipe everything, the scoped table included. */
+void gzp_keys_free(gzp_keys_t *k);
+
+#ifdef GZP_TEST_BUILD
+/* The per-lobby key at (epoch, index), no policy: the test build only (the
+ * vectors, the test engines' single key). The release library has no such
+ * symbol (program_release_build checks it). sec or pub may be NULL. */
+int gzp_keys_lobby_raw(const gzp_keys_t *k, uint32_t epoch, uint32_t index, uint8_t sec[32], uint8_t pub[33],
+                       gzp_keys_err_t *err);
+#endif
+
+/* The same under the policy: the current epoch only, nothing while frozen. */
+int gzp_keys_lobby(const gzp_keys_t *k, uint32_t epoch, uint32_t index, uint8_t sec[32], uint8_t pub[33],
+                   gzp_keys_err_t *err);
+
+/* The host's long-term key, k the first valid of 0, 1, 2, ...; *k_out (may
+ * be NULL) says which. sec or pub may be NULL. */
+int gzp_keys_host(const gzp_keys_t *k, uint8_t sec[32], uint8_t pub[33], uint32_t *k_out, gzp_keys_err_t *err);
+
+/* The payout script of receive index j (exit.md 3.4): 51 20 <BIP 86 output
+ * key of m/86'/coin'/0'/0/j>, from the account's public key alone. */
+int gzp_keys_payout_script(const gzp_keys_t *k, uint32_t j, uint8_t spk[34], gzp_keys_err_t *err);
+
+/* The wallet output at change/j derived from the seed, privately all the way
+ * and publicly below the account (gzw_bip86_output_from_master). change 0
+ * or 1. Public. */
+int gzp_keys_wallet_output(const gzp_keys_t *k, uint32_t change, uint32_t j, gzw_bip86_output *out,
+                           gzp_keys_err_t *err);
+
+/* The current epoch, and the restore freeze (keys.md 3). */
+void gzp_keys_set_epoch(gzp_keys_t *k, uint32_t epoch);
+void gzp_keys_freeze(gzp_keys_t *k, int frozen);
+
+/* The data folder's role (fixed at its first start, program.md 5): a host's
+ * per-lobby pairs are on m/254315617'/net'/2'/..., a member's on .../0'/...,
+ * so one set of words can run a host and a member without sharing a key
+ * (keys.md 3, open point K2, resolved). A member until set. `at_join` is the
+ * member-signing setting: a member under AT_JOIN gets round secrets only from
+ * the scoped table (scoped_only). A host never: it derives its own pairs for
+ * every round it proposes (integration F4). */
+void gzp_keys_set_role(gzp_keys_t *k, int host, int at_join);
+
+/* Is `epoch` usable under this role's branch (contract-v2.md 13, review R2-8):
+ * m/254315617'/net'/branch'/epoch' is a valid BIP 32 child. 1, or 0 for an
+ * invalid child, an epoch at or above 2^31 or no seed. The node asks it when
+ * it draws a restore epoch, before key_epoch is saved (the port's epoch_ok,
+ * #55; integration W14). */
+int gzp_keys_epoch_ok(const gzp_keys_t *k, uint32_t epoch);
+
+/* Member slots, from the slot_opened and slot_closed records the node saves
+ * or reads back (keys.md 7). note: a member slot (serial, scope, epoch,
+ * index), replacing one of the same serial; 0 when the table is full. drop: the
+ * slot with that serial. open_ready: the person readied with the passphrase in
+ * the lobby `scope` (the passphrase already checked): open its scope with the
+ * slot's pair, before the node gets the ready command (node.h, LOBBY_READY);
+ * 1, or 0 with *err (no such slot: GZP_KEYS_BAD_ARGUMENT). The digest is the
+ * node's to bind (#52's gate); the table is opened with a zero digest and the
+ * key hook reads it by position (gzp_keys_scoped_at). note also wipes an open
+ * scope of that lobby whose pair is not the slot's (an armed join's check). */
+int gzp_keys_note_slot(gzp_keys_t *k, uint32_t serial, const uint8_t scope[32], uint32_t epoch, uint32_t index);
+void gzp_keys_drop_slot(gzp_keys_t *k, uint32_t serial);
+int gzp_keys_open_ready(gzp_keys_t *k, const uint8_t scope[32], gzp_keys_err_t *err);
+
+/* AT_JOIN's scoped secrets (composite-node.md 12.2; keys.md 7). Open: derive
+ * the pair (contribution at index, factory at index + 1) under the policy and
+ * keep it for (scope, digest); a scope already held is replaced, its old
+ * secrets wiped first; FULL when 8 others are held. Lookup: 1 and both
+ * secrets only for that scope AND that digest (compared in constant time).
+ * Forget: wipe the scope's entry; forget_all: every entry. */
+int gzp_keys_scope_open(gzp_keys_t *k, const uint8_t scope[32], const uint8_t digest[32], uint32_t epoch,
+                        uint32_t index, gzp_keys_err_t *err);
+int gzp_keys_scoped(const gzp_keys_t *k, const uint8_t scope[32], const uint8_t digest[32], uint8_t factory[32],
+                    uint8_t contribution[32]);
+/* The same table looked up by key position, for the key hook that names a
+ * key by (epoch, index) only (P4.3's keys.secret; keys.md 7, M2): 1 and the
+ * secret only if an open scope holds that pair (the contribution key at its
+ * index, the factory key at index + 1), under the current epoch and not
+ * frozen. So under AT_JOIN a key the person has not readied for is never
+ * handed out, whatever the node asks. */
+int gzp_keys_scoped_at(gzp_keys_t *k, uint32_t epoch, uint32_t index, uint8_t sec[32]);
+
+/* A join given with the passphrase under AT_JOIN (#79: LOBBY_JOIN field 24).
+ * The node allocates the join's pair inside the command and asks for its
+ * factory key there, before the slot_opened record is saved, so the key port
+ * cannot know the pair in advance. While a join is armed (only for the one
+ * command's delivery), gzp_keys_scoped_at answers ONE request for a factory
+ * key it holds no scope for, at (current epoch, f), if the pair (f - 1, f) is
+ * fresh: f - 1 above every key_index seen under this epoch, and within the
+ * core's window (GZP_KEYS_JOIN_TRIES). It opens the
+ * armed scope with that pair and disarms. The slot_opened record that the
+ * join then saves must name the same pair, or the scope is wiped
+ * (gzp_keys_note_slot). disarm: 1 if the armed join was used. */
+void gzp_keys_arm_join(gzp_keys_t *k, const uint8_t scope[32]);
+int gzp_keys_disarm_join(gzp_keys_t *k);
+
+/* The key_index records the node saves or reads back: the highest index
+ * allocated under the current epoch (journal.md 8). */
+void gzp_keys_note_index(gzp_keys_t *k, uint32_t value);
+
+/* The key hook's answer for a member under AT_JOIN (composite-node.md 12.2:
+ * "AT_JOIN protects the factory key only"). From the scoped table first (the
+ * pair of a scope the person readied or joined for); otherwise the
+ * contribution key of a member slot the key port knows, under the policy,
+ * since the contribution key is not scoped. A factory key is never given
+ * without a scope. */
+int gzp_keys_at_join_secret(gzp_keys_t *k, uint32_t epoch, uint32_t index, uint8_t sec[32]);
+void gzp_keys_forget(gzp_keys_t *k, const uint8_t scope[32]);
+void gzp_keys_forget_all(gzp_keys_t *k);
+size_t gzp_keys_scopes_held(const gzp_keys_t *k);
+
+/* For net.c (gzp_net_t.key_fn): gzp_keys_lobby with ctx a gzp_keys_t. */
+int gzp_keys_net_fn(void *ctx, uint32_t epoch, uint32_t index, uint8_t sec[32], uint8_t pub[33]);
+
+#endif

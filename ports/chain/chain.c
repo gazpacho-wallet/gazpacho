@@ -29,29 +29,38 @@ const char *gz_chain_result_name(gz_chain_result r) {
 
 /* ---- networks ----------------------------------------------------------- */
 
+static bool regtest_allowed; /* gz_network_allow_regtest: tests only */
+
+void gz_network_allow_regtest(bool on) { regtest_allowed = on; }
+
 const char *gz_network_name(gz_network n) {
   switch (n) {
     case GZ_NET_MAINNET: return "mainnet";
     case GZ_NET_TESTNET3: return "testnet";
     case GZ_NET_TESTNET4: return "testnet4";
     case GZ_NET_SIGNET: return "signet";
+    case GZ_NET_REGTEST: return regtest_allowed ? "regtest" : "invalid";
     case GZ_NET_INVALID: break;
   }
   return "invalid";
 }
 
 bool gz_network_valid(gz_network n) {
-  return n == GZ_NET_MAINNET || n == GZ_NET_TESTNET3 || n == GZ_NET_TESTNET4 || n == GZ_NET_SIGNET;
+  return n == GZ_NET_MAINNET || n == GZ_NET_TESTNET3 || n == GZ_NET_TESTNET4 || n == GZ_NET_SIGNET ||
+         (n == GZ_NET_REGTEST && regtest_allowed);
 }
 
 bool gz_network_is_test(gz_network n) {
-  return n == GZ_NET_TESTNET3 || n == GZ_NET_TESTNET4 || n == GZ_NET_SIGNET;
+  return n == GZ_NET_TESTNET3 || n == GZ_NET_TESTNET4 || n == GZ_NET_SIGNET ||
+         (n == GZ_NET_REGTEST && regtest_allowed);
 }
 
 bool gz_network_from_name(const char *name, gz_network *out) {
-  static const gz_network all[] = {GZ_NET_MAINNET, GZ_NET_TESTNET3, GZ_NET_TESTNET4, GZ_NET_SIGNET};
+  static const gz_network all[] = {GZ_NET_MAINNET, GZ_NET_TESTNET3, GZ_NET_TESTNET4, GZ_NET_SIGNET,
+                                   GZ_NET_REGTEST};
   if (name == NULL || out == NULL) return false;
   for (size_t i = 0; i < sizeof all / sizeof all[0]; i++) {
+    if (all[i] == GZ_NET_REGTEST && !regtest_allowed) continue; /* its name is "invalid" then */
     if (strcmp(name, gz_network_name(all[i])) == 0) {
       *out = all[i];
       return true;
@@ -74,6 +83,9 @@ bool gz_network_genesis(gz_network n, uint8_t out[GZ_HASH_LEN]) {
       break;
     case GZ_NET_SIGNET:
       hex = "00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6";
+      break;
+    case GZ_NET_REGTEST:
+      if (regtest_allowed) hex = "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206";
       break;
     case GZ_NET_INVALID: break;
   }
@@ -403,6 +415,15 @@ gz_chain_result gz_chain_script_outputs(const gz_chain *c, const uint8_t *script
   return r;
 }
 
+gz_chain_result gz_chain_script_history(const gz_chain *c, const uint8_t *script, size_t script_len,
+                                        gz_script_history *out) {
+  if (out != NULL) memset(out, 0, sizeof *out);
+  if (!usable(c) || script == NULL || script_len == 0 || script_len > GZ_SCRIPT_MAX_LEN || out == NULL)
+    return GZ_CHAIN_INVALID_ARG;
+  if (c->ops->script_history == NULL) return GZ_CHAIN_INVALID_ARG;
+  return c->ops->script_history(c->ctx, script, script_len, out);
+}
+
 gz_chain_result gz_chain_outspend(const gz_chain *c, const uint8_t txid[GZ_HASH_LEN],
                                   uint32_t vout, gz_outspend *out) {
   if (!usable(c) || txid == NULL || out == NULL) return GZ_CHAIN_INVALID_ARG;
@@ -500,7 +521,8 @@ void gz_chain_destroy(gz_chain *c) {
 /* ---- network identity ---------------------------------------------------- */
 
 gz_chain_result gz_chain_identify_network(const gz_chain *c, gz_network *out) {
-  static const gz_network all[] = {GZ_NET_MAINNET, GZ_NET_TESTNET3, GZ_NET_TESTNET4, GZ_NET_SIGNET};
+  static const gz_network all[] = {GZ_NET_MAINNET, GZ_NET_TESTNET3, GZ_NET_TESTNET4, GZ_NET_SIGNET,
+                                   GZ_NET_REGTEST};
   uint8_t block0[GZ_HASH_LEN], genesis[GZ_HASH_LEN];
   if (out == NULL) return GZ_CHAIN_INVALID_ARG;
   *out = GZ_NET_INVALID;

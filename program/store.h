@@ -138,6 +138,10 @@ int gzp_journal_store_behind(const gzp_store_t *s);
  * (journal-batch, journal-record with the record's bytes in hex in the test
  * build). 0, or -1 with a reason in err. Takes the journal's lock. */
 int gzp_journal_dump(const char *dir, struct gzp_wallet *w, char *err, size_t errlen);
+/* The same read-only walk, each record handed to `fn` in file order (the
+ * host's sweep, test build: sweep.h). 0, or -1 with a reason in err. */
+int gzp_journal_walk(const char *dir, struct gzp_wallet *w, void (*fn)(void *ctx, const gz_record_t *rec), void *ctx,
+                     char *err, size_t errlen);
 /* Import a backup of the journal as a restore (journal.h, gz_journal_import):
  * staged first as journal.gzj.import in dir. Tests (--test-restore-from) and,
  * later, the API's import. */

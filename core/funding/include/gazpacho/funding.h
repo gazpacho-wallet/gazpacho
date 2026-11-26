@@ -178,6 +178,10 @@ typedef struct {
     int (*spend_back)(void *ctx, const uint8_t txid[32], uint32_t index, uint64_t fee,
                       uint8_t *out, size_t cap, size_t *out_len);
     int (*can_plan)(void *ctx, uint64_t amount, uint64_t feerate, uint64_t *have_sat, size_t *n_coins);
+    /* Optional (may be NULL), at a resume: a transaction from the journal
+     * the wallet made and the engine will send again, a spend-back, without
+     * witnesses. The wallet notes the change it pays (its change mark). */
+    void (*note_tx)(void *ctx, const uint8_t *tx, size_t tx_len);
     void *ctx;
 } gz_wallet_port_t;
 
@@ -443,6 +447,18 @@ typedef enum {
  * the burial depth), 0 if none. */
 gz_fund_scope_t gz_fund_scope_state(const gz_fund_t *f, const uint8_t scope[32], uint32_t *until);
 
+/* ---- the set-aside amount (local-api.md 15.2) ---------------------------- */
+
+/* What a hosted lobby sets aside at opening and an early start echoes
+ * (`confirm_funding_max_sat`): the most its funding can pay to the factory,
+ * the funding amount R(root) of terms.md 4.2 at the member count, from the
+ * terms' minimum to their target, that needs the most (the target for every
+ * shape so far). 0 if some count in that range has no tree (terms a reader
+ * refuses on receipt, terms.md 7 step 5): nothing can be confirmed then.
+ * Pure, from the outer terms alone; the node reads it for the host's view
+ * and checks the start's echo against it (setaside.c). */
+uint64_t gz_fund_set_aside_sat(const gz_terms_outer_t *t);
+
 /* ---- fees (14.3) -------------------------------------------------------- */
 
 /* The smallest fee that replaces a package paying `package_fee` with a
@@ -463,8 +479,8 @@ uint64_t gz_fund_funding_fee_bound(const gz_fund_config_t *cfg, size_t n_coins);
 typedef enum {
     GZ_FUND_FUNDS_OK = 1,      /* the wallet can plan the set-aside, with change, now */
     GZ_FUND_FUNDS_SHORT,       /* it cannot: refuse with `funds_short` */
-    GZ_FUND_FUNDS_UNKNOWN      /* it cannot tell (no can_plan, or it answers -1): refuse as
-                                  for `no_wallet`. Never treat it as enough */
+    GZ_FUND_FUNDS_UNKNOWN      /* it cannot tell (no can_plan, or it answers -1): refuse with
+                                  `coins_unknown` (local-api 8.1). Never treat it as enough */
 } gz_fund_funds_t;
 /* Asks the wallet port's dry run (can_plan) whether a funding of
  * `set_aside_sat` (gz_fund_set_aside_sat of the lobby's terms, plus what

@@ -9,7 +9,8 @@
 #                  the placeholder's bytes until P4), and the --test-* hooks
 # The release binary's symbols are checked (program_release_build, T12).
 
-set(GZP_SOURCES options.c datadir.c store_journal.c store_unlock.c net.c pchain.c notify.c executor.c testping.c view.c api.c)
+set(GZP_SOURCES options.c datadir.c store_journal.c store_unlock.c keys.c net.c pchain.c notify.c executor.c testping.c
+                view.c api.c api_lobby.c api_calls.c wport.c sweep.c)
 
 foreach(variant release test)
   if(variant STREQUAL "release")
@@ -30,10 +31,10 @@ foreach(variant release test)
     # The test build links the storage library's test entry point (the
     # parameter floor of --test-kdf-floor); the release build never does.
     set(sc gazpacho_storage_crypto_test)
-    add_library(${lib} STATIC ${GZP_SOURCES} journal_standin.c store_powercut.c)
+    add_library(${lib} STATIC ${GZP_SOURCES} journal_standin.c store_powercut.c keys_standin.c)
   endif()
   target_include_directories(${lib} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-  target_link_libraries(${lib} PUBLIC ${node} ${net} gazpacho_wallet_keys gazpacho_chain gazpacho_journal ${sc} gazpacho_api gazpacho_tree_import OpenSSL::Crypto)
+  target_link_libraries(${lib} PUBLIC ${node} ${net} gazpacho_wallet_keys gazpacho_chain gazpacho_journal ${sc} gazpacho_api gazpacho_tree_import gazpacho_wallet_tx gazpacho_funding OpenSSL::Crypto)
   target_compile_options(${lib} PRIVATE ${GZ_NEW_CODE_WARNINGS})
   if(variant STREQUAL "test")
     target_compile_definitions(${lib} PUBLIC GZP_TEST_BUILD=1)
@@ -65,6 +66,42 @@ target_compile_options(gzp_silent_peer PRIVATE ${GZ_NEW_CODE_WARNINGS})
 gz_add_test(program_store ${CMAKE_SOURCE_DIR}/tests/program/test_store.c gazpacho_program_test)
 gz_add_test(program_options ${CMAKE_SOURCE_DIR}/tests/program/test_options.c gazpacho_program_test)
 gz_add_test(program_net ${CMAKE_SOURCE_DIR}/tests/program/test_net.c gazpacho_program_test)
+# One pace per chain server for all the program's clients (signet run 2's preparation).
+gz_add_test(program_chain_pace ${CMAKE_SOURCE_DIR}/tests/program/test_chain_pace.c gazpacho_program_test)
+# The funding engine's wallet port (wport.c): holds across a publish, change
+# only once buried, can_plan as plan does (review of PR 80, N-1).
+gz_add_test(program_wport ${CMAKE_SOURCE_DIR}/tests/program/test_wport.c gazpacho_program_test)
+# P8, the key port (docs/notes/keys.md 10): vectors, policy, the scoped table;
+# BIP 32's rare cases forced and the wipes recorded (HMAC and gzw_wipe
+# wrapped at link time); a randomized run of the interface; under valgrind;
+# and the constant-time check (memcheck with the seed marked secret).
+gz_add_test(program_keys ${CMAKE_SOURCE_DIR}/tests/program/test_keys.c gazpacho_program_test)
+add_executable(test_program_keys_rare ${CMAKE_SOURCE_DIR}/tests/program/test_keys_rare.c)
+target_link_libraries(test_program_keys_rare PRIVATE gazpacho_program_test)
+target_link_options(test_program_keys_rare PRIVATE -Wl,--wrap=HMAC,--wrap=gzw_wipe)
+add_test(NAME program_keys_rare COMMAND test_program_keys_rare)
+add_executable(fuzz_keys ${CMAKE_SOURCE_DIR}/tests/program/fuzz_keys.c)
+target_link_libraries(fuzz_keys PRIVATE gazpacho_program_test)
+add_test(NAME program_keys_fuzz COMMAND fuzz_keys 20000)
+if(GZ_MEMCHECK)
+  add_test(NAME valgrind_program_keys COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_program_keys>)
+  add_test(NAME valgrind_program_keys_fuzz COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:fuzz_keys> 1500)
+  find_path(GZP_VALGRIND_INCLUDE valgrind/memcheck.h)
+  if(GZP_VALGRIND_INCLUDE)
+    # Its own build of the code under test (keys.c and the wallet's key code),
+    # with line information whatever the build type, so that ct_keys.py
+    # triages every report by function and line in every build (integration
+    # B10: a Release build had no lines, and nothing could be triaged).
+    add_executable(ct_keys ${CMAKE_SOURCE_DIR}/tests/program/ct_keys.c ${CMAKE_CURRENT_SOURCE_DIR}/keys.c
+                   ${CMAKE_SOURCE_DIR}/wallet/src/address.c ${CMAKE_SOURCE_DIR}/tests/program/ct_bip32.c
+                   ${CMAKE_SOURCE_DIR}/wallet/src/phrase.c ${CMAKE_SOURCE_DIR}/wallet/src/taproot.c)
+    target_include_directories(ct_keys PRIVATE ${GZP_VALGRIND_INCLUDE} ${CMAKE_CURRENT_SOURCE_DIR}
+                               ${CMAKE_SOURCE_DIR}/wallet/include ${CMAKE_SOURCE_DIR}/core/superscalar/src)
+    target_compile_options(ct_keys PRIVATE -g)
+    target_link_libraries(ct_keys PRIVATE gazpacho_superscalar secp256k1 OpenSSL::Crypto)
+  endif()
+endif()
+gz_add_test(program_view ${CMAKE_SOURCE_DIR}/tests/program/test_view.c gazpacho_program_test)
 # Kind 0xffff (the signing engine's SEND bridge until P4.3) never reaches a
 # program, and the lobby's bridge, deleted in P4.2, stays deleted
 # (composite-node.md, tasks T-P42-1, T-P43-1).
@@ -176,25 +213,24 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${GZP_PY} ${GZP_T}/storage_damage.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/storage_damage)
   add_test(NAME program_journal_restore
     COMMAND ${GZP_PY} ${GZP_T}/journal_restore.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/journal_restore)
-  set_tests_properties(program_unlock program_storage_damage program_journal_restore PROPERTIES TIMEOUT 600)
+  # The host's change mark through restarts, a power cut between keeping the
+  # mark and using its index, and a lost change.gzm (follow-ups of the review
+  # of PR 91).
+  add_test(NAME program_change_mark
+    COMMAND ${GZP_PY} ${GZP_T}/change_mark.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/change_mark)
+  set_tests_properties(program_unlock program_storage_damage program_journal_restore program_change_mark
+                       PROPERTIES TIMEOUT 600)
   set_tests_properties(program_journal_kill PROPERTIES TIMEOUT 2400)
   # They pick ports with free_port() (see the lock above): one at a time.
   set_tests_properties(program_unlock program_journal_kill program_journal_kill_full program_journal_powercut
                        program_journal_powercut_full program_storage_damage program_journal_restore
-                       PROPERTIES RESOURCE_LOCK gzp_free_port)
+                       program_change_mark PROPERTIES RESOURCE_LOCK gzp_free_port)
   # The lobby in the composite, P4.2 (docs/notes/composite-node.md 15): a host
   # with two lobbies and its members as separate processes, the signing
   # stand-in behind the hand-off; crashes, a storage failure, the gates.
   add_test(NAME program_lobby
     COMMAND ${GZP_PY} ${GZP_T}/lobby.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/lobby)
   set_tests_properties(program_lobby PROPERTIES TIMEOUT 900)
-  # Every program test may start gazpacho-test with a launcher of its own:
-  # the passphrase file's path and the Argon2id floor come through the
-  # environment (gazpacho-test only; the harness passes the options itself).
-  file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/test-passphrase "gazpacho test wallet passphrase, signet only")
-  if(NOT CMAKE_VERSION VERSION_LESS 3.19)
-    file(CHMOD ${CMAKE_CURRENT_BINARY_DIR}/test-passphrase PERMISSIONS OWNER_READ OWNER_WRITE)
-  endif()
   # The multi-process interface test (tests/web/multiprocess.spec.mjs) cannot
   # stay off once the core emits lobby views: this reads the lobby run's logs,
   # where the test build prints every view it receives (review of PR 51, M3).
@@ -202,17 +238,77 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME program_p6a_views
     COMMAND ${GZP_PY} ${CMAKE_SOURCE_DIR}/tests/web/check_p6a_fixme.py ${CMAKE_SOURCE_DIR} --views ${CMAKE_CURRENT_BINARY_DIR}/lobby)
   set_tests_properties(program_p6a_views PROPERTIES FIXTURES_REQUIRED lobby_run)
+  # The person's conditions on a joined lobby and the host's early start
+  # (local-api.md 13.2, 15.2): a host and four members.
+  add_test(NAME program_conditions_start
+    COMMAND ${GZP_PY} ${GZP_T}/conditions_start.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/conditions_start)
+  set_tests_properties(program_conditions_start PROPERTIES TIMEOUT 300)
   # The signing engine in the composite, P4.3: a host and four members sign
   # a real tree from the terms (one member's chain view makes it refuse);
   # every process restarted.
   add_test(NAME program_signing
     COMMAND ${GZP_PY} ${GZP_T}/signing.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/signing)
   set_tests_properties(program_signing PROPERTIES TIMEOUT 900)
-  # Slice 1 blocker C1: a member whose partial signatures are out is refused
-  # a leave (409 too_late), and the factory is still funded.
+  # P4.6: Slice 1 end to end on the local test chain, a real Bitcoin Core regtest node
+  # (GZ_BITCOIN_BIN: the folder holding bitcoind and bitcoin-cli; skipped without it).
+  add_test(NAME program_slice1
+    COMMAND ${GZP_PY} ${GZP_T}/slice1.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/slice1)
+  set_tests_properties(program_slice1 PROPERTIES TIMEOUT 1500 SKIP_RETURN_CODE 77)
+  # The host's timeout sweep of a Live factory (exit.md 3.2, H15; the signet run's recovery), on regtest.
+  add_test(NAME program_sweep
+    COMMAND ${GZP_PY} ${GZP_T}/sweep.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/sweep)
+  set_tests_properties(program_sweep PROPERTIES TIMEOUT 1200 SKIP_RETURN_CODE 77)
+  # B16 (review B of PR 52, M1): a member restarted between its partial signatures and
+  # round_complete judges its ack at its real depth in the tree.
+  add_test(NAME program_ack_depth
+    COMMAND ${GZP_PY} ${GZP_T}/ack_depth.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/ack_depth)
+  set_tests_properties(program_ack_depth PROPERTIES TIMEOUT 600)
+  # B17, Slice 1 blocker C1: with partial signatures out, a leave is refused and a pause holds;
+  # the host can still fund the factory.
   add_test(NAME program_partials_hold
     COMMAND ${GZP_PY} ${GZP_T}/partials_hold.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/partials_hold)
   set_tests_properties(program_partials_hold PROPERTIES TIMEOUT 600)
+  # The host's funds check asks the host's own wallet (P4.6, #55's can_plan from the wallet port):
+  # an empty wallet is refused funds_short, a funded one opens; never no_wallet.
+  add_test(NAME program_host_funds
+    COMMAND ${GZP_PY} ${GZP_T}/host_funds.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/host_funds)
+  set_tests_properties(program_host_funds PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77)
+  # B22, F22: a chain server that throttles (429, as public servers do) still gives the host its coins.
+  add_test(NAME program_chain_throttle
+    COMMAND ${GZP_PY} ${GZP_T}/chain_throttle.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/chain_throttle)
+  set_tests_properties(program_chain_throttle PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+  # F13 (H3): the key routing follows the signing setting in force, not --member-signing; real signing.
+  add_test(NAME program_keys_setting
+    COMMAND ${GZP_PY} ${GZP_T}/keys_setting.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/keys_setting)
+  set_tests_properties(program_keys_setting PROPERTIES TIMEOUT 600)
+  # Slice 1 on signet, against public servers: opt in (GZ_LIVE_TESTS=1 and GZ_SIGNET_DIR, a folder
+  # kept between runs); skipped otherwise, and when the host's address holds no coin.
+  add_test(NAME program_slice1_signet
+    COMMAND ${GZP_PY} ${GZP_T}/slice1_signet.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/slice1_signet)
+  set_tests_properties(program_slice1_signet PROPERTIES TIMEOUT 14400 SKIP_RETURN_CODE 77)
+  # Every program test may start gazpacho-test with a launcher of its own:
+  # the passphrase file's path and the Argon2id floor come through the
+  # environment (gazpacho-test only; the harness passes the options itself).
+  file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/test-passphrase "gazpacho test wallet passphrase, signet only")
+  if(NOT CMAKE_VERSION VERSION_LESS 3.19)
+    file(CHMOD ${CMAKE_CURRENT_BINARY_DIR}/test-passphrase PERMISSIONS OWNER_READ OWNER_WRITE)
+  endif()
+  # P8: the vectors header is what tools/keys_ref.py computes; T13 and T2
+  # step 3, keys derived from the seed end to end (docs/notes/keys.md 10).
+  add_test(NAME program_keys_join_window COMMAND ${GZP_PY} ${GZP_T}/join_window.py ${CMAKE_SOURCE_DIR})
+  add_test(NAME program_keys_vectors
+    COMMAND ${GZP_PY} ${CMAKE_SOURCE_DIR}/tools/keys-vectors.py --check ${GZP_T}/keys_vectors.h)
+  add_test(NAME program_derived_keys
+    COMMAND ${GZP_PY} ${GZP_T}/derived_keys.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/derived_keys)
+  set_tests_properties(program_derived_keys PROPERTIES TIMEOUT 300)
+  if(TARGET ct_keys)
+    add_test(NAME program_keys_ct COMMAND ${GZP_PY} ${GZP_T}/ct_keys.py ${GZ_VALGRIND} $<TARGET_FILE:ct_keys>)
+  endif()
+  # The signing setting saved through the local API is in force from the next
+  # start over --member-signing (review A of PR 55, H3): host and members.
+  add_test(NAME program_signing_setting
+    COMMAND ${GZP_PY} ${GZP_T}/signing_setting.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/signing_setting)
+  set_tests_properties(program_signing_setting PROPERTIES TIMEOUT 300)
   # T14: no core probes and no old names left.
   add_test(NAME program_no_probes
     COMMAND ${GZP_PY} ${GZP_T}/no_probes.py ${CMAKE_SOURCE_DIR})
@@ -229,7 +325,7 @@ if(Python3_Interpreter_FOUND)
   # the kernel gave them, so they need no lock.
   set_tests_properties(program_envelope program_links program_loop_liveness program_lobby program_queue_peers
                        program_refusals program_resend_on_connect program_restart_slots program_start_queue
-                       program_two_process program_api program_api_limits
+                       program_two_process program_api program_api_limits program_conditions_start
                        PROPERTIES RESOURCE_LOCK gzp_free_port)
   if(GZ_LIVE_TESTS AND TARGET gazpacho_chain_curl)
     # Read-only: the public signet servers' block 0 and tip, the wallet's

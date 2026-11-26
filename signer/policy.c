@@ -51,8 +51,9 @@ static const char *const HOST_TAGS[] = {
     "gazpacho/listing", "gazpacho/withdrawal", "gazpacho/index", "gazpacho/anchor", "gazpacho/beacon",
     NULL};
 static const char *const CONTRIBUTION_TAGS[] = {"gazpacho/msg", "gazpacho/bind", "gazpacho/nonce", NULL};
-/* bind_by_factory, until PR #59's code (step S6) removes it */
-static const char *const FACTORY_TAGS[] = {"gazpacho/bind", NULL};
+/* S6 (PR #59's code, BD): the factory key signs no tagged message at all, its binding included; it makes
+ * MuSig2 partial signatures only (the sighash class below). */
+static const char *const FACTORY_TAGS[] = {NULL};
 static const char *const NO_TAGS[] = {NULL};
 
 static const gz_sg_purpose_t PURPOSES[] = {

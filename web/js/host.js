@@ -103,7 +103,7 @@
               ["Chain fee, about", u.sats(p.chain_fee_estimate_sat)],
               ["On chain and free now", u.sats(p.wallet_free_sat)]
             ]), ui.dates((p.dates || []).concat(p.host_deadlines || []))),
-            ui.terms(p.as_members_see_it, "As members will see it"),
+            p.as_members_see_it ? ui.terms(p.as_members_see_it, "As members will see it") : null,
             p.can_open ? ui.notice("ok", "These terms can be opened.") : h("div", { class: "notice warn", id: "cannot-open" }, h("b", {}, "This lobby cannot be opened yet."), cannot)]);
           open.disabled = !p.can_open;
         }, function (e) {
@@ -132,7 +132,7 @@
         if (!openRid[snap.preview.draft_digest]) openRid[snap.preview.draft_digest] = u.requestId();
         ui.askPassphrase({
           title: "Sign and open this lobby?",
-          why: "Opening sets aside " + u.sats(snap.preview.funding_at_target_sat) + ", the funding at the target. It is your consent to spend up to that amount when the lobby starts: the program then publishes the funding by itself, once every member's signed tree is complete and checked. Type your passphrase to open.",
+          why: "Opening sets aside " + u.sats(snap.preview.funding_at_target_sat) + ", the funding at the target. It is your consent to spend up to that amount when the lobby starts: the program then publishes the funding by itself, once every member's signed tree is complete and checked. Type your password to open.",
           button: "Sign and open",
           run: function (pass) {
             return api.call("POST", "/host/lobbies", { request_id: openRid[snap.preview.draft_digest], draft: snap.draft, draft_digest: snap.preview.draft_digest,
@@ -145,7 +145,7 @@
           gz.app.refreshStatus(false);
           gz.app.go("/host/lobby/" + lobby.id);
         }, function (e) {
-          if (e.code !== "node_busy" && e.code !== "unreachable" && e.code !== "node_stopped" && e.code !== "cancelled") delete openRid[snap.preview.draft_digest];
+          if (e.code !== "node_busy" && e.code !== "view_pending" && e.code !== "request_in_progress" && e.code !== "unreachable" && e.code !== "node_stopped" && e.code !== "cancelled") delete openRid[snap.preview.draft_digest];
           u.add(msg, ui.error(e));
           if (e.code === "draft_changed" || e.code === "confirm_mismatch") preview();
         });
@@ -175,7 +175,7 @@
           ui.run(start, msg, function () {
             return gz.acting("start:" + id, function (rid) {
               return api.act("POST", "/host/lobbies/" + id + "/start", { request_id: rid, confirm_funding_max_sat: l.funding.set_aside_sat },
-                { why: "Starting early runs the ready check now and leads to spending up to " + u.sats(l.funding.set_aside_sat) + ", so Gazpacho asks for your passphrase." });
+                { why: "Starting early runs the ready check now and leads to spending up to " + u.sats(l.funding.set_aside_sat) + ", so Gazpacho asks for your password." });
             }).then(function () { ui.toast("The ready check is running."); gz.app.refreshStatus(false); gz.app.redraw(); });
           });
         });
@@ -200,7 +200,7 @@
                 ui.run(rm, msg, function () {
                   return gz.acting("seat:" + s.seat, function (rid) {
                     return api.act("DELETE", "/host/lobbies/" + id + "/seats/" + s.seat, { request_id: rid, confirm_seat: s.seat },
-                      { why: "Removing a member changes who the lobby signs with, so Gazpacho asks for your passphrase." });
+                      { why: "Removing a member changes who the lobby signs with, so Gazpacho asks for your password." });
                   }).then(function () { ui.toast("The member was removed."); gz.app.redraw(); });
                 });
               });

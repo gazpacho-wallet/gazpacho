@@ -6,10 +6,11 @@
  * gz_peers_dispatch in the one poll loop.
  *
  * Links (contract-v2.md section 2). The core names a peer by its link: our
- * static key on the connection and the key the handshake proved. Until P8
- * derives per-lobby keys, the transport has one static key (the stand-in
- * transport key), so every link's local key is that key, whatever key epoch
- * and index a CONNECT names. A SEND whose local key is not ours is dropped.
+ * static key on the connection and the key the handshake proved. A host's
+ * links all have its long-term key; a member's link has the contribution key
+ * its CONNECT names by (epoch, index), derived through the key port
+ * (program/keys.h; docs/notes/keys.md 4). A SEND whose local key is not ours
+ * is dropped.
  * Output lines still name a peer by `peer=` and the first 8 bytes of SHA-256
  * of its key, for the tests.
  *
@@ -134,6 +135,11 @@ typedef struct {
     uint8_t pub[33];
     const secp256k1_context *secp;
     int single_key;                 /* test builds with test engines: every index is the transport key */
+    /* The per-lobby keys (keys.md 4): gzp_keys_net_fn over the program's
+     * gzp_keys_t, which derives only under the current epoch. Without it
+     * there is no per-lobby key (single_key aside). */
+    int (*key_fn)(void *ctx, uint32_t epoch, uint32_t index, uint8_t sec[32], uint8_t pub[33]);
+    void *key_ctx;
     gzp_net_events_t ev;
     /* host */
     int want_listen, listening;
@@ -190,17 +196,23 @@ void gzp_net_disconnect(gzp_net_t *n, const gz_link_t *link, unsigned why);
 void gzp_net_set_seated(gzp_net_t *n, const uint8_t key[33], int seated);
 int gzp_net_connected(const gzp_net_t *n, const uint8_t key[33]);
 
-/* KEYS, until P8 derives them from the seed (contract-v2.md section 13): the
- * stand-in. Index 0 of any epoch is the transport key of the key file; every
- * other (epoch, index) is a key derived from it by a hash, so that each
- * lobby has its own contribution key (its BOLT 8 key: one link per lobby)
- * and its own factory key. `sec` is the caller's to wipe; either output may
- * be NULL. 1, or 0 if there is no such key. With `single_key` (a test build
- * run with test engines, whose CONNECTs and test pings name the transport
- * key under any index, as before P4.2) every index is the transport key.
- * The signatures are BIP 340, for the lobbies (node.h, gz_node_crypto_t). */
+/* KEYS (docs/notes/keys.md): the per-lobby key at (epoch, index) through
+ * key_fn, derived from the seed at m/254315617'/net'/0'/epoch'/index'
+ * (contract-v2.md section 13), so that each lobby has its own contribution
+ * key (its BOLT 8 key: one link per lobby) and its own factory key. `sec` is
+ * the caller's to wipe; either output may be NULL. 1, or 0 if there is no
+ * such key (none for another epoch than the current one). With `single_key`
+ * (a test build run with test engines, whose CONNECTs and test pings name
+ * the transport key under any index, as before P4.2) every index is the
+ * transport key. The index GZP_NET_KEY_STATIC names the transport key itself (the
+ * host's long-term key on a host). The signatures are BIP 340, for the
+ * lobbies (node.h, gz_node_crypto_t). */
 int gzp_net_key(const gzp_net_t *n, uint32_t epoch, uint32_t index, uint8_t sec[32], uint8_t pub[33]);
 int gzp_net_sign(const gzp_net_t *n, uint32_t epoch, uint32_t index, const uint8_t msg[32], uint8_t sig[64]);
+/* The transport's own static key, for gzp_net_key and gzp_net_sign: the host
+ * key on a host. Above every lobby index (2^31), so no CONNECT can name it
+ * (signer.md S2: no new signing function before the signer). */
+#define GZP_NET_KEY_STATIC 0xffffffffu
 int gzp_net_verify(const gzp_net_t *n, const uint8_t pub[33], const uint8_t msg[32], const uint8_t sig[64]);
 int gzp_net_point_ok(const gzp_net_t *n, const uint8_t pub[33]);
 

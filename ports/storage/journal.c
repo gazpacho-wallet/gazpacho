@@ -422,6 +422,7 @@ int gz_journal_type_known(uint32_t type)
         0x00010018,
         0x00010002, 0x00010004, 0x00010006, 0x00010008, 0x0001000a, 0x0001000c, 0x0001000e,
         0x00010010, 0x00010012, 0x00010014, 0x00010016,
+        0x0001001c, /* seat_key (K1, #95): the member's seat factory key, before its first ready */
         0x00020002, 0x00020004, 0x00020006, 0x00020008, 0x0002000a, 0x0002000c, 0x0002000e,
         0x00030002, 0x00030004, 0x00030006,
         /* Local API (journal.md 9, area 0x000d): the Slice 1 rows (#55 writes local_ids, pause and the

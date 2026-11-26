@@ -18,6 +18,7 @@ static const gz_lobby_rec_max_t REC_MAX[] = {
     {GZ_REC_START_SENT, GZ_LOBBY_REC_MAX_START_SENT, "start_sent"},
     {GZ_REC_START_RECEIVED, GZ_LOBBY_REC_MAX_START_RECEIVED, "start_received"},
     {GZ_REC_LOBBY_STATE, GZ_LOBBY_REC_MAX_STATE, "lobby_state"},
+    {GZ_REC_SEAT_KEY, GZ_LOBBY_REC_MAX_SEAT_KEY, "seat_key"},
 };
 #define N_REC_MAX (sizeof REC_MAX / sizeof REC_MAX[0])
 
@@ -30,6 +31,11 @@ _Static_assert(GZ_LOBBY_REC_MAX >= GZ_LOBBY_REC_MAX_OPENED && GZ_LOBBY_REC_MAX >
                GZ_LOBBY_REC_MAX >= GZ_LOBBY_REC_MAX_START_RECEIVED && GZ_LOBBY_REC_MAX >= GZ_LOBBY_REC_MAX_STATE,
                "GZ_LOBBY_REC_MAX is the largest record");
 _Static_assert(GZ_LOBBY_MAX_SEATS * GZ_LOBBY_START_ITEM <= 0xffffu, "a start_sent list fits a 16-bit length");
+/* journal.md 3: a batch is one journal entry of at most 8 MiB of payload. A lobby step saves no more than a
+ * record for each seat and a few of its own; even at the largest record each (start_sent, 13,496 bytes after
+ * K1), that is under half a MiB. */
+_Static_assert((GZ_LOBBY_MAX_SEATS + 8u) * (GZ_LOBBY_REC_MAX + 8u) <= 8u * 1024u * 1024u,
+               "a lobby batch fits one journal entry (8 MiB)");
 _Static_assert(GZ_LOBBY_MAX_ADDRESS == GZ_CONNECT_MAX_ADDRESS, "a member's address is a CONNECT address");
 _Static_assert(GZ_LOBBY_MAX_ENV <= GZ_SEND_MAX_RECORDS, "an envelope's records fit a SEND");
 
@@ -39,7 +45,7 @@ _Static_assert(GZ_LOBBY_MAX_ENV <= GZ_SEND_MAX_RECORDS, "an envelope's records f
 static const struct { uint32_t type, fields; } REC_FIELDS[] = {
     {GZ_REC_LOBBY_OPENED, FLD(4) | FLD(6) | FLD(8) | FLD(10)},
     {GZ_REC_TERMS_VERSION, FLD(4) | FLD(6)},
-    {GZ_REC_SEAT, FLD(4) | FLD(6) | FLD(8) | FLD(10) | FLD(12) | FLD(14) | FLD(16) | FLD(18) | FLD(20)},
+    {GZ_REC_SEAT, FLD(4) | FLD(6) | FLD(10) | FLD(12) | FLD(14) | FLD(16) | FLD(18) | FLD(20)},   /* 8 gone (K1) */
     {GZ_REC_FREEZE, FLD(4) | FLD(6) | FLD(8) | FLD(10)},
     {GZ_REC_LOBBY_ENDED, FLD(4) | FLD(6) | FLD(8) | FLD(10)},
     {GZ_REC_TERMS_RECEIVED, FLD(4) | FLD(6) | FLD(8) | FLD(10)},
@@ -49,6 +55,7 @@ static const struct { uint32_t type, fields; } REC_FIELDS[] = {
     {GZ_REC_START_SENT, FLD(4) | FLD(6) | FLD(8)},
     {GZ_REC_START_RECEIVED, FLD(4)},
     {GZ_REC_LOBBY_STATE, FLD(4) | FLD(6)},
+    {GZ_REC_SEAT_KEY, FLD(4) | FLD(6) | FLD(8) | FLD(10)},
 };
 _Static_assert(sizeof REC_FIELDS / sizeof REC_FIELDS[0] == N_REC_MAX, "one row of fields for each record type");
 
@@ -166,6 +173,17 @@ gz_status_t gz_la_no_key(gz_action_list_t *o, uint32_t which)
 {
     uint8_t k = (uint8_t)which;
     return gz_la_notify(o, GZ_NOTE_NO_KEY, &k, 1);
+}
+
+gz_status_t gz_la_sign_env(gz_lobby_enc_t *e, const gz_lobby_crypto_t *c, uint32_t which, gz_action_list_t *o,
+                           size_t *len)
+{
+    *len = 0;
+    if (e->bad) return GZ_ERR_BUG;                                     /* RULE-LOBBY:TOO_LARGE_NOT_NO_KEY */
+    *len = gz_lobby_enc_sign(e, c, which);
+    if (*len) return GZ_OK;
+    if (e->bad) return GZ_ERR_BUG;                                     /* the signature record did not fit */
+    return gz_la_no_key(o, which);
 }
 
 void gz_la_tagged(const char *tag, const uint8_t *d, size_t len, uint8_t out[32])

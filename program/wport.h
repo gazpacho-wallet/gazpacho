@@ -1,0 +1,168 @@
+/* The funding engine's wallet port over wallet/tx (composite-node.md 14.1;
+ * docs/notes/funding.md 7). Written on integration-slice1 (P4.6), for #56 to
+ * fold in.
+ *
+ * The coins are the wallet's own BIP 86 outputs (account 0, receive and
+ * change chains), read from the chain port by a thread of its own started
+ * at the program's start (a slow server never holds the loop or a stop),
+ * confirmed ones only (review A of PR 56, M5). A plan holds its coins until
+ * it is released; the holds are in memory, kept across the in-process
+ * restarts of one run. The master key is derived from the unlocked seed
+ * (unlock.h) and wiped at close.
+ *
+ * The funds check's dry run (can_plan, funding.h) runs the wallet's own
+ * selection over the coins plan would offer, with the same fee policy; a
+ * coin's hold comes from the live plan that spends it, whatever list is current; coins in the mempool
+ * are never offered, and change (the change chain: a funding's change, a
+ * spend-back) only once it is `burial` deep (review of PR 80, N-1).
+ *
+ * STAND-INS (docs/notes/integration.md): coins are read once, at the start
+ * (a coin received later is seen at the next start); `adopt` holds again only
+ * a plan this run made (after a process restart, a journal's plan is
+ * refused, so it is never signed); in the test build without a chain, one
+ * invented coin paying the wallet's first address, so that the tests that
+ * run without a chain still reach Funding through the real engine and the
+ * real wallet code (nothing is ever broadcast: there is no chain). */
+#ifndef GZP_WPORT_H
+#define GZP_WPORT_H
+
+#include <pthread.h>
+#include <secp256k1.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include "gazpacho/chain.h"
+#include "gazpacho/funding.h"
+#include "gazpacho/wallet_keys.h"
+#include "gazpacho/wallet_tx.h"
+#include "pchain.h"
+#include "unlock.h"
+
+#define GZP_WPORT_COINS 256
+#define GZP_WPORT_PLANS 8
+#define GZP_WPORT_TIP_RETRY_MS 15000   /* a tip that could not be read is asked again */
+#define GZP_WPORT_RETRY_CAP_MS 600000  /* a wide read not settled is asked again at most this far apart */
+#define GZP_WPORT_UNSETTLED_MAX 10     /* and this many times, then not until the next start */
+#define GZP_WPORT_GAP_MAX 256          /* the most addresses of one chain a scan reads */
+#define GZP_WPORT_CHANGE_WIDE 1000     /* a wide scan reads the change chain at least this far */
+#define GZP_WPORT_CHANGE_MAX 4096      /* the most change addresses a scan reads */
+#define GZP_WPORT_WIDE_GAP 200         /* past GZP_WPORT_CHANGE_WIDE a wide read goes this far past the highest used */
+#define GZP_WPORT_SB_FLOOR (GZP_WPORT_CHANGE_WIDE + GZP_WPORT_WIDE_GAP / 2)   /* spend-backs while a wide read is pending */
+
+/* The change mark (M-3, review of PR 91): the lowest change index never handed
+ * out, kept where a restart finds it. load gives it (0 when none was saved)
+ * and whether the scan must read the change chain wide: 0 no; 1 the mark is
+ * missing, a wide read is pending, or the wallet was restored; 2 the file did
+ * not open (read as missing, and told). save keeps a mark and the pending
+ * flag durably, before the index below it is used. 0, or -1. */
+typedef struct {
+    int (*load)(void *ctx, uint32_t *mark, int *wide);
+    int (*save)(void *ctx, uint32_t mark, int wide);
+    void *ctx;
+} gzp_wport_marks_t;
+
+/* The coin list's state (local-api.md 11.2, `coins`). */
+enum { GZP_COINS_SCANNING = 0, GZP_COINS_COMPLETE, GZP_COINS_INCOMPLETE };
+typedef struct {
+    int state;                /* GZP_COINS_* */
+    const char *reason;       /* NULL, tip, lookup, address_too_large, address_refused, too_many_coins */
+    int chain, index;         /* the address, for lookup, address_too_large, address_refused; -1 otherwise */
+    const char *error;        /* the chain port's answer for it (unreachable, malformed, ...), or NULL */
+    unsigned attempts;        /* scans made so far */
+    const char *change_mark;  /* kept, reading (a wide read pending) or not_opened; NULL: not shown */
+} gzp_wport_coins_t;
+
+typedef struct {
+    const secp256k1_context *secp;
+    /* No private key is kept (signer.md 2.1, keys.md 8): the account's public key gives the
+     * addresses, and the seed source is asked again for each plan, signature and spend-back,
+     * whose master key is wiped at once. While the wallet is locked the source refuses. */
+    gzw_xpub account;             /* m/86'/coin'/0' */
+    gzp_unlock_t unlock;          /* the seed source (unlock.h), a copy of the program's table */
+    int have_master;              /* open: the account key was read */
+    gzw_network wnet;
+    gzt_network net;
+    gzt_coin coins[GZP_WPORT_COINS];
+    uint8_t held[GZP_WPORT_COINS];      /* plan index + 1, or 0 */
+    size_t n_coins;
+    gzt_funding plans[GZP_WPORT_PLANS];
+    uint8_t used[GZP_WPORT_PLANS];
+    uint32_t next_change;
+    int published;                /* a coin list has been published (scan or invent) */
+    uint32_t burial;              /* the funding engine's B: change counts once this deep */
+    gz_wallet_port_t port;
+    /* the scan thread (gzp_wport_scan_start) */
+    pthread_mutex_t mu;           /* coins, n_coins, held and next_change, between the scan and the port */
+    pthread_t th;
+    int th_on;
+    _Atomic int stop;             /* read by the scan without the mutex, set by close under it */
+    const char *url;
+    uint32_t gap;
+    void *http_live;              /* the scan's HTTP client while it runs, to interrupt it */
+    gzp_wport_coins_t coin_list;  /* the coin list's state, under mu */
+    gzp_wport_marks_t marks;      /* where the change mark is kept, or none */
+    uint32_t mark;                /* the change mark as last loaded or saved */
+    int wide;                     /* the next scan reads the change chain wide, then saves the mark */
+    int wide_final;               /* the wide read cannot settle with this view: not asked again this run */
+    int need_marks;               /* a host's port: no plan without a kept mark */
+    uint8_t refusals[2][GZP_WPORT_CHANGE_MAX]; /* an address's refusals in a row, under the scan */
+    uint8_t hist_refusals[GZP_WPORT_CHANGE_MAX]; /* the same for a change address's history */
+    uint8_t (*chg)[32];           /* change keys derived so far (M-4), n_chg of them */
+    uint32_t n_chg;
+} gzp_wport_t;
+
+/* The master key from the unlocked seed. `burial` is the funding engine's B, as the node
+ * is given it (gz_node_config_t.funding_burial; 0: the engine's default): change
+ * is offered once that deep. 0, or -1. */
+int gzp_wport_open(gzp_wport_t *w, const secp256k1_context *secp, const gzp_unlock_t *unlock, gzw_network wnet,
+                   uint32_t burial);
+/* The confirmed coins of the first `gap` receive addresses, and of the change addresses up to `gap`
+ * unused in a row (a gap limit: change indexes are taken one after another from the lowest unused,
+ * N-2) and at least to the kept change mark plus `gap` (M-3), or to GZP_WPORT_CHANGE_WIDE when
+ * the mark's load said wide (no mark, or a restore), asked of the Esplora server
+ * at `url` through a client of its own: the chain worker's, which runs in its own thread, is never
+ * used from the loop's. Starts a thread for it and returns: 0, or -1. A plan made
+ * before the scan has published finds no coin (outcome Failed, as with an empty wallet). */
+int gzp_wport_scan_start(gzp_wport_t *w, const char *url, uint32_t gap);
+/* Publishes a coin list (the scan's, or a test's), under the mutex: each
+ * coin with the height of its block (0: in the mempool) and the tip it was
+ * read at. The coin list `plan` and `can_plan` offer. 0, or -1. */
+int gzp_wport_publish(gzp_wport_t *w, const gzt_coin *coins, const uint32_t *heights, size_t n, uint32_t tip);
+/* One scan of the first `gap` receive and change addresses over `view`, published
+ * through gzp_wport_publish with the tip, keeping the GZP_WPORT_COINS largest
+ * confirmed coins of the scan. 1: published (complete, or incomplete
+ * with the address left out: too many outputs even at the chain port's cap, or
+ * refused 3 scans in a row; or more coins than the list holds); 0: the tip or
+ * an address could not be asked (unreachable, a 5xx, a malformed answer), or a
+ * refusal not yet repeated, nothing is published; -1: stopped. Each call is an
+ * attempt of gzp_wport_coins. The scan thread's core, for tests too. */
+int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view);
+/* gzp_wport_scan_view until it publishes, and while a wide read is pending
+ * until that read is settled, or the port is stopped, `wait_ms` apart:
+ * 1, or -1 when stopped. */
+int gzp_wport_scan_until(gzp_wport_t *w, const gz_chain *view, uint32_t wait_ms);
+/* How long after the n-th wide read in a row that did not settle (from 0)
+ * the next is asked: `base` doubled n times, at most GZP_WPORT_RETRY_CAP_MS. */
+uint32_t gzp_wport_retry_ms(uint32_t base, unsigned n);
+/* The coin list's state, under the mutex. */
+void gzp_wport_coins(gzp_wport_t *w, gzp_wport_coins_t *out);
+/* It as the JSON of status.coins (local-api.md 11.2): the length written, or -1. */
+int gzp_wport_coins_json(const gzp_wport_coins_t *c, char *buf, size_t cap);
+/* 1 while status should carry the coins_incomplete attention item (11.4). */
+int gzp_wport_coins_attention(const gzp_wport_coins_t *c);
+/* The error code a host open or start answers for the funds check's result
+ * (local-api.md 8.1, 15.2): NULL for OK. */
+const char *gzp_wport_funds_error(gz_fund_funds_t r);
+/* 1 if the scan's attempt `n` is logged (the first, then every 10th). */
+int gzp_wport_log_attempt(unsigned n);
+/* Where the change mark is kept: loads it now (next_change goes past it, and
+ * the scan reads the change chain to it plus `gap`); every change index
+ * handed out afterwards saves the mark first. Before the scan starts. 0, or -1. */
+int gzp_wport_set_marks(gzp_wport_t *w, const gzp_wport_marks_t *m);
+/* A host's port: plans and spend-backs are refused until marks are set. */
+void gzp_wport_require_marks(gzp_wport_t *w);
+/* Test build, no chain: one invented coin paying the first receive address. */
+int gzp_wport_invent(gzp_wport_t *w);
+void gzp_wport_close(gzp_wport_t *w);
+
+#endif

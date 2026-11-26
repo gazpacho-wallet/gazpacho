@@ -44,6 +44,7 @@ static int find(const gz_node_t *c, int is_tx, const uint8_t key[36])
 static size_t budget(int eng)
 {
     if (eng == ENG_TEST0 || eng == ENG_TEST1) return TE_MAX_WATCHES;
+    if (eng == ENG_FUNDING) return GZ_FUND_MAX_WATCHES;
     if (eng >= ENG_SLOT0 && eng < ENG_N) return TS_MAX_WATCHES;
     return 0;
 }

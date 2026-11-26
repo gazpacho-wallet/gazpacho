@@ -26,12 +26,14 @@ gz_status_t gz_c_release_held(gz_node_t *c, int eng, gz_action_list_t *out);
  * bracket's merge. */
 #define LIST_ACTIONS_NEEDED (NP_MAX_STEP_ACTIONS + GZ_NODE_N_TEST * TE_MAX_STEP_ACTIONS + \
                              GZ_NODE_MAX_SLOTS * TS_MAX_STEP_ACTIONS + SLOT_MAX_TIMERS + LS_MAX_STEP_ACTIONS + \
-                             GZ_NODE_MAX_SLOTS * 4 + SG_MAX_STEP_ACTIONS)
+                             GZ_NODE_MAX_SLOTS * 4 + SG_MAX_STEP_ACTIONS + \
+                             GZ_FUND_MAX_STEP_ACTIONS)
 /* With the signing engine's worst step: an event reaches it and at most one
  * lobby (a message, a tick, an outcome; or a lobby's start and its begin). */
 #define LIST_BYTES_NEEDED (NP_MAX_STEP_BYTES + GZ_NODE_N_TEST * TE_MAX_STEP_BYTES + \
                            GZ_NODE_MAX_SLOTS * TS_MAX_STEP_BYTES + GZ_ACTION_MERGE_BYTES(GZ_NODE_LIST_ACTIONS) + \
-                           LS_MAX_STEP_BYTES + GZ_NODE_MAX_SLOTS * 8192u + SG_MAX_STEP_BYTES)
+                           LS_MAX_STEP_BYTES + GZ_NODE_MAX_SLOTS * 8192u + SG_MAX_STEP_BYTES + \
+                           GZ_FUND_MAX_STEP_BYTES)
 _Static_assert(NP_MAX_LISTED <= GZ_NODE_MAX_SLOTS, "a listing reaches no more engines than there are slots");
 _Static_assert(LIST_ACTIONS_NEEDED <= GZ_NODE_LIST_ACTIONS, "GZ_NODE_LIST_ACTIONS below the engines' worst steps");
 _Static_assert(LIST_BYTES_NEEDED <= GZ_NODE_LIST_BYTES, "GZ_NODE_LIST_BYTES below the engines' worst steps");
@@ -63,6 +65,7 @@ gz_status_t gz_node_init(gz_node_t *c, const gz_ports_t *ports, const gz_node_co
     for (int i = 0; i < NP_MAX_CONNS; i++) c->np.conns[i].slot = -1;
     gz_status_t sst = gz_sg_init(c);   /* the signing engine, with a secp256k1 context */
     if (sst != GZ_OK) return sst;
+    if ((sst = gz_fd_init(c)) != GZ_OK) return sst;   /* the funding engine, beside it (P4.6) */
 #ifdef GZ_TEST_KINDS
     te_hooks_t hooks = {c, gz_c_handoff, gz_c_handoff_now};
     for (int i = 0; i < c->n_test; i++) {
@@ -137,10 +140,12 @@ static gz_status_t load_record(gz_node_t *c, const gz_record_t *rec, gz_batch_id
 {
     uint16_t area = (uint16_t)(rec->type >> 16);
     if (area == GZ_AREA_NODE) return np_load(c, rec, at);
+    if (area == GZ_AREA_API) return gz_api_load(c, rec);
     /* A Lobby record goes to the slot its scope names (7.3). */
     if (area == GZ_AREA_LOBBY) return gz_ls_load_record(c, rec);
     /* A Round record to the signing engine, which finds its lobby by scope. */
     if (area == GZ_AREA_ROUND && c->sign_on) return gz_sign_load(c->sign, rec, at);
+    if (area == GZ_AREA_FUNDING && c->fund_on) return gz_fund_load(c->fund, rec, at);
 #ifdef GZ_TEST_KINDS
     if (area == 0x7e5au) return gz_ss_load(c, rec); /* the signing stand-in's */
 #endif
@@ -180,6 +185,10 @@ static gz_status_t load(gz_node_t *c, const gz_storage_reader_t *storage)
             if (st != GZ_OK) return st;
         }
     }
+    {
+        gz_status_t st = gz_api_loaded(c);
+        if (st != GZ_OK) return st;
+    }
     c->loaded = 1;
     c->restored = storage->restored;
     if (c->restored) np_guard_file(c, storage->guard);
@@ -188,7 +197,7 @@ static gz_status_t load(gz_node_t *c, const gz_storage_reader_t *storage)
 
 /* Phase 2's order (10): the restore batch, the node part, the test engines,
  * then the view (each engine emits its own view objects in its resume). */
-enum { R_RESTORE = 0, R_NODE, R_SIGN, R_SLOT0, R_SLOT_LAST = R_SLOT0 + GZ_NODE_MAX_SLOTS - 1, R_TEST0, R_TEST1, R_DONE };
+enum { R_RESTORE = 0, R_NODE, R_SIGN, R_SLOT0, R_SLOT_LAST = R_SLOT0 + GZ_NODE_MAX_SLOTS - 1, R_FUND, R_TEST0, R_TEST1, R_VIEW, R_DONE };
 
 static gz_status_t resume_step(gz_node_t *c, gz_action_list_t *out, int *finished)
 {
@@ -204,6 +213,9 @@ static gz_status_t resume_step(gz_node_t *c, gz_action_list_t *out, int *finishe
         c->resume_at++;
         if (c->slots[i].state == SLOT_LEFT_OUT) return gz_ls_left_out_note(c, i, out);
         if (c->slots[i].state != SLOT_OPEN || c->slots[i].kind != SLOT_KIND_LOBBY) return GZ_OK;
+        /* From its resume on, a saved pause acts on it (lobbyslot.c, pause_apply):
+         * after its CONNECT, before it can join, ready or sign anything. */
+        c->slots[i].awake = 1;
         if ((st = gz_c_resume(c, e, out, &more)) != GZ_OK) return st;
         if (c->slots[i].state != SLOT_OPEN) return GZ_OK; /* its lobby was over: closed in that step */
         c->resumed[e] = 1;
@@ -222,11 +234,23 @@ static gz_status_t resume_step(gz_node_t *c, gz_action_list_t *out, int *finishe
     case R_NODE:
         if ((st = gz_c_node_bracket_begin(c, out)) != GZ_OK) return st;
         if ((st = np_resume(c, out)) != GZ_OK) return st;
+        if ((st = gz_api_resume(c, out)) != GZ_OK) return st; /* local ids for slots without one; held lobbies gone */
         if ((st = gz_c_node_bracket_end(c, out)) != GZ_OK) return st;
         c->resumed[ENG_NODE] = 1;
         c->resume_at = R_SIGN;
         return GZ_OK;
     case R_SIGN:
+        /* BD2 (review A of #98, M1): the seats of an older epoch are left out before the signing engine
+         * resumes, and their rounds dropped from it, so that none of them derives, makes or sends anything
+         * under the old epoch. Once, before the first round. */
+        if (!c->stale_marked) {
+            c->stale_marked = 1;
+            for (int i = 0; i < GZ_NODE_MAX_SLOTS; i++)
+                if (gz_ls_stale(c, i)) {
+                    if (c->sign_on && c->sign) gz_sign_drop_scope(c->sign, c->slots[i].scope);
+                    if ((st = gz_ls_stale_out(c, i, out)) != GZ_OK) return st;
+                }
+        }
         /* Signing before the lobbies (10): an attempt found unfinished is
          * failed first, so its lobby hands nothing over again; a member
          * answers per item (S2). One round a call. In test builds the
@@ -244,6 +268,16 @@ static gz_status_t resume_step(gz_node_t *c, gz_action_list_t *out, int *finishe
         }
         c->resume_at = R_SLOT0;
         return GZ_OK;
+    case R_FUND:
+        /* Funding after the lobbies (funding.md 7: the start's step 7). */
+        if (c->fund_on && !c->resumed[ENG_FUNDING]) {
+            if ((st = gz_c_resume(c, ENG_FUNDING, out, &more)) != GZ_OK) return st;
+            if (more) return GZ_OK;
+            c->resumed[ENG_FUNDING] = 1;
+            if ((st = gz_c_release_held(c, ENG_FUNDING, out)) != GZ_OK) return st;
+        }
+        c->resume_at = R_TEST0;
+        return GZ_OK;
     case R_TEST0:
     case R_TEST1: {
         int e = ENG_TEST0 + (c->resume_at - R_TEST0);
@@ -258,6 +292,13 @@ static gz_status_t resume_step(gz_node_t *c, gz_action_list_t *out, int *finishe
             if ((st = gz_c_release_held(c, e, out)) != GZ_OK) return st;
             c->resume_at++;
         }
+        return GZ_OK;
+    }
+    case R_VIEW: {
+        /* 9. View (node rule 7): every object, over several calls. */
+        int done = 0;
+        if ((st = gz_view_start(c, out, &done)) != GZ_OK) return st;
+        if (done) c->resume_at++;
         return GZ_OK;
     }
     default:
@@ -320,8 +361,11 @@ static gz_status_t on_chain(gz_node_t *c, const gz_event_t *ev, gz_action_list_t
          * Lobbies take no tips. */
         c->tip = ev->u.chain.height;
         for (int e = ENG_TEST0; e < ENG_TEST0 + c->n_test && st == GZ_OK; e++) st = gz_c_bracket(c, e, ev, out);
+        if (st == GZ_OK && c->fund_on) st = gz_c_bracket(c, ENG_FUNDING, ev, out);
         /* A member's signing engine: C11's funding deadline of its Complete rounds (review B of PR 81, B-1). */
         if (st == GZ_OK && c->sign_on && !c->cfg.host) st = gz_c_bracket(c, ENG_SIGN, ev, out);   /* RULE-NODE:TIP_TO_SIGNING */
+        /* A host lobby whose automatic start waits for funds is asked again (review B of #55, M-1). */
+        if (st == GZ_OK && c->cfg.host) st = gz_ls_funds_recheck(c, out);
         return st;
     case GZ_CHAIN_TX_CONFIRMED:
     case GZ_CHAIN_TX_UNCONFIRMED:
@@ -338,6 +382,8 @@ static gz_status_t on_chain(gz_node_t *c, const gz_event_t *ev, gz_action_list_t
         }
         return st;
     case GZ_CHAIN_BROADCAST_RESULT: /* the funding engine's (P4.5) */
+        if (c->fund_on) return gz_c_bracket(c, ENG_FUNDING, ev, out);
+        break;
     case GZ_CHAIN_SCRIPT_SPENT:     /* retired */
         break;
     }
@@ -368,6 +414,16 @@ static gz_status_t on_command(gz_node_t *c, const gz_event_t *ev, gz_action_list
     gz_bytes_t v, cmd = ev->u.user.bytes;
     uint16_t code = 0;
     if (gz_rec_find(cmd, GZ_CMD_REC_COMMAND, &v) == 1 && v.len == 2) code = gz_get_u16(v.data);
+    /* An API request's id, and the pause, first (api.c); then the API's own. */
+    if (code && (GZ_CMD_RANGE(code) == GZ_CMD_RANGE_LOBBY || GZ_CMD_RANGE(code) == GZ_CMD_RANGE_NODE ||
+                 GZ_CMD_RANGE(code) == GZ_CMD_RANGE_API)) {
+        int done = 0;
+        gz_status_t st = gz_api_precheck(c, code, cmd, out, &done);
+        if (st != GZ_OK || done) return st;
+    }
+    if (code && GZ_CMD_RANGE(code) == GZ_CMD_RANGE_API) return gz_api_command(c, code, cmd, out);
+    /* The funding engine's (0x03xx: the person's confirm). */
+    if (code && (code >> 8) == 0x03u && c->fund_on) return gz_c_bracket(c, ENG_FUNDING, ev, out);
     /* The lobby's commands and the signing gate's (lobbyslot.c). */
     if (code && (GZ_CMD_RANGE(code) == GZ_CMD_RANGE_LOBBY || GZ_CMD_RANGE(code) == GZ_CMD_RANGE_NODE))
         return np_command(c, code, cmd, out);

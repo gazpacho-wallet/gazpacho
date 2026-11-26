@@ -139,6 +139,7 @@ typedef struct gz_api_attention {
     const char *due_json;     /* a date (7.2) or NULL */
     const char *params_json;  /* or NULL */
     const char *lobby_id, *factory_id;
+    const char *lobby_role;   /* "joined" or "hosted": required with lobby_id (11.4, draft 5 rule) */
     int at_risk_override;     /* exit_needs_fee_coin past WARN_LEAD: at_risk */
 } gz_api_attention;
 
@@ -168,6 +169,7 @@ typedef struct gz_api_status_facts {
     int64_t last_check_height, last_check_at, safe_absence_blocks;
     int factories_watched;
     const char *open_by_json, *unlock_by_json, *next_date_json, *hosting_json, *take_out_alone_json;
+    const char *coins_json;           /* status.coins (11.2), or NULL for null */
     int64_t can_send_sat, can_receive_sat, on_chain_free_sat, set_aside_sat, inside_factories_sat,
             forming_sat, hosted_factories_sat, as_of_height;
     gz_api_doing doing[GZ_API_MAX_DOING];

@@ -11,7 +11,10 @@
 #include "gazpacho/command.h"
 #include "gazpacho/envelope.h"
 #include "api.h"
+#include "api_lobby.h"
+#include "gazpacho/view.h"
 #include "unlock_impl.h"
+#include "wport.h"
 
 /* ---- the passphrase layer behind the server's passphrase operations ---------- */
 
@@ -175,6 +178,41 @@ static int status(void *be, gz_api_status_facts *f)
     f->watcher_runs = 0;
     f->watching_reason = "no_bundle";
     f->as_of_height = f->chain_height;
+    /* 11.4: the core's attention items (kind 7), with their lobby's role */
+    if (w == GZ_API_WALLET_UNLOCKED) {
+        gzp_view_attention(&a->view, &a->attention);
+        for (int i = 0; i < a->attention.n; i++) f->attention[i] = a->attention.item[i];
+        f->nattention = a->attention.n;
+        {   /* items left out are logged, once per change (review A of #107, L3) */
+            char said[sizeof a->attention_dropped_said];
+            size_t at = 0;
+            said[0] = 0;
+            for (int i = 0; i < a->attention.skipped && i < GZP_ATT_DROPPED_MAX && at < sizeof said; i++)
+                at += (size_t)snprintf(said + at, sizeof said - at, "%s%s", i ? ", " : "", a->attention.dropped[i]);
+            if (strcmp(said, a->attention_dropped_said) != 0) {
+                if (a->attention.skipped) gzp_log("attention: %d item(s) left out of the status: %s%s", a->attention.skipped, said,
+                                                  a->attention.skipped > GZP_ATT_DROPPED_MAX ? ", ..." : "");
+                snprintf(a->attention_dropped_said, sizeof a->attention_dropped_said, "%s", said);
+            }
+        }
+    }
+    /* The host's coin list (11.2 coins; review of PR 88, M-1): its state, and
+     * coins_incomplete while it cannot be read or was published without an
+     * address (11.4), after the core's items. */
+    if (a->wport) {
+        gzp_wport_coins_t c;
+        gzp_wport_coins(a->wport, &c);
+        if (gzp_wport_coins_json(&c, a->coins_json, sizeof a->coins_json) > 0) {
+            f->coins_json = a->coins_json;
+            if (gzp_wport_coins_attention(&c) && f->nattention < GZ_API_MAX_ATTENTION) {
+                gz_api_attention *t = &f->attention[f->nattention++];
+                memset(t, 0, sizeof *t);
+                t->id = "att_coins";
+                t->code = "coins_incomplete";
+                t->params_json = a->coins_json;
+            }
+        }
+    }
     return 0;
 }
 
@@ -205,6 +243,30 @@ static const char *jstr(const gz_json *b, const char *k)
 {
     const gz_json *v = b ? gz_json_get(b, k) : NULL;
     return v && v->type == GZ_JSON_STR ? v->s : NULL;
+}
+
+/* GET /api/v1/signing (14.3), from the status object's GZ_VST_SIGNING. */
+static void signing_get(gzp_api_t *a, gz_jw *w)
+{
+    static const char *const name[] = {"at_join", "auto", "when_unlocked"};
+    const gzp_view_obj_t *o = gzp_view_find(&a->view, GZ_VIEW_STATUS, GZ_VIEW_STATUS_ID);
+    gz_bytes_t all = {o ? o->bytes : NULL, o ? o->len : 0}, v;
+    int now = a->member_signing, pend = 0xff;
+    uint32_t version = 0;
+    if (o && gz_rec_find(all, GZ_VST_SIGNING, &v) == 1 && v.len == 7) {
+        now = v.data[0];
+        pend = v.data[1];
+        version = gz_get_u32(v.data + 2);
+    }
+    gz_jw_obj(w);
+    gz_jw_kstr(w, "member_signing", name[now % 3]);
+    if (pend < 3) gz_jw_kstr(w, "pending", name[pend]);
+    else gz_jw_knull(w, "pending");
+    gz_jw_kraw(w, "available", "[\"at_join\",\"auto\"]");
+    gz_jw_knull(w, "node_gate");
+    gz_jw_kstr(w, "host_funding", "auto");
+    gz_jw_kint(w, "version", version);
+    gz_jw_end_obj(w);
 }
 
 static int call(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *err, int *effect)
@@ -274,19 +336,14 @@ static int call(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *err, int
         gz_jw_end_obj(w);
         return 200;
     }
-    case GZ_API_C_LOBBIES:
-    case GZ_API_C_HOST_LOBBIES:
     case GZ_API_C_FACTORIES:
     case GZ_API_C_ACTIVITY:
-        /* Rendered from the core's view objects (P6a); none is emitted yet. */
+        /* Factories (P4.5) and activity entries (P6b) are not in the view yet. */
         empty_page(w, a);
         return 200;
-    case GZ_API_C_LOBBY:
-    case GZ_API_C_HOST_LOBBY:
     case GZ_API_C_FACTORY:
     case GZ_API_C_FACTORY_DATES:
     case GZ_API_C_ACTIVITY_ONE:
-    case GZ_API_C_DISCOVERY_QUERY_GET:
         gz_api_err_set(err, "not_found", NULL, NULL);
         return 404;
     case GZ_API_C_WALLET:
@@ -316,10 +373,20 @@ static int call(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *err, int
     }
     case GZ_API_C_WALLET_ADDRESS:
         return not_yet(err, "wallet");
-    default:
-        /* Conditions, discovery, joining, readying, hosting and pause go to the
-         * core's lobby and API engine through their view objects (P6a). */
-        return not_yet(err, "core-view");
+    case GZ_API_C_SIGNING_GET:
+        signing_get(a, w);
+        return 200;
+    default: {
+        /* Conditions, discovery, joining, readying, hosting, pause and the
+         * signing setting: the core's lobby and API engine (api_calls.c). */
+        int st;
+        if (!unlocked) {
+            gz_api_err_set(err, "locked", NULL, NULL);
+            return 409;
+        }
+        st = gzp_api_lobby_call(a, c, w, err);
+        return st >= 0 ? st : not_yet(err, "core-view");
+    }
     }
 }
 
@@ -346,6 +413,15 @@ int gzp_api_send_command(gzp_api_t *a, const gz_api_call *c, uint16_t code, cons
         gz_api_err_set(err, "missing_field", "/request_id", NULL);
         return 400;
     }
+    /* One held call per request id (review B of #55, L-1): a retry while the
+     * first is held (or waits for its view) would otherwise take the first's
+     * answer and leave its own held for good; it is told to try again, and
+     * that try is answered from the replay table. */
+    for (i = 0; i < GZP_API_HELD; i++)
+        if (a->held[i].used && !strcmp(a->held[i].request_id, c->request_id)) {
+            gz_api_err_set(err, "request_in_progress", NULL, "{\"request_id\":\"%s\"}", c->request_id);
+            return 409;
+        }
     for (i = 0; i < GZP_API_HELD; i++)
         if (!a->held[i].used) { slot = i; break; }
     if (slot < 0) {
@@ -366,6 +442,9 @@ int gzp_api_send_command(gzp_api_t *a, const gz_api_call *c, uint16_t code, cons
     a->held[slot].used = 1;
     memcpy(a->held[slot].request_id, c->request_id, n + 1);
     a->held[slot].handle = c->handle;
+    a->held[slot].call = c->id;
+    a->held[slot].waiting = 0;
+    a->held[slot].held_since = gzp_mono_ms();
     if (!rc || a->command(a->command_ctx, buf, at) != 0) {
         a->held[slot].used = 0;
         free(buf);
@@ -374,6 +453,30 @@ int gzp_api_send_command(gzp_api_t *a, const gz_api_call *c, uint16_t code, cons
     }
     free(buf);
     return GZ_API_HELD;
+}
+
+/* A held call's 2xx answer: the object it acted on, as the view holds it now. */
+static void finish_held(gzp_api_t *a, int i)
+{
+    gz_jw w;
+    char *body;
+    a->held[i].used = 0;
+    a->held[i].waiting = 0;
+    gz_jw_init(&w);
+    gzp_api_answer(a, a->held[i].call, a->held[i].object[0] ? a->held[i].object : NULL, a->held[i].params, &w);
+    body = malloc(w.len + 1);
+    if (!body) abort();
+    if (w.len) memcpy(body, w.buf, w.len);
+    body[w.len] = 0;
+    gz_api_call_done(a->srv, a->held[i].handle, a->held[i].status, w.err ? "{}" : body, NULL);
+    free(body);
+    gz_jw_free(&w);
+}
+
+static int in_view(gzp_api_t *a, const char *id)
+{
+    return gzp_api_find(a, GZ_VIEW_LOBBY, id) || gzp_api_find(a, GZ_VIEW_HOST_LOBBY, id) ||
+           gzp_api_find(a, GZ_VIEW_DISCOVERY, id);
 }
 
 static void command_result(gzp_api_t *a, const uint8_t *bytes, size_t len)
@@ -389,21 +492,47 @@ static void command_result(gzp_api_t *a, const uint8_t *bytes, size_t len)
     if (gz_rec_find(all, GZ_RESULT_REC_STATUS, &f) != 1 || f.len != 2) return;
     st = gz_get_u16(f.data);
     for (i = 0; i < GZP_API_HELD; i++) {
-        if (!a->held[i].used || strcmp(a->held[i].request_id, rid) != 0) continue;
+        if (!a->held[i].used || a->held[i].waiting || strcmp(a->held[i].request_id, rid) != 0) continue;
         a->held[i].used = 0;
-        if (st >= 200 && st < 300) {
-            /* The object comes with the core's views (P6a); the client reads it. */
-            gz_api_call_done(a->srv, a->held[i].handle, st, "{}", NULL);
-        } else {
-            memset(&e, 0, sizeof e);
-            code[0] = 0;
-            if (gz_rec_find(all, GZ_RESULT_REC_ERROR, &f) == 1 && f.len < sizeof code) {
-                memcpy(code, f.data, f.len);
-                code[f.len] = 0;
+        {
+            /* The object acted on (result field 6) and the core's params
+             * (field 8): the answer is the object as the view now holds it
+             * (7.4: also for a replay). */
+            char object[GZ_LOCAL_ID_MAX + 1], params[700];
+            object[0] = params[0] = 0;
+            if (gz_rec_find(all, GZ_RESULT_REC_OBJECT, &f) == 1 && f.len <= GZ_LOCAL_ID_MAX) {
+                memcpy(object, f.data, f.len);
+                object[f.len] = 0;
             }
-            gz_api_err_set(&e, code[0] ? code : "internal", NULL, NULL);
-            e.code = code[0] ? code : "internal";
-            gz_api_call_done(a->srv, a->held[i].handle, st, NULL, &e);
+            if (gz_rec_find(all, GZ_RESULT_REC_PARAMS, &f) == 1 && f.len < sizeof params) {
+                memcpy(params, f.data, f.len);
+                params[f.len] = 0;
+            }
+            if (st >= 200 && st < 300) {
+                a->held[i].used = 1;
+                a->held[i].status = st;
+                memcpy(a->held[i].object, object, sizeof object);
+                snprintf(a->held[i].params, sizeof a->held[i].params, "%s", params);
+                if (object[0] && !in_view(a, object)) {   /* its view comes next, in the same batch */
+                    a->held[i].waiting = 1;
+                    a->held[i].waiting_since = gzp_mono_ms();
+                } else {
+                    finish_held(a, i);
+                }
+            } else {
+                memset(&e, 0, sizeof e);
+                code[0] = 0;
+                if (gz_rec_find(all, GZ_RESULT_REC_ERROR, &f) == 1 && f.len < sizeof code) {
+                    memcpy(code, f.data, f.len);
+                    code[f.len] = 0;
+                }
+                /* The core's missing_field is a new request that wanted the
+                 * passphrase and came without it (field 28, api_calls.c). */
+                gz_api_err_set(&e, code[0] ? code : "internal", strcmp(code, "missing_field") ? NULL : "/passphrase", "%s",
+                               params[0] == '{' ? params : "{}");
+                e.code = code[0] ? code : "internal";
+                gz_api_call_done(a->srv, a->held[i].handle, st, NULL, &e);
+            }
         }
         return;
     }
@@ -416,8 +545,11 @@ void gzp_api_notify(void *ctx, uint32_t code, const uint8_t *bytes, size_t len)
     if ((code >> 16) == 1) {
         uint32_t kind = code & 0xffffu;
         a->views_received[kind < 7 ? kind : 7]++;
-        if (gzp_view_apply(&a->view, kind, bytes, len, id) && a->srv && a->node_running)
+        if (gzp_view_apply(&a->view, kind, bytes, len, id) && a->srv && a->node_running) {
             gz_api_notify(a->srv, gzp_view_topic(kind), kind == GZ_VIEW_STATUS ? NULL : id);
+            for (int i = 0; i < GZP_API_HELD; i++)
+                if (a->held[i].used && a->held[i].waiting && !strcmp(a->held[i].object, id)) finish_held(a, i);
+        }
     } else if (code == GZ_NOTIFY_COMMAND_RESULT) {
         if (a->srv) command_result(a, bytes, len);
     }
@@ -530,13 +662,51 @@ size_t gzp_api_max_fds(const gzp_api_t *a)
 
 size_t gzp_api_pollfds(gzp_api_t *a, struct pollfd *fds, size_t cap, int *timeout_ms)
 {
+    size_t n;
+    uint64_t now = gzp_mono_ms();
     *timeout_ms = -1;
     if (!a->srv) return 0;
-    return gz_api_server_pollfds(a->srv, fds, cap, timeout_ms);
+    n = gz_api_server_pollfds(a->srv, fds, cap, timeout_ms);
+    /* The loop wakes when a waiting answer's 2 s are up (gzp_api_dispatch). */
+    for (int i = 0; i < GZP_API_HELD; i++)
+        if (a->held[i].used) {
+            uint64_t due = a->held[i].waiting ? a->held[i].waiting_since + 2000 : a->held[i].held_since + GZP_API_HELD_MS;
+            int t = due > now ? (int)(due - now) : 0;
+            if (*timeout_ms < 0 || t < *timeout_ms) *timeout_ms = t;
+        }
+    return n;
 }
 
 void gzp_api_dispatch(gzp_api_t *a, const struct pollfd *fds, size_t n)
 {
+    /* A held answer whose object has not reached the view in 2 s: never a
+     * 2xx without it (that silent answer sent the page to a lobby named
+     * "undefined"), but 503 view_pending with the request id. The action was
+     * taken; a retry with that id is answered from the replay table, with the
+     * object as the view then holds it (local-api.md 7.4). */
+    /* Any held call the core has not answered in GZP_API_HELD_MS: 503 node_busy
+     * with its request id (the core may still act on it: a retry with that id
+     * is the replay), so that no lost answer keeps its place for good and the
+     * table never fills to 429 (review B of #55, L-1). */
+    for (int i = 0; a->srv && i < GZP_API_HELD; i++)
+        if (a->held[i].used && !a->held[i].waiting && gzp_mono_ms() - a->held[i].held_since >= GZP_API_HELD_MS) {
+            gz_api_error e;
+            memset(&e, 0, sizeof e);
+            gz_api_err_set(&e, "node_busy", NULL, "{\"request_id\":\"%s\"}", a->held[i].request_id);
+            e.code = "node_busy";
+            a->held[i].used = 0;
+            gz_api_call_done(a->srv, a->held[i].handle, 503, NULL, &e);
+        }
+    for (int i = 0; a->srv && i < GZP_API_HELD; i++)
+        if (a->held[i].used && a->held[i].waiting && gzp_mono_ms() - a->held[i].waiting_since >= 2000) {
+            gz_api_error e;
+            memset(&e, 0, sizeof e);
+            gz_api_err_set(&e, "view_pending", NULL, "{\"request_id\":\"%s\"}", a->held[i].request_id);
+            e.code = "view_pending";
+            a->held[i].used = 0;
+            a->held[i].waiting = 0;
+            gz_api_call_done(a->srv, a->held[i].handle, 503, NULL, &e);
+        }
     if (a->srv && gz_api_server_dispatch(a->srv, fds, n) != 0) {
         gzp_log("interface failed: closed");
         gz_api_server_free(a->srv);

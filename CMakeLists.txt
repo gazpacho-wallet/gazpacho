@@ -159,6 +159,18 @@ target_include_directories(test_watch_release PRIVATE ${CMAKE_CURRENT_SOURCE_DIR
 target_compile_definitions(test_watch_release PRIVATE GZ_TEST_KINDS)
 target_compile_options(test_watch_release PRIVATE ${GZ_NEW_CODE_WARNINGS})
 add_test(NAME node_watch_release COMMAND test_watch_release)
+# The local-API engine's records and the slots' in a journal (P6a): a start is OK or CORRUPT.
+if(GZ_LIBFUZZER)
+  add_executable(fuzz_api tests/node/fuzz_api.c)
+  target_link_options(fuzz_api PRIVATE -fsanitize=fuzzer)
+else()
+  add_executable(fuzz_api tests/node/fuzz_api.c tests/net/fuzz_main.c)
+  add_test(NAME node_api_fuzz COMMAND fuzz_api 20000)
+endif()
+target_link_libraries(fuzz_api PRIVATE gazpacho_node_test)
+target_include_directories(fuzz_api PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/node)
+target_compile_definitions(fuzz_api PRIVATE GZ_TEST_KINDS)
+target_compile_options(fuzz_api PRIVATE ${GZ_NEW_CODE_WARNINGS})
 gz_add_test(rng       tests/sim/test_rng.c        gazpacho_sim)
 gz_add_test(sim       tests/sim/test_sim.c        gazpacho_sim)
 # One fixed seed must give the trace digest written in the test: compares
@@ -197,6 +209,7 @@ add_test(NAME core_isolation
 string(JOIN " " GZ_NODE_SCAN_FLAGS ${GZ_CORE_SCAN_FLAGS} -I${CMAKE_CURRENT_SOURCE_DIR}/core/node/include
        -I${CMAKE_CURRENT_SOURCE_DIR}/core/node -I${CMAKE_CURRENT_SOURCE_DIR}/core/lobby/include
        -I${CMAKE_CURRENT_SOURCE_DIR}/core/tree/include -I${CMAKE_CURRENT_SOURCE_DIR}/core/signing/include
+       -I${CMAKE_CURRENT_SOURCE_DIR}/core/funding/include
        -I${secp256k1-zkp_SOURCE_DIR}/include)
 # With the signing engine (P4.3) the node calls into secp256k1-zkp: the
 # signing engine's exact list of calls, and nothing else.

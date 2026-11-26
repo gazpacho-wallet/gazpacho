@@ -158,17 +158,47 @@
  *                     standbys (u16)
  *   LOBBY_JOIN        member: 12 scope, 14 the host's key (33), 16 its
  *                     address ("host:port"), 18 the member's conditions
- *                     (lobbyslot.c; absent: none), 20 auto-join (u8, default 1)
+ *                     (lobbyslot.c; absent: the saved conditions of
+ *                     GZ_CMD_API_SET_CONDITIONS, view.h, or none), 20
+ *                     auto-join (u8, default 1), 24 unlock (u8: 1 when given
+ *                     with the passphrase under AT_JOIN: the lobby's gate is
+ *                     open from the join, as LOBBY_READY's 14), 26 the
+ *                     seen_current_digest (32, required with 24: the gate is
+ *                     bound to it, so values that differ open nothing), 28
+ *                     no_passphrase (u8: the API request wanted 24 but came
+ *                     without the passphrase: 400 missing_field unless the
+ *                     request id is a replay, local-api.md 7.4), 22 confirm_loosens. Own
+ *                     conditions looser than the saved ones need an API
+ *                     request (403 fresh_sign_in_needed) and in 22 exactly
+ *                     what they loosen (409 confirm_mismatch, params.loosens;
+ *                     view.h's codes). A later change of the saved conditions
+ *                     applies to the lobby: one they then fit worse than its
+ *                     copy is left before its round (local-api.md 13.2)
  *   LOBBY_READY       member: 12 scope, 14 unlock (u8: 1 when given with the
  *                     passphrase, which opens that lobby's signing gate), 16
  *                     the values digest the person reviewed (32; required
- *                     with 14 under AT_JOIN: the gate binds to it, and a
+ *                     with 14 under AT_JOIN: the gate binds to it; 400
+ *                     without it, 409 refused_now before the terms, and a
  *                     ready for values that have changed since is refused 409
- *                     terms_changed, the gate untouched)
+ *                     terms_changed, the gate untouched), 28 no_passphrase as
+ *                     for LOBBY_JOIN
  *   LOBBY_UNREADY, LOBBY_LEAVE   member: 12 scope
  *   LOBBY_SET_VALUES  host: 12 scope, 14 the values (u64 each)
  *   LOBBY_REMOVE      host: 12 scope, 14 the seat's contribution key (33)
  *   LOBBY_CANCEL      host: 12 scope
+ *   LOBBY_OPEN and LOBBY_START, host, also ask the wallet (cfg.funds, below):
+ *                     409 no_wallet with no port, funds_short when its dry run
+ *                     says short (params need_sat, have_sat), coins_unknown
+ *                     when it cannot tell
+ *   LOBBY_START       host: 12 scope, 14 confirm_funding_max_sat (u64), as an
+ *                     API request only (a digest: POST .../start, behind the
+ *                     fresh sign-in). The person's early start (local-api.md
+ *                     15.2): the ready check now, before the start rule. 202;
+ *                     400 bad_request; 403 fresh_sign_in_needed (no digest);
+ *                     409 not_open, confirm_mismatch (not the lobby's
+ *                     set_aside_sat, gz_fund_set_aside_sat; params
+ *                     set_aside_sat), paused, below_minimum (params ready,
+ *                     minimum)
  * The signing gate's (0x04xx, composite-node.md 12.2): SIGNING_UNLOCK and
  * SIGNING_LOCK, no arguments.
  * Results: 200; 400 bad_request, bad_terms, bad_address, bad_host_key,
@@ -196,6 +226,12 @@
 #define GZ_CMD_LOBBY_SET_VALUES 0x0106u
 #define GZ_CMD_LOBBY_REMOVE     0x0107u
 #define GZ_CMD_LOBBY_CANCEL     0x0108u
+#define GZ_CMD_LOBBY_START      0x0109u
+/* member: ask a host for its listed lobbies (W12; messages.md 6.1): 12 the
+ * host key (33), 14 its address ("host:port"). 202 with the query's id in
+ * the result's object ("q_N"); the answer is the view (kind 10, and kind 2
+ * for each lobby seen); 409 busy while one is asking, not_a_member. */
+#define GZ_CMD_LOBBY_QUERY      0x010au
 #define GZ_CMD_SIGNING_UNLOCK   0x0401u
 #define GZ_CMD_SIGNING_LOCK     0x0402u
 #define GZ_CMD_SIGNING_SET      0x0403u
@@ -205,6 +241,10 @@
 #define GZ_TEST_SIGN_RETRY      2u
 #define GZ_TEST_SIGN_FAILED     3u
 #define GZ_TEST_SIGN_UNFINISHED 4u   /* nothing, ever */
+/* Or'ed into test_sign_outcome: the stand-in counts the round as having sent
+ * its partial signatures from the hand-off on, so that a pause holds the
+ * lobby until the outcome (local-api.md 11.3). */
+#define GZ_TEST_SIGN_PARTIALS   0x100u
 
 /* Signatures for the lobbies (lobby.h: the engines hold no secret key). The
  * program supplies them over the keys of its key port.
@@ -256,11 +296,24 @@ typedef struct {
     size_t sign_mem_size;
     gz_key_port_t keys;                /* per-lobby keys and the host key */
     gz_host_funding_t host_funding;    /* composite-node.md 12.1; AUTO by default */
+    /* Host: the funding engine's wallet port (a gz_wallet_port_t, funding.h),
+     * the program's, for the node's whole life (program/wport.h). Its
+     * can_plan is local-api.md 15.2's funds check, asked at the funding
+     * engine's own rate (gz_fund_config_default: one rate, review B of #55,
+     * L-2) before an open, an early start and an automatic start. NULL, or no
+     * can_plan: no wallet port, and all three are refused (no_wallet; the
+     * automatic start waits); a host with no port begins no round. Members
+     * need none. */
+    const void *wallet;
+    uint32_t funding_burial;           /* the burial depth B (0: Slice 1's 3) */
     gz_member_signing_t member_signing;/* composite-node.md 12.2; AT_JOIN by default */
     gz_node_crypto_t crypto;           /* signatures for the lobbies; all NULL: no lobby opens */
     uint32_t test_sign_outcome;        /* test builds only: GZ_TEST_SIGN_* (0: funding) */
     uint32_t test_sign_delay_ms;       /* test builds only: how long after begin */
     uint32_t test_engines;             /* test builds only: 0, 1 or 2 test engines */
+    uint32_t test_ready_cap;           /* test builds only: a member's ready is built in this many bytes (0: the
+                                        * whole GZ_LOBBY_MAX_SAVED_MSG), so that an over-limit ready, a bug, is
+                                        * seen as the node error it is (K1) */
 } gz_node_config_t;
 
 /* Opaque, caller-allocated: gz_node_size() bytes, aligned for any object
@@ -341,6 +394,15 @@ gz_status_t gz_node_handle(gz_node_t *node, const gz_event_t *event,
  * the composite itself), and the status it returned; 0 and GZ_OK before any
  * error. For the program's `node-error engine=0x0002 status=...` line. */
 uint16_t gz_node_error_area(const gz_node_t *node);
+
+/* The member_signing in force for this run: cfg.member_signing until the
+ * start's first call has walked storage, then the setting saved through the
+ * local API (local-api.md 14.3, record 0x000d0024) if there is one. The
+ * program sets its key routing from this, not from its own option, after the
+ * first gz_node_start call returns and before it gives that call's list to
+ * the runner (AT_JOIN: secrets for rounds only from the scoped table). No
+ * key port secret is asked for before then. */
+gz_member_signing_t gz_node_member_signing(const gz_node_t *node);
 gz_status_t gz_node_error_status(const gz_node_t *node);
 
 /* The most watches a node asks for at once, over all its engines (action.h,

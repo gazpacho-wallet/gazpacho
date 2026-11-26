@@ -63,7 +63,7 @@ static void bind(scen_t *s, uint32_t i, const char *ff, const char *cf)
     tr_sha256_write(&t, s->parts[i].factory_key, 33);
     tr_sha256_write(&t, s->parts[i].contribution_key, 33);
     tr_sha256_done(&t, h);
-    sign_label(ff, i, h, s->parts[i].bind_by_factory);
+    (void)ff;                                  /* K1: the factory key signs no binding */
     sign_label(cf, i, h, s->parts[i].bind_by_contribution);
 }
 
@@ -303,11 +303,11 @@ static void c1_participants(void)
     key("someone %u", 0, S.parts[0].contribution_key); EXPECT(GZ_CHK_C1_HOST_KEY, 1);
     /* bindings (messages.md 6.3): reason 5 */
     scenario(4, 2);
-    S.parts[3].bind_by_factory[10] ^= 1; EXPECT(GZ_CHK_BINDING, 5);
+    S.parts[3].bind_by_contribution[10] ^= 1; EXPECT(GZ_CHK_BINDING, 5);
     scenario(4, 2);
     S.parts[0].bind_by_contribution[63] ^= 1; EXPECT(GZ_CHK_BINDING, 5);
     scenario(4, 2);
-    memcpy(S.parts[2].bind_by_factory, S.parts[1].bind_by_factory, 64); EXPECT(GZ_CHK_BINDING, 5);
+    memcpy(S.parts[2].bind_by_contribution, S.parts[1].bind_by_contribution, 64); EXPECT(GZ_CHK_BINDING, 5);
 }
 
 static void c7_c10(void)

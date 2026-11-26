@@ -50,6 +50,7 @@ static const server_entry *default_servers(gz_network n) {
     case GZ_NET_TESTNET4: return DEFAULT_TESTNET4;
     case GZ_NET_TESTNET3: return DEFAULT_TESTNET3;
     case GZ_NET_MAINNET: return DEFAULT_MAINNET;
+    case GZ_NET_REGTEST: break; /* no public servers */
     case GZ_NET_INVALID: break;
   }
   return DEFAULT_SIGNET;

@@ -23,6 +23,7 @@
 #include "api.h"
 #include "datadir.h"
 #include "gzp.h"
+#include "keys.h"
 #include "net.h"
 #include "notify.h"
 #include "pchain.h"
@@ -55,6 +56,7 @@ typedef struct {
     const gzp_options_t *opt;
     gzp_datadir_t *dir;
     gzp_net_t *net;
+    gzp_keys_t *keys;              /* the key port's keys (keys.h): epoch, freeze, scoped secrets */
     const uint8_t *chain_hash;     /* the network's genesis hash (32 bytes): the node writes it in guard records */
     gzp_chain_t *chain;
     gzp_notify_sink_t notify;
@@ -65,6 +67,8 @@ typedef struct {
 
     /* one incarnation */
     struct gzp_wallet *wallet;   /* the unlocked wallet: storage keys (store_unlock.h) */
+    const void *wallet_port;     /* host: the funding engine's wallet port (wport.h), or NULL */
+    uint32_t funding_burial;     /* B, for the node and the wallet port alike (0: the engine's default) */
     gzp_store_t store;
     int store_open;
     uint64_t incarnation;
@@ -94,6 +98,11 @@ typedef struct {
     size_t in_len;
     int in_eof;
     uint64_t next_request;
+    /* The member_signing in force for this incarnation (gz_node_member_signing,
+     * after the start's first call): the saved setting over --member-signing
+     * (local-api.md 14.3). The key routing follows it (AT_JOIN: scoped only;
+     * docs/notes/view-objects.md section 6). -1 before the walk. */
+    int member_signing;
 } gzp_exec_t;
 
 int gzp_exec_incarnation(gzp_exec_t *ex, int number);

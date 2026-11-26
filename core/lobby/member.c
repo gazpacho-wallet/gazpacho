@@ -97,6 +97,14 @@ static int plain_ok(const gz_lobby_member_t *m, int cls)
     return m->frozen ? cls != GZ_FIT_NO : gz_lobby_ready_ok(cls, &m->cond);
 }
 
+/* The largest ready K1 sends, as an envelope: the header, then records 2 scope, 4 version, 6 digest, 8 check id,
+ * 11 min_members, 12 factory key, 14 binding and 240 the signature, each with its 2-byte type and length. A
+ * limit that no longer holds it fails the build, not a run. */
+#define K1_READY_MAX (GZ_LOBBY_ENV_HDR + (2u + 32u) + (2u + 4u) + (2u + 32u) + (2u + 32u) + (2u + 2u) + (2u + 33u) + \
+                      (2u + 64u) + (2u + 64u))
+_Static_assert(K1_READY_MAX == 317u, "the largest K1 ready is 317 bytes");
+_Static_assert(K1_READY_MAX <= GZ_LOBBY_MAX_SAVED_MSG, "the largest K1 ready fits GZ_LOBBY_MAX_SAVED_MSG");
+
 static void terms_record(const gz_lobby_member_t *m, gz_lr_t *w, uint8_t *buf, size_t cap)
 {
     gz_lr_start(w, buf, cap, m->scope);
@@ -114,19 +122,39 @@ static gz_status_t send_ready(gz_lobby_member_t *m, const uint8_t *check_id, con
                               size_t check_len, gz_action_list_t *out)
 {
     uint8_t tr[GZ_LOBBY_REC_MAX_TERMS], fz[GZ_LOBBY_REC_MAX_FREEZE], rs[GZ_LOBBY_REC_MAX_READY_SENT];
+    uint8_t sk[GZ_LOBBY_REC_MAX_SEAT_KEY], b[32], sc[64];
     uint8_t msg[GZ_LOBBY_MAX_SAVED_MSG];
-    gz_lr_t wt, wf, wr;
-    gz_record_t recs[3];
+    gz_lr_t wt, wf, wr, wk;
+    gz_record_t recs[4];
     size_t n = 0, len;
     gz_lobby_enc_t e;
-    gz_lobby_enc_start(&e, msg, sizeof msg, GZ_KIND_READY, m->scope);
+    /* K1: the seat's factory key, and the contribution key's binding of it in this lobby, in every ready;
+     * the factory key itself signs nothing. The first ready signs the binding; every later one sends the
+     * saved signature (seat_key field 10) byte for byte (messages.md 6.4, review H1). */
+    if (m->seat_key_saved) memcpy(sc, m->seat_bind_c, 64);
+    else {
+        /* K1 stage 3: the factory key is derived here, at the seat's first ready, and never before. */
+        if (m->crypto.factory_pub) {
+            uint8_t f[33];
+            if (m->crypto.factory_pub(m->crypto.ctx, f) != 1) return gz_la_no_key(out, GZ_LOBBY_KEY_FACTORY);
+            memcpy(m->factory_key, f, 33);
+            m->factory_fresh = 1;
+        }
+        gz_lobby_binding(m->scope, m->factory_key, m->ckey, b);
+        if (m->crypto.sign(m->crypto.ctx, GZ_LOBBY_KEY_CONTRIBUTION, b, sc) != 1) return gz_la_no_key(out, GZ_LOBBY_KEY_CONTRIBUTION);
+    }
+    gz_lobby_enc_start(&e, msg, m->test_ready_cap && m->test_ready_cap < sizeof msg ? m->test_ready_cap : sizeof msg,
+                       GZ_KIND_READY, m->scope);
     gz_lobby_enc_record(&e, 2, m->scope, 32);
     gz_lobby_enc_u32(&e, 4, m->values.version);
     gz_lobby_enc_record(&e, 6, m->current_digest, 32);
     if (check_id) gz_lobby_enc_record(&e, 8, check_id, 32);
     if (m->cond.min_members) gz_lobby_enc_u16(&e, 11, m->cond.min_members);
-    len = gz_lobby_enc_sign(&e, &m->crypto, GZ_LOBBY_KEY_CONTRIBUTION);
-    if (!len) return gz_la_no_key(out, GZ_LOBBY_KEY_CONTRIBUTION);
+    gz_lobby_enc_record(&e, 12, m->factory_key, 33);
+    gz_lobby_enc_record(&e, 14, sc, 64);
+    /* A ready too large for its buffer is an error of its own (GZ_ERR_BUG), never "no key" (K1). */
+    TRY(gz_la_sign_env(&e, &m->crypto, GZ_LOBBY_KEY_CONTRIBUTION, out, &len));
+    if (!len) return GZ_OK;                                          /* the port would not sign: noticed */
     memcpy(m->ready_msg, msg, len);
     m->ready_len = len;
     if (m->saved_version != m->values.version) {
@@ -150,6 +178,20 @@ static gz_status_t send_ready(gz_lobby_member_t *m, const uint8_t *check_id, con
         m->frozen = 1;
         m->frozen_version = m->values.version;
         memcpy(m->frozen_digest, m->current_digest, 32);
+    }
+    if (!m->seat_key_saved) {
+        /* The seat's key, saved in the batch of its first ready and before that ready leaves (K1, BD3). */
+        gz_lr_start(&wk, sk, sizeof sk, m->scope);
+        gz_lr_put(&wk, 4, m->factory_key, 33);
+        gz_lr_int(&wk, 6, m->key_epoch, 4);
+        gz_lr_int(&wk, 8, m->key_index, 4);
+        gz_lr_put(&wk, 10, sc, 64);
+        if (wk.bad) return GZ_ERR_BUG;
+        recs[n].type = GZ_REC_SEAT_KEY;
+        recs[n].bytes.data = sk;
+        recs[n++].bytes.len = gz_lr_done(&wk);
+        m->seat_key_saved = 1;
+        memcpy(m->seat_bind_c, sc, 64);
     }
     gz_lr_start(&wr, rs, sizeof rs, m->scope);
     gz_lr_put(&wr, 4, m->ready_msg, m->ready_len);
@@ -274,8 +316,7 @@ static gz_status_t evaluate(gz_lobby_member_t *m, gz_action_list_t *out)
     int cls;
     uint8_t term;
     /* Function scope, not the join block: no ASan use-after-scope calls (isolation). */
-    uint8_t b[32], tr[GZ_LOBBY_REC_MAX_TERMS], jr[GZ_LOBBY_REC_MAX_JOINED], msg[GZ_LOBBY_MAX_SAVED_MSG];
-    uint8_t sf[64], sc[64];
+    uint8_t tr[GZ_LOBBY_REC_MAX_TERMS], jr[GZ_LOBBY_REC_MAX_JOINED], msg[GZ_LOBBY_MAX_SAVED_MSG];
     gz_lr_t wt, wj;
     gz_record_t recs[2];
     gz_lobby_enc_t e;
@@ -283,15 +324,9 @@ static gz_status_t evaluate(gz_lobby_member_t *m, gz_action_list_t *out)
     if (!m->have_terms || m->ended) return GZ_OK;
     cls = class_of(m, &term);
     if (cls != GZ_FIT_NO && !m->joined && m->auto_join) {
-        gz_lobby_binding(m->scope, m->factory_key, m->ckey, b);
-        if (m->crypto.sign(m->crypto.ctx, GZ_LOBBY_KEY_FACTORY, b, sf) != 1)
-            return gz_la_no_key(out, GZ_LOBBY_KEY_FACTORY);
-        if (m->crypto.sign(m->crypto.ctx, GZ_LOBBY_KEY_CONTRIBUTION, b, sc) != 1)
-            return gz_la_no_key(out, GZ_LOBBY_KEY_CONTRIBUTION);
+        /* K1: a join names no factory key and carries no signature (the link proves the contribution
+         * key); the factory key and its binding come with the first ready. */
         gz_lobby_enc_start(&e, msg, sizeof msg, GZ_KIND_JOIN, m->scope);
-        gz_lobby_enc_record(&e, 2, m->factory_key, 33);
-        gz_lobby_enc_record(&e, 4, sf, 64);
-        gz_lobby_enc_record(&e, 6, sc, 64);
         len = gz_lobby_enc_done(&e);
         terms_record(m, &wt, tr, sizeof tr);
         gz_lr_start(&wj, jr, sizeof jr, m->scope);
@@ -592,6 +627,9 @@ static gz_status_t on_status(gz_lobby_member_t *m, const gz_lobby_msg_t *g, gz_a
     }
     if (m->have_terms && g->version > m->values.version) return send_hello(m, out);
     if (!m->joined) return GZ_OK;
+    /* A refused ready (messages.md 6.4): reason 5 with the seat's own state. The seat is kept, on both
+     * sides, and nothing is resent for it: the person was told by the seat notice (review A of #95, L1). */
+    if (in && g->has_reason && g->reason == 5) return GZ_OK;
     if (g->seat_state == GZ_SEAT_REMOVED || (g->seat_state == GZ_SEAT_REFUSED && g->has_reason))
         return end_self(m, g->seat_state == GZ_SEAT_REMOVED ? GZ_LOBBY_END_REMOVED : GZ_LOBBY_END_REFUSED,
                         g->has_reason ? g->reason : 0, out);   /* final, and saved */
@@ -712,6 +750,7 @@ gz_status_t gz_lobby_member_init(gz_lobby_member_t *m, const gz_ports_t *ports, 
     memcpy(m->link.local.key, cfg->ckey, 33);
     memcpy(m->link.remote.key, cfg->host_key, 33);
     m->auto_join = cfg->auto_join;
+    m->test_ready_cap = cfg->test_ready_cap;
     return GZ_OK;
 }
 
@@ -744,11 +783,30 @@ gz_status_t gz_lobby_member_restore(gz_lobby_member_t *m, const gz_record_t *rec
         if (!gz_lf_blob(&f, 4, sizeof m->join_msg, &a, &an) || gz_lobby_decode_env(a, an, &g) != GZ_DEC_OK ||
             g.kind != GZ_KIND_JOIN)
             return GZ_ERR_CORRUPT;
-        m->stale_seat = memcmp(g.factory_key, m->factory_key, 33) != 0;
-        if (m->stale_seat) return GZ_OK;              /* an older epoch's seat: join again */
         memcpy(m->join_msg, a, an); m->join_len = an;
         m->joined = 1;
         m->left = m->ended = 0;
+        return GZ_OK;
+    case GZ_REC_SEAT_KEY:
+        if (!(a = gz_lf_fixed(&f, 4, 33)) || !(b = gz_lf_fixed(&f, 6, 4)) || !(x = gz_lf_fixed(&f, 8, 4)) ||
+            !gz_lf_fixed(&f, 10, 64))
+            return GZ_ERR_CORRUPT;
+        m->seat_key_saved = 1;
+        /* K1 stage 3: a member whose factory key comes from the port at the first ready holds none before
+         * it; the saved one is the seat's. Otherwise (the config gave one) the two must agree. The epoch
+         * and index are the slot's; that the slot's epoch is the node's current one is the node's check
+         * (BD2, lobbyslot.c), made before this engine is resumed. */
+        if (m->crypto.factory_pub) memcpy(m->factory_key, a, 33);
+        m->stale_seat = memcmp(a, m->factory_key, 33) != 0 || (uint32_t)gz_lw_get(b, 4) != m->key_epoch ||
+                        (uint32_t)gz_lw_get(x, 4) != m->key_index;
+        if (m->stale_seat) { m->joined = 0; m->join_len = 0; m->seat_key_saved = 0; return GZ_OK; }   /* an older epoch's seat: join again */
+        {   /* field 10 is the first ready's binding signature, sent again by every later ready: one that does
+             * not verify over (scope, F, C) is damaged storage, never resent (review H1) */
+            uint8_t bh[32];
+            gz_lobby_binding(m->scope, m->factory_key, m->ckey, bh);
+            if (m->crypto.verify(m->crypto.ctx, m->ckey, bh, f.v[5]) != 1) return GZ_ERR_CORRUPT;
+            memcpy(m->seat_bind_c, f.v[5], 64);
+        }
         return GZ_OK;
     case GZ_REC_READY_SENT:
         if ((x = gz_lf_fixed(&f, 6, 2)) != NULL && !f.v[2]) {
@@ -904,6 +962,56 @@ gz_status_t gz_lobby_member_set_conditions(gz_lobby_member_t *m, const gz_lobby_
     m->user_unready = 0;
     m->last_class = 0;
     return evaluate(m, out);
+}
+
+/* How well the lobby's latest values (the frozen ones after the freeze) fit
+ * conditions `c`: 2 a plain ready may be given (plain_ok), 1 it may stay
+ * joined but not ready by itself (fits only now, the default option), 0 it
+ * does not fit. */
+static int grade(const gz_lobby_member_t *m, const gz_lobby_conditions_t *c, int *cls, uint8_t *term)
+{
+    *cls = gz_lobby_classify(&m->terms, &m->values, c, term);
+    if (m->frozen ? *cls != GZ_FIT_NO : gz_lobby_ready_ok(*cls, c)) return 2;
+    return *cls == GZ_FIT_NOW ? 1 : 0;
+}
+
+/* The person's conditions fit this lobby worse than its own copy does. */
+static int misfits(const gz_lobby_member_t *m, const gz_lobby_conditions_t *c, int *cls, uint8_t *term)
+{
+    int ccls;
+    uint8_t cterm;
+    return grade(m, c, cls, term) < grade(m, &m->cond, &ccls, &cterm);
+}
+
+int gz_lobby_member_misfits(const gz_lobby_member_t *m, const gz_lobby_conditions_t *person)
+{
+    int cls;
+    uint8_t term;
+    return m && person && m->have_terms && !m->ended && misfits(m, person, &cls, &term);
+}
+
+int gz_lobby_member_in_round(const gz_lobby_member_t *m)
+{
+    return m && check_in_flight(m) && m->start_len && m->role == 1;   /* a start for the answered check */
+}
+
+gz_status_t gz_lobby_member_tighten(gz_lobby_member_t *m, const gz_lobby_conditions_t *person,
+                                    gz_action_list_t *out)
+{
+    int cls;
+    uint8_t term;
+    if (!m || !person || !out) return GZ_ERR_ARGUMENT;
+    if (m->ended) return gz_la_cmd_refused(out, GZ_CMD_CONDITIONS, m->lobby_state);
+    if (!m->have_terms || !misfits(m, person, &cls, &term)) return GZ_OK;   /* the copy stands */
+    /* Handed over, or signed: the round runs to its end (11.3's rule for the
+     * pause, local-api.md 13.2 "before it starts"). */
+    if (m->round_state >= GZ_LOBBY_FUNDING || gz_lobby_member_in_round(m))
+        return gz_la_cmd_refused(out, GZ_CMD_CONDITIONS, m->lobby_state);
+    m->never_joined = !m->joined;
+    m->last_class = cls;
+    m->last_term = term;
+    TRY(leave(m, 0, NULL, 0, NULL, 0, 1, out));
+    return note2(out, GZ_NOTE_REFUSED, (uint8_t)cls, term);
 }
 
 gz_status_t gz_lobby_member_gate_opened(gz_lobby_member_t *m, gz_action_list_t *out)

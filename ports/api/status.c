@@ -72,13 +72,15 @@ static const char *const ATTENTION[][2] = {
     {"restored_factories_unknown", "important"}, {"storage_nearly_full", "important"},
     {"restored_seats_lost", "important"}, {"terms_changed", "heads_up"}, {"date_near", "heads_up"},
     {"refused_to_sign", "record"}, {"use_own_chain_server", "recommended"}, {"choose_watching", "recommended"},
-    {"host_can_start", "important"}, {"host_funds_short", "important"}, {"host_members_not_moved", "important"},
+    {"host_can_start", "important"}, {"host_funds_short", "important"}, {"coins_incomplete", "important"}, {"host_members_not_moved", "important"},
     {"host_listing_renew", "important"}, {"host_node_missing", "important"}, {"exit_needs_fee_coin", "important"},
     {"payments_stopped_for_exit", "important"}, {"exit_step_late", "at_risk"},
     {"exit_step_held_back", "at_risk"}, {"exit_fee_budget_reached", "act_now"}, {"exit_missed", "at_risk"},
     {"funding_double_spent", "at_risk"}, {"restored_commitment_choice", "at_risk"},
     {"unexplained_spend", "at_risk"},
     {"unlock_to_take_part", "important"},   /* draft 5, 14.3 rule 3: never act_now, no check waits for it */
+    {"member_refused", "important"},        /* draft 5 gap 4, the host's side (15.3) */
+    {"lobby_left_out", "important"},        /* the core's: a lobby whose keys this start could not give (H1); 11.4, K35 */
 };
 
 const char *gz_attention_tier(const char *code, int at_risk_override)
@@ -277,6 +279,7 @@ static int write_unlocked(gz_api_server *srv, gz_api_status_facts *f, gz_jw *w)
         const char *tier = gz_attention_tier(f->attention[i].code, f->attention[i].at_risk_override);
         if (!tier) return -1;
         if (strcmp(tier, "act_now") == 0 && !f->attention[i].due_json) return -1;   /* act_now has a date */
+        if (f->attention[i].lobby_id && !f->attention[i].lobby_role) return -1;     /* a lobby's item names its role */
     }
     gz_jw_obj(w);
     gz_jw_kint(w, "version", f->version);
@@ -363,6 +366,7 @@ static int write_unlocked(gz_api_server *srv, gz_api_status_facts *f, gz_jw *w)
     gz_jw_kstr(w, "state", "off");
     gz_jw_end_obj(w);
     gz_jw_kraw(w, "hosting", f->hosting_json);
+    gz_jw_kraw(w, "coins", f->coins_json);
     gz_jw_key(w, "money");
     gz_jw_obj(w);
     gz_jw_kint(w, "can_send_sat", f->can_send_sat);
@@ -390,6 +394,7 @@ static int write_unlocked(gz_api_server *srv, gz_api_status_facts *f, gz_jw *w)
             gz_jw_kstr(w, "code", a->code);
             gz_jw_kraw(w, "due", a->due_json);
             if (a->lobby_id) gz_jw_kstr(w, "lobby_id", a->lobby_id);
+            if (a->lobby_id) gz_jw_kstr(w, "lobby_role", a->lobby_role);
             if (a->factory_id) gz_jw_kstr(w, "factory_id", a->factory_id);
             gz_jw_kraw(w, "params", a->params_json ? a->params_json : "{}");
             gz_jw_end_obj(w);

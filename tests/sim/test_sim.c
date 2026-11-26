@@ -116,7 +116,7 @@ static void test_same_seed_same_trace(void)
         if (multi) c.ops = multi_ops();
         sim_t *a = sim_create(&c), *b = sim_create(&c);
         size_t la = 0, lb = 0;
-        CHECK(sim_run(a, 2000) == 2000 && sim_run(b, 2000) == 2000);
+        CHECK(sim_run(a, 4000) == 4000 && sim_run(b, 4000) == 4000);
         const char *ta = sim_trace(a, &la), *tb = sim_trace(b, &lb);
         CHECK(la > 10000);                                  /* a run with real content */
         CHECK(la == lb && memcmp(ta, tb, la) == 0);         /* byte for byte */

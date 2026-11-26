@@ -71,6 +71,8 @@ def unlisted(path):
         return 200, b'{"spent":false}'
     if path.startswith("/block-height/"):
         return 404, b"Block not found"
+    if path.startswith("/scripthash/") and path.endswith("/utxo"):
+        return 200, b"[]"   # an address with no unspent output, as a real Esplora server answers
     return 404, b"not found"
 
 

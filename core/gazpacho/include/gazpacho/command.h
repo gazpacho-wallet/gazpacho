@@ -50,6 +50,7 @@
 #define GZ_VIEW_ATTENTION   7
 #define GZ_VIEW_DOING       8
 #define GZ_VIEW_CONNECTION  9
+#define GZ_VIEW_DISCOVERY   10  /* a query to a host for its lobbies (view.h) */
 
 /* Records of a view object. */
 #define GZ_VIEW_REC_ID      0
@@ -68,6 +69,8 @@
 #define GZ_RESULT_REC_REQUEST_ID 0
 #define GZ_RESULT_REC_STATUS     2
 #define GZ_RESULT_REC_ERROR      4
+#define GZ_RESULT_REC_OBJECT     6
+#define GZ_RESULT_REC_PARAMS     8
 
 #define GZ_CMD_MAX_REQUEST_ID 64
 

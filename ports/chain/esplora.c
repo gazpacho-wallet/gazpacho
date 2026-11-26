@@ -11,6 +11,7 @@
  *   GET  /tx/{txid}/merkle-proof        JSON
  *   GET  /tx/{txid}/outspend/{vout}     JSON
  *   GET  /scripthash/{sha256(script)}/utxo   JSON; the hash is NOT reversed
+ *   GET  /scripthash/{sha256(script)}        JSON: chain_stats, mempool_stats (tx_count)
  *   GET  /fee-estimates                 JSON
  *   POST /tx                            body: hex; answer: text txid
  *
@@ -232,6 +233,73 @@ gz_es_parse_result gz_es_parse_utxos(const char *s, size_t len, gz_chain_output 
 done:
   free(toks);
   return res;
+}
+
+/* One of chain_stats and mempool_stats at toks[idx]: exactly the five
+ * counts, consistent. `in_blocks`: no more spent than funded. */
+static bool stats_object(const char *s, const gz_json_tok *toks, size_t idx, bool in_blocks, uint64_t *tx_count) {
+  enum { F_FC = 1, F_FS = 2, F_SC = 4, F_SS = 8, F_TX = 16 };
+  static const char *const keys[5] = {"funded_txo_count", "funded_txo_sum", "spent_txo_count", "spent_txo_sum",
+                                      "tx_count"};
+  uint64_t v[5] = {0, 0, 0, 0, 0};
+  unsigned seen = 0;
+  const gz_json_tok *o = &toks[idx];
+  if (o->type != GZ_JSON_OBJECT) return false;
+  size_t i = idx + 1;
+  for (uint32_t m = 0; m < o->size; m++) {
+    const gz_json_tok *key = &toks[i], *val = &toks[i + 1];
+    size_t k = 0;
+    while (k < 5 && !gz_json_str_eq(s, key, keys[k])) k++;
+    if (k == 5 || (seen & (1u << k)) || !gz_json_u64(s, val, &v[k])) return false;
+    seen |= 1u << k;
+    i = val->next;
+  }
+  if (seen != (F_FC | F_FS | F_SC | F_SS | F_TX)) return false;
+  /* a transaction counts only through an output it funded or spent */
+  if (v[4] > v[0] + v[2] || (v[4] == 0 && (v[0] != 0 || v[2] != 0))) return false;
+  if (in_blocks && (v[2] > v[0] || v[3] > v[1])) return false;
+  *tx_count = v[4];
+  return true;
+}
+
+bool gz_es_parse_script_stats(const char *s, size_t len, const uint8_t script_hash[GZ_HASH_LEN],
+                              gz_script_history *out) {
+  enum { F_SH = 1, F_CHAIN = 2, F_MEM = 4 };
+  static const char digits[] = "0123456789abcdef";
+  gz_json_tok toks[48];
+  char want[2 * GZ_HASH_LEN + 1];
+  size_t n;
+  unsigned seen = 0;
+  uint64_t chain = 0, mem = 0;
+  if (s == NULL || script_hash == NULL || out == NULL) return false;
+  for (size_t i = 0; i < GZ_HASH_LEN; i++) {
+    want[2 * i] = digits[script_hash[i] >> 4];
+    want[2 * i + 1] = digits[script_hash[i] & 15];
+  }
+  want[2 * GZ_HASH_LEN] = '\0';
+  if (!gz_chain_json_parse(s, len, toks, sizeof toks / sizeof toks[0], &n)) return false;
+  if (toks[0].type != GZ_JSON_OBJECT) return false;
+  size_t i = 1;
+  for (uint32_t m = 0; m < toks[0].size; m++) {
+    const gz_json_tok *key = &toks[i], *val = &toks[i + 1];
+    if (gz_json_str_eq(s, key, "scripthash")) {
+      if ((seen & F_SH) || val->type != GZ_JSON_STRING || !gz_json_str_eq(s, val, want)) return false;
+      seen |= F_SH;
+    } else if (gz_json_str_eq(s, key, "chain_stats")) {
+      if ((seen & F_CHAIN) || !stats_object(s, toks, i + 1, true, &chain)) return false;
+      seen |= F_CHAIN;
+    } else if (gz_json_str_eq(s, key, "mempool_stats")) {
+      if ((seen & F_MEM) || !stats_object(s, toks, i + 1, false, &mem)) return false;
+      seen |= F_MEM;
+    } else {
+      return false;
+    }
+    i = val->next;
+  }
+  if (seen != (F_SH | F_CHAIN | F_MEM)) return false;
+  out->confirmed_txs = chain;
+  out->mempool_txs = mem;
+  return true;
 }
 
 bool gz_es_parse_merkle_proof(const char *s, size_t len, gz_merkle_proof *out) {
@@ -509,6 +577,15 @@ bool gz_es_reason_is_already_known(const char *reason) {
 
 #define ES_PATH_MAX 192
 #define ES_MAX_BACKOFF_MS 30000u
+/* A server's throttle (429, "too many requests"), for a client that asks (throttle_waits): waited
+ * out, ES_THROTTLE_WAIT_MS first and twice as long each time (to ES_MAX_BACKOFF_MS), up to
+ * throttle_waits times per request (the program: ES_THROTTLE_RETRIES), none
+ * counted as one of max_attempts; then this client keeps its requests ES_THROTTLED_INTERVAL_MS
+ * apart. Public Esplora servers throttle a burst (signet run 2: mempool.space after about 27
+ * requests at four a second, with a 429 that three quick tries could not outlast). */
+#define ES_THROTTLE_WAIT_MS 2000u
+#define ES_THROTTLE_RETRIES 6u
+#define ES_THROTTLED_INTERVAL_MS 1000u
 /* Per-call caps on the response body, in bytes. */
 #define ES_CAP_HEIGHT 10
 #define ES_CAP_HASH (2 * GZ_HASH_LEN)
@@ -520,6 +597,7 @@ bool gz_es_reason_is_already_known(const char *reason) {
 #define ES_CAP_BROADCAST 4096
 #define ES_UTXO_BYTES_EACH 320
 #define ES_CAP_BLOCK 1024
+#define ES_CAP_HISTORY 1024
 
 typedef struct esplora {
   gz_http http;
@@ -529,6 +607,7 @@ typedef struct esplora {
   uint8_t *buf; /* the one response buffer, cfg.max_response_bytes long */
   bool has_last;
   uint64_t last_ms; /* when the previous request started */
+  uint32_t paced_ms; /* after a throttle: the least time between requests (0: min_interval_ms) */
   /* The last POST ended unanswered after it may have reached the server (a
    * time-out or a 5xx): it must not be sent again anywhere. */
   bool last_maybe_acted;
@@ -562,17 +641,38 @@ static gz_chain_result es_request_as(esplora *es, bool post, const char *content
   es->last_maybe_acted = false;
   *len = 0;
 
+  uint32_t throttles = 0;
+  bool throttled = false; /* the last try met the throttle, already waited out below */
   for (uint32_t attempt = 0; attempt < es->cfg.max_attempts; attempt++) {
-    if (attempt > 0) {
+    bool waited = throttled;
+    throttled = false;
+    if (attempt > 0 && !waited) {
       uint64_t wait = (uint64_t)es->cfg.backoff_ms << (attempt - 1 > 16 ? 16 : attempt - 1);
       if (wait > ES_MAX_BACKOFF_MS) wait = ES_MAX_BACKOFF_MS;
       es->http.sleep_ms(es->http.ctx, (uint32_t)wait);
     }
-    /* keep the request rate polite */
+    /* keep the request rate polite: slower once the server has throttled this client */
+    uint32_t gap = es->paced_ms > es->cfg.min_interval_ms ? es->paced_ms : es->cfg.min_interval_ms;
     uint64_t now = es->http.now_ms(es->http.ctx);
-    if (es->has_last && now >= es->last_ms && now - es->last_ms < es->cfg.min_interval_ms) {
-      es->http.sleep_ms(es->http.ctx, (uint32_t)(es->cfg.min_interval_ms - (now - es->last_ms)));
+    if (es->has_last && now >= es->last_ms && now - es->last_ms < gap) {
+      es->http.sleep_ms(es->http.ctx, (uint32_t)(gap - (now - es->last_ms)));
       now = es->http.now_ms(es->http.ctx);
+    }
+    if (es->cfg.pacer != NULL) {
+      /* the server's pace, shared with the program's other clients of it */
+      gz_esplora_pacer *p = es->cfg.pacer;
+      pthread_mutex_lock(&p->mu);
+      for (;;) {
+        now = es->http.now_ms(es->http.ctx);
+        if (!p->has_last || now < p->last_ms || now - p->last_ms >= p->interval_ms) break;
+        uint32_t left = (uint32_t)(p->interval_ms - (now - p->last_ms));
+        pthread_mutex_unlock(&p->mu);
+        es->http.sleep_ms(es->http.ctx, left);
+        pthread_mutex_lock(&p->mu);
+      }
+      p->last_ms = now;
+      p->has_last = true;
+      pthread_mutex_unlock(&p->mu);
     }
     es->last_ms = now;
     es->has_last = true;
@@ -592,7 +692,19 @@ static gz_chain_result es_request_as(esplora *es, bool post, const char *content
       if (resp.len > cap) return GZ_CHAIN_TOO_LARGE; /* a transport that broke its promise */
       *status = resp.status;
       *len = resp.len;
-      if (resp.status == 429) continue; /* refused before doing anything: safe to repeat */
+      if (resp.status == 429) {
+        /* refused before doing anything: safe to repeat, once the throttle has passed */
+        if (es->cfg.throttle_waits == 0) continue; /* one of max_attempts (the default) */
+        if (throttles >= es->cfg.throttle_waits) break;
+        uint64_t wait = (uint64_t)ES_THROTTLE_WAIT_MS << throttles;
+        if (wait > ES_MAX_BACKOFF_MS) wait = ES_MAX_BACKOFF_MS;
+        throttles++;
+        es->paced_ms = ES_THROTTLED_INTERVAL_MS;
+        es->http.sleep_ms(es->http.ctx, (uint32_t)wait);
+        throttled = true;
+        attempt--; /* not one of max_attempts (unsigned: wraps and comes back to it) */
+        continue;
+      }
       if (resp.status >= 500 && resp.status <= 599) {
         if (post) {
           es->last_maybe_acted = true; /* see below */
@@ -827,6 +939,28 @@ static gz_chain_result es_script_outputs(void *ctx, const uint8_t *script, size_
     case GZ_ES_PARSE_MALFORMED: break;
   }
   return GZ_CHAIN_MALFORMED;
+}
+
+static gz_chain_result es_script_history(void *ctx, const uint8_t *script, size_t script_len,
+                                         gz_script_history *out) {
+  esplora *es = ctx;
+  uint8_t sh[GZ_HASH_LEN];
+  char hex[2 * GZ_HASH_LEN + 1], path[ES_PATH_MAX];
+  long status;
+  size_t len;
+  gz_script_hash(script, script_len, sh);
+  hex_plain(sh, GZ_HASH_LEN, hex); /* not reversed, as for /utxo */
+  snprintf(path, sizeof path, "/scripthash/%s", hex);
+  gz_chain_result r = es_get(es, path, ES_CAP_HISTORY, &status, &len);
+  if (r != GZ_CHAIN_OK) return r;
+  /* a server that lists unspent outputs but has no stats route: no history
+   * here, said as such, not a malformed answer asked for ever (P97-4) */
+  if (status != 200) return status == 404 ? GZ_CHAIN_UNSUPPORTED : status_meaning(status);
+  if (!gz_es_parse_script_stats(body_of(es), len, sh, out)) {
+    memset(out, 0, sizeof *out);
+    return GZ_CHAIN_MALFORMED;
+  }
+  return GZ_CHAIN_OK;
 }
 
 static gz_chain_result es_outspend(void *ctx, const uint8_t txid[GZ_HASH_LEN], uint32_t vout,
@@ -1098,6 +1232,7 @@ static const gz_chain_ops es_ops = {
     .block_summary = es_block_summary,
     .tx_status = es_tx_status,
     .script_outputs = es_script_outputs,
+    .script_history = es_script_history,
     .outspend = es_outspend,
     .raw_tx = es_raw_tx,
     .merkle_proof = es_merkle_proof,
@@ -1107,6 +1242,17 @@ static const gz_chain_ops es_ops = {
     .describe = es_describe,
     .destroy = es_destroy,
 };
+
+int gz_esplora_pacer_init(gz_esplora_pacer *p, uint32_t interval_ms) {
+  if (p == NULL) return 0;
+  memset(p, 0, sizeof *p);
+  p->interval_ms = interval_ms;
+  return pthread_mutex_init(&p->mu, NULL) == 0;
+}
+
+void gz_esplora_pacer_destroy(gz_esplora_pacer *p) {
+  if (p != NULL) pthread_mutex_destroy(&p->mu);
+}
 
 void gz_esplora_config_default(gz_esplora_config *cfg) {
   if (cfg == NULL) return;
@@ -1214,7 +1360,7 @@ gz_chain_result gz_esplora_create(const gz_esplora_config *cfg, const gz_http *h
   }
   if (cfg->timeout_ms == 0 || cfg->timeout_ms > 120000 || cfg->max_attempts == 0 ||
       cfg->max_attempts > 8 || cfg->backoff_ms > ES_MAX_BACKOFF_MS ||
-      cfg->min_interval_ms > 60000 || cfg->max_response_bytes < 4096 ||
+      cfg->min_interval_ms > 60000 || cfg->max_response_bytes < 4096 || cfg->throttle_waits > 16 ||
       cfg->max_response_bytes > 16u * 1024 * 1024)
     return GZ_CHAIN_INVALID_ARG;
   esplora *es = calloc(1, sizeof *es);

@@ -60,6 +60,7 @@ bool gz_bits_to_target(uint32_t bits, uint8_t target_be[GZ_HASH_LEN]) {
 static uint32_t pow_limit_bits(gz_network network) {
   switch (network) {
     case GZ_NET_SIGNET: return 0x1e0377ae;
+    case GZ_NET_REGTEST: return 0x207fffff;
     case GZ_NET_MAINNET:
     case GZ_NET_TESTNET3:
     case GZ_NET_TESTNET4: return 0x1d00ffff;

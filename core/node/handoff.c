@@ -39,6 +39,7 @@ uint16_t gz_c_area(const gz_node_t *c, int eng)
     (void)c;
     if (eng == ENG_NODE) return (uint16_t)GZ_AREA_NODE;
     if (eng == ENG_SIGN) return (uint16_t)GZ_AREA_ROUND;
+    if (eng == ENG_FUNDING) return (uint16_t)GZ_AREA_FUNDING;
     if (eng >= ENG_SLOT0 && eng < ENG_N && c->slots[eng - ENG_SLOT0].kind == SLOT_KIND_LOBBY)
         return (uint16_t)GZ_AREA_LOBBY;
 #ifdef GZ_TEST_KINDS
@@ -64,6 +65,11 @@ static const gz_engine_ops_t *ops_of(const gz_node_t *c, int eng, void **inst)
         if (!c->sign_on) return NULL;
         *inst = (void *)c;
         return gz_sg_ops();
+    }
+    if (eng == ENG_FUNDING) {
+        if (!c->fund_on) return NULL;
+        *inst = (void *)c;
+        return gz_fd_ops();
     }
     if (eng >= ENG_SLOT0 && eng < ENG_N && c->slots[eng - ENG_SLOT0].kind == SLOT_KIND_LOBBY) {
         *inst = (void *)&((gz_node_t *)c)->slots[eng - ENG_SLOT0];
@@ -183,7 +189,7 @@ gz_status_t gz_c_bracket(gz_node_t *c, int eng, const gz_event_t *ev, gz_action_
     /* After a lobby's step: its gates, its log line, its end (lobbyslot.c);
      * after the signing engine's, the same for each lobby an outcome reached. */
     if (st == GZ_OK && eng >= ENG_SLOT0) st = gz_ls_after(c, eng - ENG_SLOT0, out);
-    if (st == GZ_OK && eng == ENG_SIGN) st = gz_sg_after(c, out);
+    if (st == GZ_OK && (eng == ENG_SIGN || eng == ENG_FUNDING)) st = gz_sg_after(c, out);
     if (st != GZ_OK) {
         c->bracket_on = 0;
         return st;
@@ -204,7 +210,7 @@ gz_status_t gz_c_resume(gz_node_t *c, int eng, gz_action_list_t *out, int *more)
     c->sg_touched = 0;
     gz_status_t st = call(c, eng, OP_RESUME, NULL, 0, out, more);
     if (st == GZ_OK && eng >= ENG_SLOT0) st = gz_ls_after(c, eng - ENG_SLOT0, out);
-    if (st == GZ_OK && eng == ENG_SIGN) st = gz_sg_after(c, out);
+    if (st == GZ_OK && (eng == ENG_SIGN || eng == ENG_FUNDING)) st = gz_sg_after(c, out);
     if (st != GZ_OK) {
         c->bracket_on = 0;
         return st;

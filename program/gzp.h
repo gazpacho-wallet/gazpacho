@@ -77,9 +77,15 @@ typedef struct {
     int test_chain_backlog;        /* the chain backlog, if not 0 (full-backlog tests) */
     int test_chain_small;          /* small chain worker queues (BUSY tests) */
     int test_node_error_always;    /* ... in every incarnation (restart policy tests) */
+    int test_node_error_on_command;/* a node error after the first incarnation handles this command code */
     int test_stop_at_restart;      /* SIGTERM to itself as an incarnation ends (a stop during a restart) */
     int test_engines;              /* test engines in the node, 0 to 2 (default 1) */
     int test_dump_journal;         /* print the journal and stop */
+    long test_sweep;               /* host: print the timeout sweep at this height and stop (sweep.h); 0: none */
+    int test_sweep_force;          /* build the spends below their heights too (the node must refuse them) */
+    int test_owed;                 /* the sweep counts this member (1-based, tree order) as owed */
+    const char *test_spend_coin;   /* host: TXID:VOUT:AMOUNT:SCRIPT, one wallet coin spent to the first address (sweep.h) */
+    const char *test_sweep_to;     /* hex of the destination script (default: the first receive address) */
     int test_lock_after_command;   /* lock once after the N-th command answered 200, then unlock again */
     int test_lock_after_drop;      /* lock once after the first dropped message, then unlock again */
     int test_drop_kind;            /* drop received messages of this kind (0: none) */
@@ -88,13 +94,17 @@ typedef struct {
     int test_crash_after_save;     /* exit once the K-th batch is durable, before the rest of its list */
     int test_crash_before_confirm; /* exit just before the K-th confirmation reaches the runner */
     int test_exit_after_send;      /* exit once the first test ping has been handed to the transport */
+    int test_drop_view;            /* view objects of this kind never reach the API (0: none) */
     int test_max_conns;            /* the transport's max_conns (0: the default, GZ_NODE_MAX_CONNS) */
     const char *test_passphrase_file; /* unlock (or set up) from this file: the passphrase's bytes */
     int test_kdf_floor;            /* set-up at the storage library's test floor (1 pass, 8 KiB) */
+    int test_regtest;              /* --test-regtest: the local test chain (P4.6) */
     int test_standin_store;        /* the journal stand-in instead of the sealed journal (its files are read) */
     const char *test_append_batch; /* save this batch (hex: type, len, bytes ...) and stop */
     int test_kill_at;
     int test_power_cut_at;         /* as --test-kill-at, the folder first put back to what a disk keeps */
+    int test_plan_once;            /* host: one plan of this many sat, printed, then stop */
+    int test_cut_after_mark;       /* a power cut once a change mark is kept */
     int test_start_as_restore;     /* files behind at the unlock: start as a restore with the passphrase */
     int test_cut_after_derive;     /* a power cut when the derivation says wrong (the attempt count) */
     int test_check_forged;         /* CHECK against a key file forged with this wallet's ids: statuses only */
@@ -102,7 +112,9 @@ typedef struct {
     int test_reveal_check;         /* after the unlock: reveal and words check, statuses only */              /* SIGKILL before the K-th storage write, sync or rename (store.h) */
     unsigned test_crash_after_record; /* exit once a batch holding a record of this type is durable */
     int test_sign_outcome;         /* the signing stand-in's outcome: 1 funding, 2 retry, 3 failed, 4 unfinished */
+    int test_funds;                /* can_plan overridden: 0 the host's own wallet answers, 1 short, 2 cannot tell */
     int test_sign_delay_ms;        /* ... reported this long after the hand-off */
+    int test_ready_cap;            /* a member's ready built in this many bytes (an over-limit ready: K1) */
     int test_sign_tick_ms;         /* the signing engine's tick (0: its own, 1 s) */
     int tip;                       /* --tip: the tip to start from until the chain reports one (0: none) */
     /* a setting, both builds */

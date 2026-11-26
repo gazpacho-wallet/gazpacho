@@ -73,7 +73,8 @@
  * closed as idle is the node part's rule (composite-node.md section 3); the
  * lobby sees only connections bound to it. */
 #define GZ_LOBBY_MAX_CONNS     64
-#define GZ_LOBBY_MAX_SAVED_MSG 256      /* a saved ready, start, ready_check or cancel, as an envelope */
+#define GZ_LOBBY_MAX_SAVED_MSG 384      /* a saved ready, start, ready_check or cancel, as an envelope (K1: a
+                                         * ready with its factory key and binding is 317 bytes at most) */
 #define GZ_LOBBY_STATUS_MAX    64       /* a lobby_status envelope: 38 + 3 + 3 + 6 + 4 + 4 + 4 */
 #define GZ_LOBBY_MAX_ADDRESS   64       /* a host address, "host:port" (GZ_CONNECT_MAX_ADDRESS) */
 
@@ -87,7 +88,7 @@
 #define GZ_LOBBY_REC_MAX_OPENED       (GZ_LOBBY_REC_SCOPE + GZ_LOBBY_FIELD(GZ_TERMS_OUTER_MAX) + GZ_LOBBY_FIELD(64u) + \
                                        GZ_LOBBY_FIELD(GZ_TERMS_CURRENT_MAX) + GZ_LOBBY_FIELD(64u))
 #define GZ_LOBBY_REC_MAX_VERSION      (GZ_LOBBY_REC_SCOPE + GZ_LOBBY_FIELD(GZ_TERMS_CURRENT_MAX) + GZ_LOBBY_FIELD(64u))
-#define GZ_LOBBY_REC_MAX_SEAT         (GZ_LOBBY_REC_SCOPE + 2u * GZ_LOBBY_FIELD(33u) + 2u * GZ_LOBBY_FIELD(64u) + \
+#define GZ_LOBBY_REC_MAX_SEAT         (GZ_LOBBY_REC_SCOPE + 2u * GZ_LOBBY_FIELD(33u) + GZ_LOBBY_FIELD(64u) + \
                                        GZ_LOBBY_FIELD(1u) + GZ_LOBBY_FIELD(2u) + GZ_LOBBY_FIELD(4u) + \
                                        GZ_LOBBY_FIELD(8u) + GZ_LOBBY_FIELD(GZ_LOBBY_MAX_SAVED_MSG))
 #define GZ_LOBBY_REC_MAX_FREEZE       (GZ_LOBBY_REC_SCOPE + GZ_LOBBY_FIELD(32u) + GZ_LOBBY_FIELD(4u) + \
@@ -104,6 +105,7 @@
                                        GZ_LOBBY_FIELD(GZ_LOBBY_MAX_SEATS * GZ_LOBBY_START_ITEM))
 #define GZ_LOBBY_REC_MAX_START_RECEIVED (GZ_LOBBY_REC_SCOPE + GZ_LOBBY_FIELD(GZ_LOBBY_MAX_SAVED_MSG))
 #define GZ_LOBBY_REC_MAX_STATE        (GZ_LOBBY_REC_SCOPE + GZ_LOBBY_FIELD(1u) + GZ_LOBBY_FIELD(32u))
+#define GZ_LOBBY_REC_MAX_SEAT_KEY     (GZ_LOBBY_REC_SCOPE + GZ_LOBBY_FIELD(33u) + 2u * GZ_LOBBY_FIELD(4u) + GZ_LOBBY_FIELD(64u))
 #define GZ_LOBBY_REC_MAX              GZ_LOBBY_REC_MAX_START_SENT   /* the largest of all (asserted) */
 /* The table itself, for readers and tests: `*n` rows of (type, largest size). */
 typedef struct { uint32_t type; uint32_t max; const char *name; } gz_lobby_rec_max_t;
@@ -130,6 +132,10 @@ typedef struct {
     int (*point_ok)(void *ctx, const uint8_t pub[33]);
     /* BIP 340 signature of `msg` by key `which`; 1 on success. */
     int (*sign)(void *ctx, uint32_t which, const uint8_t msg[32], uint8_t sig[64]);
+    /* Member, K1 stage 3: the seat's factory public key, derived when the seat's first ready is built and
+     * never before (1, or 0: the port cannot give it now, and no ready is made). NULL: the config's
+     * factory_key is the seat's (tests). */
+    int (*factory_pub)(void *ctx, uint8_t pub[33]);
     void *ctx;
 } gz_lobby_crypto_t;
 
@@ -196,7 +202,7 @@ typedef struct {
     const uint8_t *outer, *outer_sig, *current, *current_sig;
     size_t outer_len, current_len;
     /* join */
-    const uint8_t *factory_key, *bind_by_factory, *bind_by_contribution, *display_name;
+    const uint8_t *factory_key, *bind_by_contribution, *display_name;   /* ready's records 12, 14 (K1) */
     size_t display_name_len;
     /* ready, ready_check, start */
     const uint8_t *outer_digest, *current_digest, *check_id;
@@ -284,6 +290,7 @@ enum { GZ_SEAT_NONE = 0, GZ_SEAT_JOINED, GZ_SEAT_READY, GZ_SEAT_CHOSEN, GZ_SEAT_
 #define GZ_REC_START_RECEIVED 0x00010016u
 #define GZ_REC_TERMS_VERSION  0x00010004u   /* host: a new current version, before it is sent */
 #define GZ_REC_LOBBY_STATE    0x00010018u   /* the signing outcome: host and member (new; docs/notes/lobby.md) */
+#define GZ_REC_SEAT_KEY       0x0001001cu   /* member: its seat's factory key, saved before the first ready (K1) */
 
 /* Notification codes (GZ_ACTION_NOTIFY). Bytes: see each. 0x4c01 (close)
  * and 0x4c08 (seated) are gone: DISCONNECT and SET_SEATED replace them. */
@@ -314,6 +321,8 @@ enum { GZ_SEAT_NONE = 0, GZ_SEAT_JOINED, GZ_SEAT_READY, GZ_SEAT_CHOSEN, GZ_SEAT_
 #define GZ_CMD_UNREADY      5
 #define GZ_CMD_LEAVE        6
 #define GZ_CMD_READY        7
+#define GZ_CMD_START        8   /* host: the person's early start */
+#define GZ_CMD_CONDITIONS   9   /* member: the person's conditions changed (the copying rule) */
 
 /* Host faults a member records (journal.md host_fault). */
 #define GZ_FAULT_TWO_VALUES   1      /* two current records under one version */
@@ -354,7 +363,7 @@ typedef struct {
 /* --------------------------------------------------------------- host */
 
 typedef struct {
-    uint8_t ckey[33], fkey[33], bind_f[64], bind_c[64];
+    uint8_t ckey[33], fkey[33], bind_c[64];   /* fkey: all zero until the seat's first ready (K1) */
     uint8_t state;
     uint16_t min_members;
     uint32_t ready_version;
@@ -363,6 +372,7 @@ typedef struct {
     uint8_t n_changes, changes_at;
     int answered;                    /* answered the open check */
     int chosen;                      /* chosen in the start of the current check */
+    uint8_t bad_readies;             /* readies refused as invalid, for the lobby's life (memory; B's L-2 of #95) */
     /* The seat said `unready` reason 3 (its signing gate is closed). Its next
      * `ready` is not counted against the change limit, once per check window
      * (`free_window` is the window that used it, plus one). Memory only. */
@@ -370,6 +380,12 @@ typedef struct {
     uint64_t free_window;
     uint8_t ready_msg[GZ_LOBBY_MAX_SAVED_MSG]; size_t ready_len;
     uint8_t start_msg[GZ_LOBBY_MAX_SAVED_MSG]; size_t start_len;
+    /* The member refused (an unready or leave with reason 1, its own
+     * conditions): the reason, and the stage (1 Open, 2 a ready check, 3 Signing), until
+     * it readies or joins again (local-api.md 15.3). Memory only. */
+    /* (and until the lobby's next ready check: decision K21) */
+    uint16_t refused;
+    uint8_t refused_stage;
 } gz_lobby_seat_t;
 
 typedef struct {
@@ -400,6 +416,15 @@ typedef struct {
      * connection table, which all its lobbies share. NULL: no such limit.
      * A join that finds no room is refused like one to a full lobby. */
     int (*seat_room)(void *ctx, const uint8_t key[33]);
+    /* 1 while the person's pause is on (local-api.md 11.3): no ready check
+     * by the start rule; at the deadline the lobby is cancelled, reason 2.
+     * NULL: never paused. Called with seat_ctx. */
+    int (*paused)(void *ctx);
+    /* 1 if the host's wallet can fund this lobby now (local-api.md 15.2): asked
+     * before the start rule's ready check, the automatic start. 0: no check;
+     * the lobby stays Open and is asked again at its next seat event, or when
+     * its node asks the rule again (a tip). NULL: always. With seat_ctx. */
+    int (*funds_ok)(void *ctx);
     void *seat_ctx;
     /* The most tree transactions its signer signs (0: no limit): terms whose target needs more do not
      * open (terms.md 7, gz_terms_policy_t.max_tree_nodes). */
@@ -469,6 +494,8 @@ gz_status_t gz_lobby_host_listing(gz_lobby_host_t *h, const gz_link_t *link, gz_
 /* 1 once the lobby has sent a `start`: round kinds under its scope may reach
  * the signing engine (composite-node.md section 4). */
 int gz_lobby_host_round_ok(const gz_lobby_host_t *h);
+/* The pause changed (cfg.paused): the start rule is applied again. */
+gz_status_t gz_lobby_host_pause_changed(gz_lobby_host_t *h, gz_action_list_t *out);
 /* Host commands. A command refused now gives GZ_NOTE_COMMAND_REFUSED.
  * gz_lobby_host_set_values returns GZ_ERR_ARGUMENT, with nothing appended
  * or changed, for values outside the terms' ranges. */
@@ -476,6 +503,19 @@ gz_status_t gz_lobby_host_set_values(gz_lobby_host_t *h, const uint64_t *values,
                                      gz_action_list_t *out);
 gz_status_t gz_lobby_host_remove(gz_lobby_host_t *h, const uint8_t ckey[33], gz_action_list_t *out);
 gz_status_t gz_lobby_host_cancel(gz_lobby_host_t *h, uint16_t reason, gz_action_list_t *out);
+/* The person's early start (local-api.md 15.2, "start now"): the ready check
+ * begins now, before the start rule would begin it, exactly as the rule
+ * begins it (the freeze saved before the first check). Only while Open, not
+ * paused (cfg.paused), with at least the terms' minimum counted as the
+ * start rule counts them (gz_lobby_host_ready_count), and, as for the rule,
+ * not again after a check that ended without a start until a seat event
+ * (the failed-check guard, decision 8). Otherwise
+ * GZ_NOTE_COMMAND_REFUSED (GZ_CMD_START) and nothing else. A check that ends
+ * without a start returns the lobby to Open, under the rule again. */
+gz_status_t gz_lobby_host_start(gz_lobby_host_t *h, gz_action_list_t *out);
+/* The seats the start rule counts now: Ready for the current values,
+ * connected, and with a min_members a start could meet. */
+uint32_t gz_lobby_host_ready_count(const gz_lobby_host_t *h);
 /* The signing engine's outcome (GZ_LOBBY_ROUND_*, lobby_handoff.h), saved
  * (lobby_state) before anything shows it. For GZ_LOBBY_ROUND_RETRY,
  * `failed_ckeys` lists the failed seats' contribution keys, 33 bytes each;
@@ -517,6 +557,7 @@ typedef struct {
     uint8_t address[GZ_LOBBY_MAX_ADDRESS]; uint8_t address_len;   /* "host:port", numeric */
     uint32_t key_epoch, key_index;   /* of the contribution key: CONNECT names them */
     int auto_join;
+    uint32_t test_ready_cap;         /* tests only (the node sets it in test builds): see node.h */
     uint32_t max_tree_nodes;         /* as the host's: terms past it are refused before any seat */
 } gz_lobby_member_config_t;
 
@@ -559,6 +600,11 @@ typedef struct {
     int resends;                     /* state messages resent on lobby_status, this connection */
     int retries;                     /* joins again after a refusal for a limit, this connection */
     int sent_here;                   /* the join was already sent on this connection */
+    uint32_t test_ready_cap;         /* tests only: the ready's buffer, shrunk (0: the whole) */
+    int seat_key_saved;              /* the seat's factory key is saved (K1: before the first ready) */
+    int factory_fresh;               /* the factory key was derived in this run, at the first ready (the node logs it) */
+    uint8_t seat_bind_c[64];         /* seat_key field 10: the first ready's bind_by_contribution, sent in every
+                                      * later ready byte for byte (BD3, review H1) */
     uint32_t max_tree_nodes;         /* the config's (M2) */
     int heard_here;                  /* the host sent this lobby a message on this connection */
     int hello_tries;                 /* hellos asked again on this connection, unanswered */
@@ -594,6 +640,28 @@ gz_status_t gz_lobby_member_unready(gz_lobby_member_t *m, gz_action_list_t *out)
 gz_status_t gz_lobby_member_leave(gz_lobby_member_t *m, gz_action_list_t *out);
 gz_status_t gz_lobby_member_set_conditions(gz_lobby_member_t *m, const gz_lobby_conditions_t *c,
                                            gz_action_list_t *out);
+/* The person's conditions changed while this lobby holds its copy
+ * (local-api.md 13.2, the copying rule). The copy stays the one in force
+ * (`m->cond`: the ready check and the signing check compare against it, so
+ * a loosening changes nothing here). If the lobby's latest values (the
+ * frozen ones after the freeze) fit `person` worse than they fit the copy
+ * (gz_lobby_member_misfits), the member leaves before its round: `leave`
+ * reason 1, saved first, and GZ_NOTE_REFUSED with the class and the
+ * deciding term under `person`. A lobby whose round was handed over
+ * (gz_lobby_member_in_round) or is signed (a saved Funding or Active) is
+ * never left for this: GZ_NOTE_COMMAND_REFUSED (GZ_CMD_CONDITIONS), nothing
+ * changed; so is an ended lobby. A lobby that fits as well gets nothing. */
+gz_status_t gz_lobby_member_tighten(gz_lobby_member_t *m, const gz_lobby_conditions_t *person,
+                                    gz_action_list_t *out);
+/* 1 if `person` fits this lobby worse than its copy does: it has terms, has
+ * not ended, and its latest values move down under `person` from "a plain
+ * ready may be given" to "joined, not ready by itself" (fits only now, the
+ * default option) or "does not fit", or from the second to the third. */
+int gz_lobby_member_misfits(const gz_lobby_member_t *m, const gz_lobby_conditions_t *person);
+/* 1 while the lobby's round was handed over and its outcome is not saved:
+ * a start with role 1 for the check the member answered and still holds
+ * (gz_lobby_member_check_in_flight), that no Retry spent. */
+int gz_lobby_member_in_round(const gz_lobby_member_t *m);
 /* The signing gate changed (composite-node.md 12.2).
  *   opened  the member readies again if it was unready only for the lock:
  *           before the freeze for the latest values, after it the plain

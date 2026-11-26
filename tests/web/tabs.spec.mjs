@@ -24,7 +24,7 @@ async function joinIn(page) {
   await page.goto(fake.url + '#/lobby/lob_7k2q');
   await page.waitForTimeout(1100); // one passphrase attempt a second (4.3)
   await page.locator('#join').click();
-  await page.locator('dialog').getByLabel('Wallet passphrase').fill(PASS);
+  await page.locator('dialog').getByLabel('Password', { exact: true }).fill(PASS);
   await page.locator('dialog').getByRole('button', { name: 'Join', exact: true }).click();
 }
 

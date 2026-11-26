@@ -9,11 +9,31 @@
 #include "gazpacho/chain.h"
 #include "gazpacho/chain_http.h"
 
+#include <pthread.h>
+#include <stdbool.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 #define GZ_ESPLORA_URL_MAX 200
+
+/* One pace for one server, shared by every client that names it (a program has several:
+ * the chain worker's, the loop's lookups, the wallet's scan). Each client keeps its own
+ * min_interval_ms; with a pacer, no two requests to the server from any of them start less
+ * than interval_ms apart. A public Esplora server stops answering an address that asks too
+ * fast: in signet run 2's preparation mempool.space answered nothing at all (timeouts, no
+ * status) for minutes after about 33 requests at four a second. The pacer must outlive every
+ * client that uses it. */
+typedef struct gz_esplora_pacer {
+  pthread_mutex_t mu;
+  uint32_t interval_ms;
+  bool has_last;
+  uint64_t last_ms; /* when the last request to the server started, on the clients' clock */
+} gz_esplora_pacer;
+/* 1, or 0 if the mutex cannot be made. */
+int gz_esplora_pacer_init(gz_esplora_pacer *p, uint32_t interval_ms);
+void gz_esplora_pacer_destroy(gz_esplora_pacer *p);
 
 typedef struct gz_esplora_config {
   /* Base address without a trailing slash, for example
@@ -43,6 +63,14 @@ typedef struct gz_esplora_config {
   uint32_t backoff_ms;
   /* Least time between the starts of two requests to this server. */
   uint32_t min_interval_ms;
+  /* How many times a 429 (the server's throttle) is waited out per request: 2 s first, twice
+   * as long each time to 30 s, none counted as one of max_attempts, and the client then keeps
+   * its requests at least 1 s apart. 0 (the default): a 429 is one of max_attempts, retried
+   * after backoff_ms like any failure, for a caller with retries of its own. At most 16. */
+  uint32_t throttle_waits;
+  /* Optional: the server's pace shared with the program's other clients of it (above).
+   * NULL: this client's own min_interval_ms alone. Not copied: it must outlive the client. */
+  gz_esplora_pacer *pacer;
   /* Size of the one response buffer, allocated at creation. No response
    * larger than this is ever accepted, and most calls use a much smaller
    * cap of their own. */

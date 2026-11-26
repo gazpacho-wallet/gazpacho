@@ -4,12 +4,13 @@
 #                      I/O, no writable data; checked by
 #                      tools/check-core-isolation.sh (test funding_isolation)
 #
-# Not linked into core/node or program/ yet: the wiring waits for P4.3
-# (docs/notes/funding.md, "The wiring").
+# Not wired into core/node or program/ yet: the wiring waits for P4.3
+# (docs/notes/funding.md, "The wiring"). core/node calls only the pure
+# gz_fund_set_aside_sat (setaside.c), for the host's early start and view.
 
 set(GZ_FUNDING_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 set(GZ_FUNDING_TESTS ${PROJECT_SOURCE_DIR}/tests/funding)
-set(GZ_FUNDING_SOURCES ${GZ_FUNDING_DIR}/funding.c ${GZ_FUNDING_DIR}/txsize.c)
+set(GZ_FUNDING_SOURCES ${GZ_FUNDING_DIR}/funding.c ${GZ_FUNDING_DIR}/txsize.c ${GZ_FUNDING_DIR}/setaside.c)
 
 add_library(gazpacho_funding STATIC ${GZ_FUNDING_SOURCES})
 set_target_properties(gazpacho_funding PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)

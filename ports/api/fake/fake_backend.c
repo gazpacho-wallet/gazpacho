@@ -936,6 +936,12 @@ static void story_activity(gz_jw *w, gz_fake *f)
 #undef ENTRY
 }
 
+/* An attention item's lobby_role (11.4): the fake hosts HOST_LOBBY_ID and is a member of the others. */
+static const char *fake_role_of(const char *lob)
+{
+    return !lob ? NULL : strcmp(lob, HOST_LOBBY_ID) == 0 ? "hosted" : "joined";
+}
+
 /* 11: what the story adds to the status facts. The strings live in f->st_buf. */
 static void story_status(gz_fake *f, gz_api_status_facts *s)
 {
@@ -964,6 +970,7 @@ static void story_status(gz_fake *f, gz_api_status_facts *s)
         s->attention[s->nattention].id = (i_); \
         s->attention[s->nattention].code = (c); \
         s->attention[s->nattention].lobby_id = (lob); \
+        s->attention[s->nattention].lobby_role = fake_role_of(lob); \
         s->attention[s->nattention].factory_id = (fac); \
         s->attention[s->nattention].params_json = (pj); \
         s->nattention++; \
@@ -1301,14 +1308,14 @@ static int examine(gz_fake *f, const gz_json *cond, const char *names[12], gz_ap
     }
     for (i = 0; i < sizeof MAX_FIELDS / sizeof MAX_FIELDS[0]; i++) {
         const gz_json *v = gz_json_get(cond, MAX_FIELDS[i]);
-        if (!v) continue;
+        if (!v || v->type == GZ_JSON_NULL) continue;     /* null: no limit (13.1) */
         snprintf(field, sizeof field, "/conditions/%s", MAX_FIELDS[i]);
         if (v->type != GZ_JSON_INT || v->i < 0) { gz_api_err_set(err, "bad_value", field, NULL); return -1; }
         if (v->i > current_cond(f, MAX_FIELDS[i])) names[n++] = MAX_FIELDS[i];
     }
     for (i = 0; i < sizeof MIN_FIELDS / sizeof MIN_FIELDS[0]; i++) {
         const gz_json *v = gz_json_get(cond, MIN_FIELDS[i]);
-        if (!v) continue;
+        if (!v || v->type == GZ_JSON_NULL) continue;     /* null: no limit (13.1) */
         snprintf(field, sizeof field, "/conditions/%s", MIN_FIELDS[i]);
         if (v->type != GZ_JSON_INT || v->i < 0) { gz_api_err_set(err, "bad_value", field, NULL); return -1; }
         if (strcmp(MIN_FIELDS[i], "min_members") == 0 && (v->i < 2 || v->i > 512)) {
@@ -1536,6 +1543,12 @@ static int call_inner(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *er
         const gz_json *cond = gz_json_get(b, "conditions");
         int n = examine(f, cond, names, err);
         if (n < 0) { status = strcmp(err->code, "below_floor") == 0 ? 409 : 400; break; }
+        if (c->id == GZ_API_C_CONDITIONS_PREVIEW) f->previews++;
+        if (n > 0 && n < 12 && f->loosen_extra_after && f->previews >= f->loosen_extra_after) {
+            int have = 0;
+            for (i = 0; i < n; i++) have |= strcmp(names[i], "max_fee_ppm") == 0;
+            if (!have) names[n++] = "max_fee_ppm";
+        }
         if (c->id == GZ_API_C_CONDITIONS_PREVIEW) {
             int64_t fee = jint(cond, "max_joining_fee_sat", f->cond_max_joining_fee_sat);
             gz_jw_obj(w);

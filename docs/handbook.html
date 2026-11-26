@@ -4780,6 +4780,11 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <td>Not addressed</td>
 </tr>
 <tr>
+<td><strong>Reuse</strong>: tell a restored host its change addresses were never used, so it pays to them again</td>
+<td>The wide read checks each history of "never used" against the unspent outputs, and a receive address's outputs against its history (<code>spec/storage-encryption.md</code> 10.4)</td>
+<td>The host wallet's scan asks one server (the first configured): a server that answers zero history and hides the unspent outputs too is believed. <strong>Before mainnet:</strong> the scan over every configured server through the comparing backend, which already compares history counts</td>
+</tr>
+<tr>
 <td><strong>Observe</strong>: link every member's IP address, and the host's, to one factory</td>
 <td>Slice 1: the User-Agent no longer names Gazpacho (it does not disguise the client: TLS fingerprint and access pattern still show it); no proxy is taken from the environment, and an optional <code>socks5h://</code> proxy (Tor) can be set (<code>ports/chain</code>, <code>gz-chain --proxy</code>); a member must not ask about the funding txid before it can have been broadcast (<code>docs/notes/chain-port.md</code> section 9)</td>
 <td>Each member polls the same funding txid and tree outputs from its own address, and every query goes to every configured operator, so each operator can group a factory's members and host by address, add each member's wallet scripts, and see the host as the first broadcaster. Not defended without Tor or the user's own server. 1.0.0 plan in 2.8</td>
@@ -4858,6 +4863,8 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li>Two devices running one key.</li>
 <li>Copies of a running program.</li>
 <li>A whole data folder put back from an older copy, together with the key store (storage 6.4).</li>
+<li>An older copy of <code>change.gzm</code> put back alone, which rolls the host's change mark back without notice (storage 10.4).</li>
+<li>One chain server, the host wallet's, believed about which change addresses were used after a restore (2.4), until the scan uses the comparing backend; needed before mainnet.</li>
 <li>Offline guessing of a weak wallet passphrase from a stolen or copied file (storage 3.3).</li>
 <li>Theft of unlocked keys.</li>
 <li>Relay rules that obstruct pre-signed transactions.</li>
@@ -6649,6 +6656,13 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <td><code>spec/local-api.md</code> 14.3 (<code>PUT /api/v1/signing</code>) and 24.2 item 46; PR #55 <code>core/node/api.c</code> (<code>cmd_signing</code>); PR #52 <code>core/node/lobbyslot.c</code> (<code>GZ_CMD_SIGNING_SET</code>)</td>
 <td>How a member's choice of signing mode reaches the core, and when</td>
 <td>Keep #52's immediate switch as the public command (and make it versioned), or keep both with one documented as the API's</td>
+</tr>
+<tr>
+<td>K35</td>
+<td><strong><code>lobby_left_out</code> is an attention item, tier <code>important</code>.</strong> A person whose seat was left out at a start (its keys could not be given) should see it, but it is not urgent</td>
+<td><code>spec/local-api.md</code> 11.4</td>
+<td>The attention list of a wallet restarted locked or without its signer</td>
+<td>It would be <code>heads_up</code> (told once), or not shown</td>
 </tr>
 <tr>
 <td>K36</td>

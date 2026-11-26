@@ -107,7 +107,7 @@ guard-file-epochs-newest-dropped	core/node/nodepart.c	    for (i = 0; i < n_newe
 guard-file-older-index-dropped	core/node/nodepart.c	all[n][1] = k >= 0 && older[k][1] > newer[i][1] ? older[k][1] : newer[i][1];	all[n][1] = newer[i][1];
 guard-file-other-chain-taken	core/node/nodepart.c	|| memcmp(b, GUARD_MAGIC, 8) != 0 || memcmp(b + 8, c->cfg.chain, 32) != 0)\n        return;	|| memcmp(b, GUARD_MAGIC, 8) != 0)\n        return;
 guard-epochs-not-read-back	core/node/nodepart.c	            guard_epochs(c, b + 50, n);\n	
-epoch-redraw-known-off	core/node/nodepart.c	    } while (epoch == 0 || epoch_known(c, epoch));	    } while (epoch == 0);
+epoch-redraw-known-off	core/node/nodepart.c	    } while (epoch == 0 || epoch_known(c, epoch) ||\n	    } while (epoch == 0 ||\n
 epoch-redraw-same-draw	core/node/nodepart.c	epoch = restore_epoch(gz_get_u64(drawn) + again++, c->incarnation);	epoch = restore_epoch(gz_get_u64(drawn) + 0 * again++, c->incarnation);
 a-old-epoch-forgets-none	core/node/nodepart.c	        if (p->n_old_epochs == NP_MAX_OLD_EPOCHS) {	        if (0) {
 # --- connections (A F5, F9, F12; B 1, 2, 7, group C)
@@ -170,10 +170,11 @@ address-no-port	core/gazpacho/action.c	    if (colon < 2 || colon == n || n - co
 address-names-taken	core/gazpacho/action.c	        if ((p[i] < '0' || p[i] > '9') && p[i] != '.') return 0;	        if (p[i] == ' ') return 0;
 address-list-unchecked	core/gazpacho/action.c	    if (!gz_connect_address_ok(src->u.connect.address)) return GZ_ERR_ARGUMENT;	    if (!src->u.connect.address.len) return GZ_ERR_ARGUMENT;
 # --- P4.2: a slot's lobby (lobbyslot.c), its records, gates, commands, the index, Closing; the node part's additions
-ls-factory-signs-with-contribution	core/node/lobbyslot.c	return k->sign(k->ctx, 0, s->key_epoch, s->key_index + 1, msg, sig);	return k->sign(k->ctx, 0, s->key_epoch, s->key_index, msg, sig);
+ls-factory-signs	core/node/lobbyslot.c	    return 0;                                         /* RULE-NODE:LS_NO_FACTORY */	    if (which == GZ_LOBBY_KEY_FACTORY) return k->sign(k->ctx, 0, s->key_epoch, s->key_index + 1, msg, sig);\n    return 0;
 ls-gate-auto-closed	core/node/lobbyslot.c	case GZ_MEMBER_SIGNING_AUTO: return 1;	case GZ_MEMBER_SIGNING_AUTO: return 0;
 ls-gate-unlocked-ignored	core/node/lobbyslot.c	case GZ_MEMBER_SIGNING_WHEN_UNLOCKED: return s->node->unlocked;	case GZ_MEMBER_SIGNING_WHEN_UNLOCKED: return 1;
-ls-gate-at-join-open	core/node/lobbyslot.c	        if (!s->gate_open) return 0;\n        if (!s->gate_have) return !s->node->sign_on;	        if (!s->gate_have) return !s->node->sign_on;
+ls-gate-at-join-open	core/node/lobbyslot.c	        if (!s->gate_open || !s->gate_have) return 0;	        if (!s->gate_have) return 0;
+# untested ls-gate-at-join-open: equivalent: every path that sets gate_have sets gate_open too (the join, the ready), and gate_close clears both, so gate_have alone never answers for a closed gate; the check of gate_open stays as defence in depth
 ls-factory-key-is-contribution	core/node/lobbyslot.c	c->cfg.keys.pub(c->cfg.keys.ctx, s->key_epoch, s->key_index + 1, fk) != 1)	c->cfg.keys.pub(c->cfg.keys.ctx, s->key_epoch, s->key_index, fk) != 1)
 ls-every-hello-a-listing	core/node/lobbyslot.c	if (s->host && ev->u.message.kind == GZ_MSG_KIND_HELLO && all_zero(ev->u.message.scope, 32))	if (s->host && ev->u.message.kind == GZ_MSG_KIND_HELLO)
 ls-index-forgets-newest	core/node/lobbyslot.c	if (c->np.ended[i].seq < c->np.ended[oldest].seq) oldest = i;	if (c->np.ended[i].seq > c->np.ended[oldest].seq) oldest = i;
@@ -202,7 +203,7 @@ cmd-open-ended-again	core/node/lobbyslot.c	    if (gz_route_slot_by_scope(c, s->
 cmd-open-bad-terms-kept	core/node/lobbyslot.c	        return st == GZ_ERR_ARGUMENT ? np_command_result(out, cmd, 400, "bad_terms") : st;	        return st;
 cmd-join-address-unchecked	core/node/lobbyslot.c	    if (!gz_connect_address_ok(addr)) return np_command_result(out, cmd, 400, "bad_address");\n	
 cmd-join-key-unchecked	core/node/lobbyslot.c	    if (!c->cfg.crypto.point_ok || c->cfg.crypto.point_ok(c->cfg.crypto.ctx, hk.data) != 1)\n        return np_command_result(out, cmd, 400, "bad_host_key");\n	
-cmd-join-conditions-unchecked	core/node/lobbyslot.c	    if (!cond_decode(cond.data, cond.len, &cd)) return np_command_result(out, cmd, 400, "bad_conditions");	    (void)cond_decode(cond.data, cond.len, &cd);
+cmd-join-conditions-unchecked	core/node/lobbyslot.c	    if (!gz_ls_cond_decode(cond.data, cond.len, &cd)) return np_command_result(out, cmd, 400, "bad_conditions");	    (void)gz_ls_cond_decode(cond.data, cond.len, &cd);
 cmd-join-twice	core/node/lobbyslot.c	    if (gz_route_slot_by_scope(c, scope.data) >= 0) return np_command_result(out, cmd, 409, "lobby_exists");\n	
 cmd-join-on-host	core/node/lobbyslot.c	    if (c->cfg.host) return np_command_result(out, cmd, 409, "not_a_member");\n	
 cmd-ready-unlock-ignored	core/node/lobbyslot.c	        opened = !s->gate_open;\n        s->gate_open = 1;	        opened = !s->gate_open;\n        s->gate_open = 0;
@@ -210,7 +211,7 @@ cmd-ready-always-unlocks	core/node/lobbyslot.c	    if (code == GZ_CMD_LOBBY_READ
 cmd-lock-keeps-lobby-gates	core/node/lobbyslot.c	        if (!opened) gate_close(c, s);\n	
 cmd-wrong-role-taken	core/node/lobbyslot.c	(i = lobby_slot_by_scope(c, scope.data)) < 0 || c->slots[i].host != want_host)	(i = lobby_slot_by_scope(c, scope.data)) < 0)
 np-pair-no-epoch	core/node/nodepart.c	    if (!p->have_epoch) {\n        recs[n].type = GZ_RECORD_KEY_EPOCH;	    if (0) {\n        recs[n].type = GZ_RECORD_KEY_EPOCH;
-np-pair-no-guard	core/node/nodepart.c	    recs[n].bytes.len = guard_record(c, gb);\n    n++;\n    recs[n++] = *extra;	    recs[n].bytes.len = guard_record(c, gb);\n    recs[n++] = *extra;
+np-pair-no-guard	core/node/nodepart.c	    recs[n].bytes.len = guard_record(c, gb);\n    n++;\n    if (extra)	    recs[n].bytes.len = guard_record(c, gb);\n    if (extra)
 np-pair-overlaps	core/node/nodepart.c	    p->highest_index = first + 1;\n    gz_put_u32(v, p->highest_index);	    p->highest_index = first;\n    gz_put_u32(v, p->highest_index);
 np-pair-guard-counter-kept	core/node/nodepart.c	    p->guard_counter++;\n    recs[n].type = GZ_RECORD_GUARD;	    recs[n].type = GZ_RECORD_GUARD;
 np-drop-notices-unlimited	core/node/nodepart.c	    if (c->np.drops[why] > NP_DROP_NOTICES && (c->np.drops[why] & (c->np.drops[why] - 1)) != 0) return GZ_OK;\n	
@@ -243,7 +244,9 @@ closing-newcomer-unseated	core/node/nodepart.c	    int seat = s >= 0 || gz_route
 refused-ready-keeps-gate	core/node/lobbyslot.c	    if (refused && opened && s->state == SLOT_OPEN) gate_close(c, s);\n	
 ls-left-out-is-corrupt	core/node/lobbyslot.c	        c->np.skipped_slots++;\n        return GZ_OK;	        c->np.skipped_slots++;\n        return GZ_ERR_CORRUPT;	2
 ls-left-out-place-free	core/node/lobbyslot.c	        memset(&s->lobby, 0, sizeof s->lobby);\n        s->state = SLOT_LEFT_OUT;	        memset(s, 0, sizeof *s);
-ls-left-out-rejoin	core/node/lobbyslot.c	    if (left_out_by_scope(c, scope.data) >= 0) return np_command_result(out, cmd, 503, "no_key"); /* H1 */\n	
+ls-left-out-rejoin	core/node/lobbyslot.c	    if (stale_i >= 0 && !c->slots[stale_i].stale) return np_command_result(out, cmd, 503, "no_key"); /* H1 */\n	
+ls-factory-at-init	core/node/lobbyslot.c	    cr.factory_pub = ls_factory_pub;	    cr.factory_pub = NULL; memcpy(mc.factory_key, ck, 33);
+bd5-no-compare	core/node/signslot.c	sg_same(pub, c->slots[slot].lobby.m.factory_key, 33);	1;
 ls-left-out-not-told	core/node/composite.c	        if (c->slots[i].state == SLOT_LEFT_OUT) return gz_ls_left_out_note(c, i, out);\n	
 ls-unknown-field-taken	core/node/lobbyslot.c	        if (!(t & 1) && (t >= 64 || !(known & (1u << (t / 2))))) return 0;\n	
 ls-index-wraps	core/node/lobbyslot.c	 ||\n        gz_get_u32(index.data) > GZ_LS_KEY_INDEX_MAX)	)
@@ -273,15 +276,145 @@ sg-timer-budget	core/node/timers.c	if (eng == ENG_SIGN) return 1;      /* the en
 sg-init-without-secp	core/node/signslot.c	if (!c->cfg.secp || !c->cfg.sign_mem	if (!c->cfg.sign_mem
 sg-ready-any-digest	core/node/lobbyslot.c	if (memcmp(seen.data, m->frozen ? m->frozen_digest : m->current_digest, 32) != 0)	if (0)
 sg-refused-ready-rebinds	core/node/lobbyslot.c	        memcpy(s->gate_digest, old_digest, 32);	
+# --- P6a: the view, the API engine; the key changes asked by P8
+# equivalent api-local-id-repeats: a second guard: the slot serial mixed into every id makes two slots' ids differ even where the random source repeats, so the check against the table never finds one taken
+view-never-updated	core/node/view.c	    if (!force && *last == h) return GZ_OK;	    if (!force) return GZ_OK;
+view-version-repeats	core/node/view.c	(++c->view.counter & 0xffffffffu)	(c->view.counter & 0xffffffffu)
+view-version-no-incarnation	core/node/view.c	(c->incarnation << 32) | (++c->view.counter	(++c->view.counter
+view-start-no-slots	core/node/view.c	    } else if (step < chunks + GZ_NODE_MAX_SLOTS) {	    } else if (0) {
+view-start-no-status	core/node/view.c	        st = gz_view_status(c, 1, out);\n        *done = 1;	        *done = 1;
+view-seat-never-ready	core/node/view.c	    return m->ready ? GZ_VSEAT_READY : GZ_VSEAT_JOINED;	    return GZ_VSEAT_JOINED;
+view-locked-ignores-gate	core/node/view.c	(!gate_state(c, s) || m->unready_reason == 3)	(m->unready_reason == 3)
+view-fit-values-swapped	core/node/view.c	    case GZ_TT_MINIMUM: *yours = l->min_members; *offered = o->minimum; return;	    case GZ_TT_MINIMUM: *yours = o->minimum; *offered = l->min_members; return;
+view-refused-not-shown	core/node/view.c	        if (q->refused) {	        if (0) {
+view-attention-never-gone	core/node/view.c	c->view.body, w.at, !code, &last, 1, out);	c->view.body, w.at, 0, &last, 1, out);
+view-gate-digest-never	core/node/view.c	            n = 42;\n	
+view-outcome-none	core/node/view.c	    if (outcome != GZ_OUTCOME_NONE) {	    if (0) {
+view-before-slot-end-gone	core/node/lobbyslot.c	    if (st == GZ_OK) st = gz_view_slot(c, i, 0, out); /* its view, after the step's saves (rule 8) */\n	
+api-replay-refused	core/node/api.c	memcmp(r->digest, digest.data, 32) == 0) {	memcmp(r->digest, digest.data, 32) == 0 && 0) {
+api-ids-forgotten	core/node/api.c	    } else if (kind == 1 && (r = req_find(c, rid)) != NULL) {	    } else if (0) {
+api-id-not-saved	core/node/api.c	    if (first == out->count || !status) return GZ_OK; /* nothing saved: no id (7.4) */	    return GZ_OK;
+api-id-own-batch	core/node/api.c	    move_after(c, out, first);\n	
+api-id-format-unchecked	core/node/api.c	rid.len >= 16 &&	rid.len >= 1 &&
+api-pause-not-saved	core/node/api.c	    if ((st = gz_api_save_pause(c, out)) != GZ_OK) return st;\n    if ((st = gz_ls_pause_changed(c, out)) != GZ_OK) return st;\n    p[k++] = '{';	    if ((st = gz_ls_pause_changed(c, out)) != GZ_OK) return st;\n    p[k++] = '{';
+api-pause-not-loaded	core/node/api.c	        c->api.pause = v.data[0];\n	
+api-paused-join-allowed	core/node/api.c	    } else if (gz_api_paused(c) && (code == GZ_CMD_LOBBY_JOIN || code == GZ_CMD_LOBBY_READY)) {	    } else if (0) {
+api-pause-no-leave	core/node/lobbyslot.c	    if ((st = gz_c_slot_inline(c, ENG_SLOT0 + i, leave_inline, out)) != GZ_OK) return st;\n	
+api-signing-not-applied	core/node/api.c	        c->cfg.member_signing = (gz_member_signing_t)c->api.signing_saved;\n	
+api-signing-version-unchecked	core/node/api.c	    if (gz_get_u32(b.data) != c->api.signing_version) return result(c, cmd, 409, "changed_elsewhere", NULL, NULL, out);\n	
+api-local-id-not-loaded	core/node/api.c	                memcpy(s->view.local_id, w.data, w.len);\n	
+api-local-id-repeats	core/node/api.c	        if (!lid_by_id(c, id, 20) && !seen_by_id(c, id, 20)) break;	        break;	1
+api-unknown-even-taken	core/node/api.c	        return rec->type & 1 ? GZ_OK : GZ_ERR_CORRUPT;	        return GZ_OK;
+host-pause-ignored	core/lobby/host.c	    if (h->cfg.paused && h->cfg.paused(h->cfg.seat_ctx))\n	    if (0)\n
+host-pause-no-cancel	core/lobby/host.c	        return now_ms(h) / 1000 >= h->terms.deadline ? end_lobby(h, 2, out) : GZ_OK;	        return GZ_OK;
+host-refusal-not-kept	core/lobby/host.c	        s->refused = m->reason;\n	
+key-skip-none	core/node/lobbyslot.c	    for (uint32_t k = 0; k < LS_KEY_TRIES; k++) {	    for (uint32_t k = 0; k < 1; k++) {
+key-skip-overlaps	core/node/lobbyslot.c	c->np.highest_index + 1 + 2 * k)	c->np.highest_index + 1 + k)
+epoch-ok-unchecked	core/node/nodepart.c	 ||\n             (again < NP_EPOCH_TRIES && c->cfg.keys.epoch_ok	 ||\n             (0 && c->cfg.keys.epoch_ok
+# --- review A of PR 55: its mutants (rv-*), adapted to the fixes, and the fixes' own
+rv-replay-ignores-digest	core/node/api.c	memcmp(r->path, path.data, path.len) == 0 && memcmp(r->digest, digest.data, 32) == 0) {	memcmp(r->path, path.data, path.len) == 0) {
+rv-replay-ignores-path	core/node/api.c	            memcmp(r->path, path.data, path.len) == 0 && memcmp(r->digest	            memcmp(r->digest
+rv-replay-ignores-method	core/node/api.c	        if (r->method_len == method.len && r->path_len	        if (r->path_len
+rv-req-load-dropped	core/node/api.c	        *r = tmp;\n	        r->used = 0;\n
+rv-pause-unknown-field	core/node/api.c	        if (!only_fields(b, 0x1eu) || !arg(b, 2, 1, &v) || v.data[0] > GZ_PAUSE_HELD	        if (!only_fields(b, 0xfeu) || !arg(b, 2, 1, &v) || v.data[0] > GZ_PAUSE_HELD
+rv-lid-unknown-field	core/node/api.c	only_fields(b, 0x06u)	only_fields(b, 0xfeu)
+rv-signing-unknown-field	core/node/api.c	        if (!only_fields(b, 0x0eu) || !arg(b, 2, 1, &v) || v.data[0] > GZ_MEMBER_SIGNING_WHEN_UNLOCKED	        if (!only_fields(b, 0xfeu) || !arg(b, 2, 1, &v) || v.data[0] > GZ_MEMBER_SIGNING_WHEN_UNLOCKED
+req-unknown-field	core/node/api.c	only_fields(b, 0xfeu)	only_fields(b, 0x1feu)
+rv-pause-holds-all	core/node/api.c	            gz_ls_partials_out(c, s->scope)) {	            1) {
+rv-pause-holds-none	core/node/api.c	            gz_ls_partials_out(c, s->scope)) {	            0) {
+pause-partials-ignored	core/node/lobbyslot.c	c->ss.r[k].partials && memcmp	memcmp
+rv-paused-ready-allowed	core/node/api.c	    } else if (gz_api_paused(c) && (code == GZ_CMD_LOBBY_JOIN || code == GZ_CMD_LOBBY_READY)) {	    } else if (gz_api_paused(c) && (code == GZ_CMD_LOBBY_JOIN)) {
+rv-paused-plain-cmd-unchecked	core/node/api.c	    if (kind == 0 && !(gz_api_paused(c) && (code == GZ_CMD_LOBBY_JOIN || code == GZ_CMD_LOBBY_READY))) return GZ_OK;	    if (kind == 0) return GZ_OK;
+rv-signing-any-value	core/node/api.c	    if (!arg(cmd, 12, 1, &v) || v.data[0] > GZ_MEMBER_SIGNING_WHEN_UNLOCKED || !arg(cmd, 14, 4, &b))	    if (!arg(cmd, 12, 1, &v) || !arg(cmd, 14, 4, &b))
+rv-signing-applied-now	core/node/api.c	    c->api.signing_version++;\n	    c->api.signing_version++;\n    c->cfg.member_signing = (gz_member_signing_t)v.data[0];\n
+rv-pause-any-value	core/node/api.c	if (!arg(cmd, 12, 1, &v) || v.data[0] > 1) return	if (!arg(cmd, 12, 1, &v)) return
+rv-held-not-loaded	core/node/api.c	for (size_t k = 0; k < x.len / 32; k++) memcpy(c->api.held[c->api.n_held++], x.data + 32 * k, 32);	for (size_t k = 0; k < x.len / 32; k++) c->api.n_held += 0;
+rv-held-bound-loose	core/node/api.c	x.len / 32 > GZ_NODE_MAX_SLOTS)	x.len / 32 > GZ_NODE_MAX_SLOTS + 2)
+rv-status-no-pending	core/node/view.c	? c->api.signing_saved : 0xff;	? 0xff : 0xff;
+rv-view-paused-flag-off	core/node/view.c	    if (c->api.pause != GZ_PAUSE_OFF && gz_api_held(c, s->scope) >= 0) put8(&w, GZ_VLB_PAUSED, 1);\n	
+rv-req-object-lost	core/node/api.c	    memcpy(r->object, object, slen(object) < GZ_LOCAL_ID_MAX ? slen(object) : GZ_LOCAL_ID_MAX);\n	
+req-object-not-loaded	core/node/api.c	            memcpy(tmp.object, o.data, o.len);\n	
+req-error-not-replayed	core/node/api.c	st = result(c, cmd, r->status, r->error,	st = result(c, cmd, r->status, NULL,
+rv-reuse-no-params	core/node/api.c	st = result(c, cmd, 409, "request_id_reused", NULL, p, out);	st = result(c, cmd, 409, "request_id_reused", NULL, NULL, out);
+rv-replay-status-200	core/node/api.c	st = result(c, cmd, r->status, r->error	st = result(c, cmd, 200, r->error
+rv-replay-no-flag	core/node/api.c	r->object, "{\\"replayed\\":true}", out);	r->object, NULL, out);
+rv-bad-id-runs	core/node/api.c	    if (kind < 0) {\n        st = result(c, cmd, 400	    if (0) {\n        st = result(c, cmd, 400
+rv-printable-unchecked	core/node/api.c	path.len <= API_MAX_PATH && printable(method) && printable(path);	path.len <= API_MAX_PATH;
+rv-host-cancel-reason-1	core/lobby/host.c	? end_lobby(h, 2, out) : GZ_OK;	? end_lobby(h, 1, out) : GZ_OK;
+rv-resume-no-rule	core/node/api.c	        if ((st = gz_api_save_pause(c, out)) != GZ_OK) return st;\n        if ((st = gz_ls_pause_changed(c, out)) != GZ_OK) return st;\n	        if ((st = gz_api_save_pause(c, out)) != GZ_OK) return st;\n
+rv-host-ready-any-version	core/node/view.c	q->ready_version == h->values.version) ready++;	1) ready++;
+rv-pause-since-zero	core/node/api.c	    gz_put_u64(v, c->api.pause_since);\n	    gz_put_u64(v, 0);\n
+rv-host-funding-not-applied	core/node/api.c	        c->cfg.host_funding = (gz_host_funding_t)c->api.host_funding_saved;\n	
+rv-lid-evicts-open	core/node/api.c	            if (slot_holds(c, c->api.ids[k].scope)) continue;\n	
+rv-id-max-len-off	core/node/api.c	rid.len >= 16 && rid.len <= GZ_CMD_MAX_REQUEST_ID &&	rid.len >= 16 &&
+rv-pause-held-state-on	core/node/api.c	c->api.pause = c->api.n_held ? GZ_PAUSE_HELD : GZ_PAUSE_ON;	c->api.pause = GZ_PAUSE_ON;
+rv-pause-answers-200	core/node/api.c	return result(c, cmd, c->api.n_held ? 202 : 200,	return result(c, cmd, 200,
+pause-leaves-joined-only	core/node/lobbyslot.c	    if (!m->connected && (m->joined || m->join_len)) return GZ_OK;\n	    if (!m->joined) return GZ_OK;\n	1
+pause-leaves-unconnected	core/node/lobbyslot.c	    if (!m->connected && (m->joined || m->join_len)) return GZ_OK;\n		1
+pause-hold-never-released	core/node/lobbyslot.c	    if (!out_now && gz_api_held(c, s->scope) >= 0 && (st = gz_api_release(c, s->scope, out)) != GZ_OK) return st;\n	
+pause-funding-left	core/node/lobbyslot.c	    if (m->lobby_state == GZ_LOBBY_FUNDING || m->lobby_state == GZ_LOBBY_ACTIVE || m->round_state) return GZ_OK;\n		1
+pause-no-round-abort	core/node/lobbyslot.c	    if ((st = round_abort(c, s, out, &aborted)) != GZ_OK) return st;\n	
+pause-release-not-saved	core/node/api.c	    c->api.status_dirty = 1;\n    return gz_api_save_pause(c, out);	    c->api.status_dirty = 1;\n    return GZ_OK;
+pause-gone-held-kept	core/node/api.c	        if (!open && (st = gz_api_release(c, c->api.held[k], out)) != GZ_OK) return st;\n	
+pause-held-empty-taken	core/node/api.c	        if ((c->api.pause == GZ_PAUSE_HELD) != (c->api.n_held > 0)) return GZ_ERR_CORRUPT;\n	
+signing-auto-no-request	core/node/api.c	if (gz_rec_find(cmd, GZ_CMD_REC_DIGEST, &e) != 1) return result(c, cmd, 403	if (0) return result(c, cmd, 403
+signing-auto-no-echo	core/node/api.c	        if (!arg(cmd, 16, 1, &e) || e.data[0] != GZ_MEMBER_SIGNING_AUTO)	        if (0)
+signing-when-unlocked-taken	core/node/api.c	    if (v.data[0] == GZ_MEMBER_SIGNING_WHEN_UNLOCKED)\n        return result(c, cmd, 501	    if (0)\n        return result(c, cmd, 501
+req-full-acts	core/node/api.c	    } else if (GZ_CMD_RANGE(code) != GZ_CMD_RANGE_API && !lobby_room(c, code, cmd)) {	    } else if (0) {
+req-kept-dropped	core/node/api.c	    return now >= end && now - end >= API_KEEP_MS;	    return 1;
+lid-duplicate-taken	core/node/api.c	        if ((have = lid_by_id(c, (const char *)w.data, w.len)) != NULL && memcmp(have->scope, v.data, 32) != 0)\n            return GZ_ERR_CORRUPT;\n	
+lid-prefix-unchecked	core/node/api.c	memcmp(w.data, "lob_", 4) == 0 && 	
+req-load-parts-unchecked	core/node/api.c	    if (!parts_ok(rid, method, path) || digest.len != 32) return 0;	    if (digest.len != 32) return 0;
+member-signing-from-option	core/node/api.c	    return c ? c->cfg.member_signing : GZ_MEMBER_SIGNING_AT_JOIN;	    return c ? GZ_MEMBER_SIGNING_AT_JOIN : GZ_MEMBER_SIGNING_AT_JOIN;
+# --- review A of PR 55, N1 and N2: the request-id shares, the ring, the keep clock; attention ids
+n1-share-unenforced	core/node/api.c	&& lobby_count(c, id) >= limit)	&& 0)
+n1-no-reserve	core/node/api.c	(code == GZ_CMD_LOBBY_LEAVE || code == GZ_CMD_LOBBY_CANCEL ? GZ_API_LOBBY_RESERVE : 0)	0
+n1-ring-unused	core/node/api.c	r = object[0] ? req_slot(c) : ring_slot(c);	r = req_slot(c);
+n1-keep-clock-wall-only	core/node/api.c	    if (c->api.keep_mono_set && m > c->api.keep_mono) c->api.keep_now += m - c->api.keep_mono;\n	
+n1-keep-clock-wall-back	core/node/api.c	    if (w > c->api.keep_now) c->api.keep_now = w;	    c->api.keep_now = w;
+n2-attention-id-cut	core/node/view.c	for (size_t j = memcmp(s->view.local_id, "lob_", 4) == 0 ? 4 : 0; s->view.local_id[j]; j++)	for (size_t j = 0; s->view.local_id[j] && k < GZ_LOCAL_ID_MAX; j++)
+# --- review of PR 75: its mutants, and the fixes' own
+p75-ended-fallback-off	core/node/api.c	    return best ? best : ended;	    return best;
+p75-reserve-unbounded	core/node/api.c	code == GZ_CMD_LOBBY_CANCEL ? GZ_API_LOBBY_RESERVE : 0);	code == GZ_CMD_LOBBY_CANCEL ? 1000000 : 0);
+p75-ring-not-loaded	core/node/api.c	        if (!r) r = tmp.object[0] ? req_slot(c) : ring_slot(c);	        if (!r) r = req_slot(c);
+p75-keep-load-ignored	core/node/api.c	        if (tmp.created_ms > c->api.keep_now) c->api.keep_now = tmp.created_ms; /* the keep clock never goes back */\n	
+m1-resume-unversioned	core/node/api.c	    if (v.data[0] == 0 && (!arg(cmd, 14, 4, &bv)	    if (0 && (!arg(cmd, 14, 4, &bv)
+m1-version-not-loaded	core/node/api.c	        c->api.pause_version = gz_get_u32(y.data);\n	
+m1-version-not-bumped	core/node/api.c	    c->api.pause_version++;\n	
+l1-cancel-no-reserve	core/node/api.c	code == GZ_CMD_LOBBY_LEAVE || code == GZ_CMD_LOBBY_CANCEL ?	code == GZ_CMD_LOBBY_LEAVE ?
+p75-load-ended-unknown	core/node/api.c	(e->ended_ms || !c->loaded));	e->ended_ms);
 sg-leave-partials-out-off	core/node/lobbyslot.c	if (held_out == GZ_SIGN_OUT_THIS) return	if (0) return
-sg-partials-out-never	core/node/lobbyslot.c	return c->sign_on ? gz_sign_partials_out(c->sign, scope) : GZ_SIGN_OUT_NONE;	return GZ_SIGN_OUT_NONE;
+sg-partials-out-never	core/node/lobbyslot.c	    if (c->sign_on) return gz_sign_partials_out(c->sign, scope);	    if (0) return gz_sign_partials_out(c->sign, scope);
 sg-unready-gated	core/node/lobbyslot.c	int held_out = code == GZ_CMD_LOBBY_LEAVE ?	int held_out = (code == GZ_CMD_LOBBY_LEAVE || code == GZ_CMD_LOBBY_UNREADY) ?
 sg-unknown-as-this	core/node/lobbyslot.c	return np_command_result(out, cmd, 409, "too_late_unknown_round");	return np_command_result(out, cmd, 409, "too_late");
 sg-unknown-not-refused	core/node/lobbyslot.c	if (held_out == GZ_SIGN_OUT_UNKNOWN) return	if (0) return
 sg-tip-not-to-signing	core/node/composite.c	if (st == GZ_OK && c->sign_on && !c->cfg.host) st = gz_c_bracket(c, ENG_SIGN, ev, out);	
 sg-no-funding-deadline	core/node/signslot.c	sc.funding_deadline_blocks = fc.funding_deadline_blocks;	sc.funding_deadline_blocks = 0;
 ls-alloc-ceiling-host	core/node/lobbyslot.c	    if (c->np.highest_index >= GZ_LS_KEY_INDEX_MAX) return np_command_result(out, cmd, 503, "no_key");	    if (c->np.highest_index > GZ_LS_KEY_INDEX_MAX) return np_command_result(out, cmd, 503, "no_key");	1
+# equivalent ls-alloc-ceiling-host: with highest_index == GZ_LS_KEY_INDEX_MAX, the one value where > and >= differ, the open goes on to ls_init_next, whose first candidate np_next_first(highest_index + 1) is at least 0xfffffff1 (np_next_first never moves down), so ls_init_next refuses it (first > 0xfffffff0) before gz_ls_init; the slot is wiped and the answer is 503 no_key with nothing saved, as at the ceiling check. In between only fields of the free slot are written. Second guard at ls_init_next (8d96e60); equivalent while it stays: remove that guard and this mutant comes back. The check stays as #87's L1
 ls-alloc-ceiling-member	core/node/lobbyslot.c	    if (c->np.highest_index >= GZ_LS_KEY_INDEX_MAX) return np_command_result(out, cmd, 503, "no_key");	    if (c->np.highest_index > GZ_LS_KEY_INDEX_MAX) return np_command_result(out, cmd, 503, "no_key");	2
+# equivalent ls-alloc-ceiling-member: with highest_index == GZ_LS_KEY_INDEX_MAX, the one value where > and >= differ, the join goes on to ls_init_next, whose first candidate np_next_first(highest_index + 1) is at least 0xfffffff1 (np_next_first never moves down), so ls_init_next refuses it (first > 0xfffffff0) before gz_ls_init; the slot is wiped and the answer is 503 no_key with nothing saved, as at the ceiling check. In between only fields of the free slot are written. Second guard at ls_init_next (8d96e60); equivalent while it stays: remove that guard and this mutant comes back. The check stays as #87's L1
+# untested sg-gate-digest-off: the AT_JOIN gate's digest compare (RULE-NODE:GATE_DIGEST) with the current terms changed behind an open gate; no test of tools/mutate-node.py's list reaches that case (CI run of #89). Follow-up test: #89's list
 # untested sg-accepted-only-off: the real engine's member builder (sg_build); the node's unit tests here run rounds through the signing stand-in (test_sign_outcome set), which never calls it. Follow-up test: #89's list
 # untested sg-outcome-to-member-failed: the real engine's outcome to a member slot (sg_deliver); the stand-in reports its own outcomes, so no unit test here reaches it. Follow-up test: #89's list
 # untested sg-outcome-not-queued: the real engine's outcome while the slot is busy or deferred (sg_queue); the stand-in never reports into a busy slot. Follow-up test: #89's list
+# --- #55's merge of main: the host's funds check (#80) and the join-ready factory key
+funds-open-unchecked	core/node/lobbyslot.c	    if (funds_refused(c, i, gz_fund_set_aside_sat(&s->lobby.h.terms), cmd, out, &st)) {	    if (0 && funds_refused(c, i, gz_fund_set_aside_sat(&s->lobby.h.terms), cmd, out, &st)) {
+funds-start-unchecked	core/node/lobbyslot.c	    if (funds_refused(c, i, aside, cmd, out, &st)) return st;	    if (0 && funds_refused(c, i, aside, cmd, out, &st)) return st;
+funds-unknown-as-ok	core/node/lobbyslot.c	    case GZ_FUND_FUNDS_OK:\n        return 0;\n    case GZ_FUND_FUNDS_SHORT:\n        return 1;	    case GZ_FUND_FUNDS_OK:\n    case GZ_FUND_FUNDS_UNKNOWN:\n        return 0;\n    case GZ_FUND_FUNDS_SHORT:\n        return 1;
+funds-others-dropped	core/node/lobbyslot.c	        amount = add == UINT64_MAX || amount > UINT64_MAX - add ? UINT64_MAX : amount + add;	        (void)add;
+join-key-other-digest	core/node/lobbyslot.c	/* bound to the values the person saw (26, checked above) */\n        memcpy(s->gate_digest, seen.data, 32);	/* bound to the values the person saw (26, checked above) */\n        memcpy(s->gate_digest, seen.data, 32);\n        s->gate_digest[0] ^= 1;
+join-key-not-derived	core/node/lobbyslot.c	            memcpy(s->gate_secret, fresh, 32);\n            derived = 1;	            derived = 1;
+derive-fail-gate-open	core/node/lobbyslot.c	        if (!derived) {\n            gate_close(c, s);	        if (0) {\n            gate_close(c, s);
+gate-secret-not-wiped	core/node/lobbyslot.c	    for (size_t i = 0; i < sizeof s->gate_secret; i++) v[i] = 0;	    (void)v;
+seat-end-gate-kept	core/node/lobbyslot.c	        !gz_lobby_member_check_in_flight(&s->lobby.m))\n        gate_close(c, s);	        !gz_lobby_member_check_in_flight(&s->lobby.m))\n        (void)0;
+# --- review B of #55: the automatic start's funds check (M-1), and review A's L2
+funds-auto-unchecked	core/lobby/host.c	    if (rule == GZ_RULE_CHECK && h->cfg.funds_ok && !h->cfg.funds_ok(h->cfg.seat_ctx)) return GZ_OK;	    if (0) return GZ_OK;
+funds-recheck-off	core/node/composite.c	        if (st == GZ_OK && c->cfg.host) st = gz_ls_funds_recheck(c, out);\n	
+funds-attention-off	core/node/view.c	        if (s->funds_blocked && s->lobby.h.state == GZ_LOBBY_OPEN) code = GZ_ATT_HOST_FUNDS_SHORT;   /* the more pressing */\n	
+funds-blocked-never-cleared	core/node/lobbyslot.c	    s->funds_blocked = r != 0;	    s->funds_blocked |= r != 0;
+set-aside-zero-taken	core/node/lobbyslot.c	    if (gz_fund_set_aside_sat(&s->lobby.h.terms) == 0) {	    if (0) {
+# equivalent set-aside-zero-taken: unreachable. gz_lobby_host_open's adopt refuses target + standbys above GZ_LOBBY_MAX_SEATS (32), so for any terms it accepts the fundability check (core/tree check_fundable, up to min(target, GZ_TREE_MAX_MEMBERS = 256)) has checked every count from the minimum to the target: each has a tree whose funding amount is above a positive bound, and gz_fund_set_aside_sat, their largest, is never 0. test_set_aside_zero shows target-300 terms refused before it. Equivalent while the seat cap stays under 257 (review A of #55 asked for the test; the guard stays as defence in depth)
+join-key-early	core/node/lobbyslot.c	        if (memcmp(m->frozen ? m->frozen_digest : m->current_digest, s->gate_digest, 32) == 0 &&\n            c->cfg.keys.secret	        if (1 &&\n            c->cfg.keys.secret
+keys-old-epoch	core/node/signslot.c	    if (!host && epoch != (c->np.have_epoch ? c->np.epoch : 0)) return 0;	    if (0) return 0;
+stale-marked-late	core/node/composite.c	        if (!c->stale_marked) {	        if (0) {

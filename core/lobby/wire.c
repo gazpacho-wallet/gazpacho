@@ -73,10 +73,10 @@ typedef struct { uint16_t kind; uint8_t type; uint32_t min, max; uint8_t req; } 
 static const row_t ROWS[] = {
     {GZ_KIND_TERMS_OFFER, 2, 1, GZ_TERMS_OUTER_MAX, 1}, FIX(GZ_KIND_TERMS_OFFER, 4, 64, 1),
     {GZ_KIND_TERMS_OFFER, 6, 1, GZ_TERMS_CURRENT_MAX, 1}, FIX(GZ_KIND_TERMS_OFFER, 8, 64, 1),
-    FIX(GZ_KIND_JOIN, 2, 33, 1), FIX(GZ_KIND_JOIN, 4, 64, 1), FIX(GZ_KIND_JOIN, 6, 64, 1),
-    {GZ_KIND_JOIN, 7, 1, 32, 0},
+    {GZ_KIND_JOIN, 7, 1, 32, 0},   /* K1: no factory key and no binding in a join */
     FIX(GZ_KIND_READY, 2, 32, 1), FIX(GZ_KIND_READY, 4, 4, 1), FIX(GZ_KIND_READY, 6, 32, 1),
-    FIX(GZ_KIND_READY, 8, 32, 0), FIX(GZ_KIND_READY, 11, 2, 0), FIX(GZ_KIND_READY, 240, 64, 1),
+    FIX(GZ_KIND_READY, 8, 32, 0), FIX(GZ_KIND_READY, 11, 2, 0), FIX(GZ_KIND_READY, 12, 33, 1),
+    FIX(GZ_KIND_READY, 14, 64, 1), FIX(GZ_KIND_READY, 240, 64, 1),
     FIX(GZ_KIND_UNREADY, 1, 2, 0), FIX(GZ_KIND_LEAVE, 1, 2, 0),
     FIX(GZ_KIND_LOBBY_STATUS, 2, 1, 1), FIX(GZ_KIND_LOBBY_STATUS, 4, 1, 1),
     FIX(GZ_KIND_LOBBY_STATUS, 6, 4, 1), FIX(GZ_KIND_LOBBY_STATUS, 8, 2, 1),
@@ -111,9 +111,6 @@ static void set_field(gz_lobby_msg_t *m, uint8_t type, const uint8_t *v, size_t 
     case GZ_KIND_TERMS_OFFER * 256 + 4: m->outer_sig = v; break;
     case GZ_KIND_TERMS_OFFER * 256 + 6: m->current = v; m->current_len = n; break;
     case GZ_KIND_TERMS_OFFER * 256 + 8: m->current_sig = v; break;
-    case GZ_KIND_JOIN * 256 + 2: m->factory_key = v; break;
-    case GZ_KIND_JOIN * 256 + 4: m->bind_by_factory = v; break;
-    case GZ_KIND_JOIN * 256 + 6: m->bind_by_contribution = v; break;
     case GZ_KIND_JOIN * 256 + 7: m->display_name = v; m->display_name_len = n; break;
     case GZ_KIND_READY * 256 + 2: m->outer_digest = v; break;
     case GZ_KIND_READY * 256 + 4: case GZ_KIND_READY_CHECK * 256 + 4:
@@ -121,6 +118,8 @@ static void set_field(gz_lobby_msg_t *m, uint8_t type, const uint8_t *v, size_t 
     case GZ_KIND_READY * 256 + 6: case GZ_KIND_READY_CHECK * 256 + 6: m->current_digest = v; break;
     case GZ_KIND_READY * 256 + 8: m->check_id = v; m->has_check_id = 1; break;
     case GZ_KIND_READY * 256 + 11: m->min_members = (uint16_t)gz_lw_get(v, 2); m->has_min_members = 1; break;
+    case GZ_KIND_READY * 256 + 12: m->factory_key = v; break;
+    case GZ_KIND_READY * 256 + 14: m->bind_by_contribution = v; break;
     case GZ_KIND_UNREADY * 256 + 1: case GZ_KIND_LEAVE * 256 + 1: case GZ_KIND_LOBBY_STATUS * 256 + 13:
         m->reason = (uint16_t)gz_lw_get(v, 2); m->has_reason = 1; break;
     case GZ_KIND_CANCEL * 256 + 2: m->reason = (uint16_t)gz_lw_get(v, 2); break;

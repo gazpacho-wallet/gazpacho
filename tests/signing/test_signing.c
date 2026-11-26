@@ -21,7 +21,7 @@
 static int g_quick;
 /* The digest of fixed-generator outputs (test_definitions). After an intended
  * change: run "test_signing known", check, update. */
-#define KNOWN_ANSWERS 0x454b827cf3174a74ull   /* re-pinned in P4.3: messages as envelopes on links, record 7 */
+#define KNOWN_ANSWERS 0x52df0057f4ee7cf6ull   /* re-pinned for K1: the 130-byte round_propose participant entry */
 
 typedef struct {
     int done;                   /* the host's newest round has every ack */
@@ -982,22 +982,22 @@ static void test_definitions(int print)
  * and attempt, keys come per round from the hook, and the saved round state
  * changed (composite-node.md, P4.3 as built). */
 static const uint64_t SC_KNOWN[N_SCENARIOS] = {
-    0x45548b768d0a8386ull, /* honest-1 */
-    0xf01d80b08eb52c90ull, /* honest-2 */
-    0x7800225d56ce9758ull, /* duplicates */
-    0x83ef3cab569d54e8ull, /* member-restart-nonces */
-    0x6b2625ca716d0324ull, /* member-restart-signed */
-    0xb997a6ef069ccf2bull, /* tier-abort */
-    0x502588be87f931f6ull, /* host-restarts */
-    0x08fbf04f6371a87aull, /* timers */
-    0x2a509d772a16d64cull, /* host-faults */
-    0xba0523ba0d0f198dull, /* member-faults */
-    0x26763a4407e303deull, /* proposals */
-    0x4304cec468f9924cull, /* journal */
-    0xdc7b1ddd96cb598bull, /* edges */
-    0x5cce5782b67c4137ull, /* reconnect */
-    0x0ad763eb119c9e23ull, /* records */
-    0x0fcfba8e29684c90ull, /* exposure */
+    0xba56be8e0fc3c8acull, /* honest-1 */
+    0x86364d8a762741c4ull, /* honest-2 */
+    0x1f38a59f64245e8eull, /* duplicates */
+    0xf87cbd536e629712ull, /* member-restart-nonces */
+    0xecc007504c66932bull, /* member-restart-signed */
+    0x3896fd65e728fe22ull, /* tier-abort */
+    0xbbf3cededf317d5eull, /* host-restarts */
+    0xdc470f75d64a6c5aull, /* timers */
+    0x13dc2560a06e191full, /* host-faults */
+    0x55040ec913bb4beaull, /* member-faults */
+    0x534232d7c17ff31bull, /* proposals */
+    0xfba718d7fd8a3603ull, /* journal */
+    0xb8234a6e14f76fdeull, /* edges */
+    0x54cbedf7c060150bull, /* reconnect */
+    0xefef508acd090bc3ull, /* records */
+    0xbd9fc71f16c9f956ull, /* exposure */
 };
 
 static void test_golden(int print)

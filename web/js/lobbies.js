@@ -22,7 +22,7 @@
       return r;
     }, function (e) {
       gz.app.busy = Math.max(0, gz.app.busy - 1);
-      if (e.code !== "node_busy" && e.code !== "unreachable" && e.code !== "node_stopped" && e.code !== "cancelled") delete rids[key];
+      if (e.code !== "node_busy" && e.code !== "view_pending" && e.code !== "request_in_progress" && e.code !== "unreachable" && e.code !== "node_stopped" && e.code !== "cancelled") delete rids[key];
       throw e;
     });
   }
@@ -295,7 +295,7 @@
       ]),
       ask ? ui.notice("", "Joining is your consent.", "When the lobby starts, the app signs for the terms you readied for, without asking again. If anything then differs from what you see here, it refuses before sending anything.")
         : ui.notice("", "Joining is your consent.", "When the lobby starts, the app signs by itself, without asking again. If anything then differs from what you see here, it refuses before sending anything."),
-      ask ? h("p", { class: "small", id: "join-gate-words" }, "Joining ready asks for your passphrase. " + W.signing.at_join) : null,
+      ask ? h("p", { class: "small", id: "join-gate-words" }, "Joining ready asks for your password. " + W.signing.at_join) : null,
       cls === "does_not_fit" ? ui.notice("bad", "Join is off: this lobby does not fit your conditions.", why.join(" ")) : null,
       cls === "fits_only_now" ? ui.notice("warn", "Join is off: this lobby fits only now.", "The host may move a value outside your limits before the start. " + why.join(" ")) : null,
       l.stage !== "open" ? ui.notice("warn", "This lobby is not open for joining any more.") : null,
