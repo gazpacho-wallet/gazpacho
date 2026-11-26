@@ -114,7 +114,7 @@ def main():
         h = w.host()
         if not check(started(h) and w.hkey is not None, "the host starts on signet"):
             return check.result("program_slice1_signet", work)
-        m = h.wait_for(r"wallet-coins count=(\d+) total_sat=(\d+)", timeout=180)
+        m = h.wait_for(r"wallet-coins count=(\d+) total_sat=(\d+)", timeout=900)   # public servers: a lookup retried every 15 s
         if not check(m is not None, "its wallet port reads its coins from the servers"):
             return check.result("program_slice1_signet", work)
         if int(m.group(1)) == 0:
