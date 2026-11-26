@@ -30,7 +30,7 @@ FORBIDDEN = re.compile(r"sim_rng|sim_chacha|gzp_testping|gzp_standin_fail_at|gzp
 # Each name the release check looks for, and that the test build does have, so
 # that each half of the check can fail (review of PR 27, M5).
 IN_TEST = ("gzp_testping", "gzp_standin_fail_at", "gzp_standin_put_restore", "gzp_standin_test_hooks")
-TEST_STRINGS = (b"--test-pings", b"--test-ready-cap", b"--test-timer-ms", b"--test-start-delay-ms", b"--test-node-error-at", b"--test-drop-view", b"--test-funds",
+TEST_STRINGS = (b"--test-pings", b"--test-ready-cap", b"--test-log-sends", b"--test-timer-ms", b"--test-start-delay-ms", b"--test-node-error-at", b"--test-drop-view", b"--test-funds",
                 b"tests only (gazpacho-test)", b"test-timer fired", b"payload=%s", b"ping-payload")
 
 VECTORS_NAME = re.compile(r"^(gz_sg_vectors_build_never_ship|gz_sgv_)")

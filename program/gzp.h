@@ -79,6 +79,7 @@ typedef struct {
     int test_engines;              /* test engines in the node, 0 to 2 (default 1) */
     int test_dump_journal;         /* print the journal and stop */
     int test_drop_kind;            /* drop received messages of this kind (0: none) */
+    int test_log_sends;            /* log every send and every secret the key port gives (tests only) */
     int test_commands;             /* read test commands from standard input */
     int test_big_reply;            /* pad every test reply with this many bytes */
     int test_crash_after_save;     /* exit once the K-th batch is durable, before the rest of its list */

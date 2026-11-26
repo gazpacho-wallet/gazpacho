@@ -144,6 +144,7 @@ void gzp_usage(void)
         "  --test-engines N              test engines in the node, 0 to 2 (default 1)\n"
         "  --test-dump-journal           print the journal's batches and records, then stop\n"
         "  --test-drop-kind K            drop every received message of kind K\n"
+        "  --test-log-sends 1            log every message sent and every secret the key port gives\n"
         "  --test-commands               read test commands from standard input\n"
         "  --test-big-reply BYTES        pad every test reply with BYTES\n"
         "  --test-crash-after-save K     exit once the K-th batch is durable\n"
@@ -316,6 +317,7 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--test-engines")) { ok = num(val, 0, 2, &v); o->test_engines = (int)v; }
         else if (!strcmp(a, "--test-max-conns")) { ok = num(val, 1, 64, &v); o->test_max_conns = (int)v; }
         else if (!strcmp(a, "--test-drop-kind")) { ok = num(val, 1, 65535, &v); o->test_drop_kind = (int)v; }
+        else if (!strcmp(a, "--test-log-sends")) { ok = num(val, 0, 1, &v); o->test_log_sends = (int)v; }
         else if (!strcmp(a, "--test-funds")) {
             if (!strcmp(val, "ok")) o->test_funds = 0;
             else if (!strcmp(val, "short")) o->test_funds = 1;

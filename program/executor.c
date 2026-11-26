@@ -124,6 +124,9 @@ static int port_secret(void *ctx, uint32_t epoch, uint32_t index, uint8_t sec32[
 {
     gzp_exec_t *ex = ctx;
     uint8_t pub[33];
+#ifdef GZP_TEST_BUILD
+    if (ex->opt->test_log_sends) gzp_log("key-secret epoch=%08x index=%u", (unsigned)epoch, (unsigned)index);
+#endif
     return gzp_net_key(ex->net, epoch, index, sec32, pub);
 }
 
@@ -426,6 +429,9 @@ static void execute(void *ctx, const gz_action_t *a)
                     (unsigned long long)gzp_peer_id(a->u.send.link.remote.key), (unsigned)a->u.send.kind, len);
         }
 #ifdef GZP_TEST_BUILD
+        if (ex->opt->test_log_sends)
+            gzp_log("test-send kind=%u scope=%02x%02x%02x%02x", (unsigned)a->u.send.kind, a->u.send.scope[0],
+                    a->u.send.scope[1], a->u.send.scope[2], a->u.send.scope[3]);
         if (ex->opt->test_oversize_send && (size_t)ex->opt->test_oversize_send > len) {
             /* --test-oversize-send: the same send, padded past the transport's limit. */
             padded = calloc(1, (size_t)ex->opt->test_oversize_send);
