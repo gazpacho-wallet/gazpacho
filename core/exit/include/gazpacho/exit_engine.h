@@ -42,7 +42,10 @@
 #define GZ_XE_CHILD_LEN    65u                         /* the anchor-only child (exit.md 5.2) */
 #define GZ_XE_MAX_SWEEP    8192u                       /* a signed sweep */
 #define GZ_XE_MAX_SWEEP_IN 32u                         /* inputs of one sweep: about 6 KB signed */
-#define GZ_XE_MAX_SWEEPS   16u                         /* sweeps remembered (in flight or settled) */
+#define GZ_XE_MAX_SWEEPS   16u                         /* live sweeps at once (exit.md 6.8) */
+#define GZ_XE_STALE_TIPS   6u                          /* a mempool-only spend asked about again after */
+#define GZ_XE_SWEEP_LIFE   6u                          /* tips a sweep may go unseen before it retires */
+#define GZ_XE_DEEP         0x40000000u                 /* confirmations of a spend deeper than the view */
 #define GZ_XE_FUNDING      0xffffu                     /* parent index: the funding output */
 #define GZ_XE_NODE_ENC     74u                         /* bytes of one transaction in exit_plan */
 /* The most bytes one call can add to an action list (the plan record of a
@@ -58,6 +61,7 @@
 #define GZ_XE_REC_STEP    0x00070006u
 #define GZ_XE_REC_ENDED   0x0007000cu
 #define GZ_XE_REC_SWEEP   0x00070010u
+#define GZ_XE_REC_SWEEP_DONE 0x00070012u
 #define GZ_XE_REC_SEEN    0x00080002u
 
 /* Step states: local-api.md 16.3's list, counted from `pending` = 1. */
@@ -78,6 +82,12 @@
 #define GZ_XE_END_HOST_TIMEOUT     2
 #define GZ_XE_END_UNEXPLAINED      3
 #define GZ_XE_END_HOST_RECOVERED   4
+#define GZ_XE_END_FUNDING_SPENT    5
+
+/* exit_sweep_done. */
+#define GZ_XE_SWEEP_SETTLED 1
+#define GZ_XE_SWEEP_DEAD    2
+#define GZ_XE_SWEEP_RETIRED 3
 
 /* spend_seen classes (exit.md 8). */
 #define GZ_XE_S1   1
@@ -124,7 +134,8 @@ typedef struct {
 } gz_xe_plan_t;
 
 /* The held, signed tree (exit.md 6.8, "The plan"). `sigs[i]` is node i's
- * final signature. The program verifies every signature before this call. */
+ * final signature. `verify` is required: the program's BIP 340 check of a
+ * signed one-input transaction spending (amount, script), 1 valid. */
 typedef struct {
     uint8_t scope[32];
     const gz_tree_t *tree;
@@ -133,13 +144,21 @@ typedef struct {
     uint32_t n_members;
     uint32_t end_height;
     gz_exit_consts_t c;
+    int (*verify)(void *ctx, const uint8_t *signed_tx, size_t len, uint64_t amount, const uint8_t script[34]);
+    void *verify_ctx;
+    /* The member's channel and balance in this factory: the tree half
+     * refuses a member holding either (`not_tree_half`). */
+    int has_channel;
+    uint64_t balance_sat;
 } gz_xe_tree_in_t;
 
 typedef enum {
     GZ_XE_PLAN_OK = 0,
     GZ_XE_PLAN_ARGUMENT,       /* a NULL input, or a tree over the bounds */
     GZ_XE_PLAN_NOT_OURS,       /* not the member's own key, or not its own one-member leaf */
-    GZ_XE_PLAN_BAD_TREE        /* the transactions do not chain, or are not TRUC with a P2A last */
+    GZ_XE_PLAN_BAD_TREE,       /* the transactions do not chain, or are not TRUC with a P2A last */
+    GZ_XE_PLAN_BAD_SIGNATURE,  /* the verifier refused a step */
+    GZ_XE_PLAN_NOT_TREE_HALF   /* the member holds a channel or a balance */
 } gz_xe_plan_err_t;
 
 /* The member's plan: its own path, root first. */
@@ -181,10 +200,14 @@ typedef struct {
 /* What the chain view has said about one watched outpoint. Memory only. */
 typedef struct {
     uint8_t watched, synced;
-    uint8_t known;             /* a spender was reported */
+    uint8_t known;             /* a spender was reported (txid watch: a confirmation) */
     uint8_t recorded;          /* spend_seen saved for rec_spender */
+    uint8_t failed;            /* WATCH_FAILED: spent (confirmed) deeper than the view follows */
+    uint8_t noted;             /* its exit_watch_failed notice given */
+    uint8_t zero_known;        /* zero_tip holds */
     uint8_t spender[32];
     uint32_t conf, height;
+    uint32_t zero_tip;         /* the tip of a 0-confirmation report */
     uint8_t rec_spender[32];
 } gz_xe_fact_t;
 
@@ -195,9 +218,9 @@ typedef struct {
     uint8_t tx[GZ_XE_MAX_SWEEP];
     uint16_t n_in;
     gz_outpoint_t in[GZ_XE_MAX_SWEEP_IN];
-    uint32_t last_bcast;
+    uint32_t last_bcast, born_tip;
     int bcast_known;
-    int settled;               /* every input spent by it and buried */
+    int sighted;               /* seen spending an input, in a block or a mempool */
 } gz_xe_sweep_t;
 
 typedef struct {
@@ -214,14 +237,18 @@ typedef struct {
     gz_xe_fact_t chan[GZ_XE_MAX_NODES];        /* leaf transactions: output 0 */
     gz_xe_fact_t spare[GZ_XE_MAX_NODES];       /* and output 1 */
     gz_xe_fact_t anchor[GZ_XE_MAX_STEPS];      /* step i's anchor */
+    gz_xe_fact_t txw[GZ_XE_MAX_NODES];         /* node i's txid, watched once its input's watch failed */
     struct {
         uint8_t state;                         /* journaled: 0, SENT, CONFIRMED or BURIED */
         uint8_t late;                          /* exit_step_late noted this incarnation */
+        uint8_t held;                          /* exit_step_held_back noted this incarnation */
+        uint32_t refused;                      /* broadcasts refused this incarnation */
         int bcast_known;
         uint32_t last_bcast;                   /* the tip it was last broadcast at */
     } st[GZ_XE_MAX_STEPS];
-    gz_xe_sweep_t sweep[GZ_XE_MAX_SWEEPS];
-    size_t sweep_next;                         /* load: the slot an older sweep gives up */
+    gz_xe_sweep_t sweep[GZ_XE_MAX_SWEEPS];     /* live sweeps */
+    uint32_t port_tip, slot_tip;               /* the tip of the last port call; of the last no-slot notice */
+    int port_tip_known, slot_tip_known;
     uint64_t dropped;                          /* counted: reports nobody needs */
     uint64_t port_refused;                     /* counted: sweeps the port failed or got wrong */
     uint8_t scratch[GZ_XE_MAX_STEP_BYTES];     /* the records of one save */
@@ -234,10 +261,21 @@ typedef struct {
 
 gz_status_t gz_xe_init(gz_xe_t *x, const uint8_t scope[32], const gz_xe_port_t *port);
 
+/* Refusals of gz_xe_set_plan and gz_xe_begin (*refused). */
+#define GZ_XE_REFUSED_STARTED   1   /* already started or ended (`already_exiting`) */
+#define GZ_XE_REFUSED_SCOPE     2   /* the plan is for another factory */
+#define GZ_XE_REFUSED_NO_TIP    3   /* no tip known yet (`chain_in_doubt`) */
+#define GZ_XE_REFUSED_NO_PLAN   4   /* begin with no plan given or held */
+
+/* Save the plan when the factory goes live, and again whenever it changes
+ * before the exit starts (journal.md 9.1): appends the save of exit_plan;
+ * a later plan replaces the earlier. *refused: 0 saved, or a refusal. */
+gz_status_t gz_xe_set_plan(gz_xe_t *x, const gz_xe_plan_t *plan, gz_action_list_t *out, int *refused);
+
 /* Start the exit (exit.md 6.3 steps 0 to 2, the tree half; the host's
- * recovery). Appends the save of exit_plan and exit_started and the
- * watches. *refused: 0 started; 1 already started or ended
- * (`already_exiting`); 2 the plan is for another factory. */
+ * recovery) with `plan`, or with the plan held when it is NULL. Appends the
+ * save of exit_plan (when given) and exit_started, and the watches; the
+ * plan is fixed from then on. *refused: 0 started, or a refusal. */
 gz_status_t gz_xe_begin(gz_xe_t *x, const gz_xe_plan_t *plan, uint8_t reason, gz_action_list_t *out,
                         int *refused);
 

@@ -833,7 +833,7 @@ static int in_sweep(const gz_xe_t *x, const gz_outpoint_t *o)
 {
     for (size_t k = 0; k < GZ_XE_MAX_SWEEPS; k++) {
         const gz_xe_sweep_t *s = &x->sweep[k];
-        if (!s->used || s->settled) continue;
+        if (!s->used || s->sighted) continue;
         for (size_t j = 0; j < s->n_in; j++)
             if (same_op(&s->in[j], o)) return 1;
     }
@@ -965,7 +965,7 @@ static gz_status_t decide_host(gz_xe_t *x, gz_action_list_t *out)
     for (size_t k = 0; k < GZ_XE_MAX_SWEEPS; k++) {
         gz_xe_sweep_t *s = &x->sweep[k];
         int dead = 0, settled = 1;
-        if (!s->used || s->settled) continue;
+        if (!s->used || s->sighted) continue;
         for (size_t j = 0; j < s->n_in; j++) {
             const gz_xe_fact_t *f = find_fact(x, &s->in[j], &kind, &idx);
             if (!f) { dead = 1; break; }
@@ -973,7 +973,7 @@ static gz_status_t decide_host(gz_xe_t *x, gz_action_list_t *out)
             if (!(f->known && memcmp(f->spender, s->txid, 32) == 0 && f->conf >= B)) settled = 0;
         }
         if (dead) { s->used = 0; if ((st = log_note(x, out, "host_sweep_dead")) != GZ_OK) return st; continue; }
-        if (settled) { s->settled = 1; continue; }
+        if (settled) { s->sighted = 1; continue; }
         if (!s->bcast_known || s->last_bcast != x->tip) {
             if ((st = broadcast(out, s->tx, s->len)) != GZ_OK) return st;
             s->last_bcast = x->tip;
@@ -1144,7 +1144,7 @@ gz_status_t gz_xe_load(void *e, const gz_record_t *rec, gz_batch_id_t at)
             return GZ_ERR_CORRUPT;
         for (size_t k = 0; k < GZ_XE_MAX_SWEEPS && !slot; k++)
             if (!x->sweep[k].used) slot = &x->sweep[k];
-        if (!slot) slot = &x->sweep[x->sweep_next++ % GZ_XE_MAX_SWEEPS];   /* the oldest gives way */
+        if (!slot) slot = &x->sweep[x->slot_tip++ % GZ_XE_MAX_SWEEPS];   /* the oldest gives way */
         memset(slot, 0, sizeof *slot);
         if (!sweep_parse(v.data, v.len, x->work, sizeof x->work, slot, NULL, 0, 0)
             || memcmp(slot->txid, id.data, 32) != 0) {
@@ -1260,4 +1260,11 @@ int gz_xe_has_ended(const gz_xe_t *x, uint8_t *how)
     if (!x || !x->ended) return 0;
     if (how) *how = x->ended_how;
     return 1;
+}
+
+/* Not written yet (test first): refuses. */
+gz_status_t gz_xe_set_plan(gz_xe_t *x, const gz_xe_plan_t *plan, gz_action_list_t *out, int *refused)
+{
+    (void)x; (void)plan; (void)out; (void)refused;
+    return GZ_ERR_ARGUMENT;
 }
