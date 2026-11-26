@@ -92,6 +92,7 @@ typedef struct {
     size_t forgot_n, forgot_spent;
     uint8_t forgot_spent0;
     size_t last_n_prev;
+    uint64_t adopt_feerate;    /* the last adopt_plan's fee rate */
     uint8_t noted_tag;
     unsigned next_plan;
     ft_plan_t plans[FT_PLANS];   /* memory only: a restart forgets them */
@@ -244,10 +245,11 @@ static inline int ftw_adopt(void *ctx, const uint8_t *tx, size_t len, const uint
 
 /* adopt with the plan's spent outputs (P97-3, review B of PR 97). */
 static inline int ftw_adopt_plan(void *ctx, const uint8_t *tx, size_t len, const gz_fund_prevout_t *prev, size_t n_prev,
-                                 const uint8_t script[34], uint64_t amount)
+                                 const uint8_t script[34], uint64_t amount, uint64_t feerate)
 {
     ft_wallet_t *w = (ft_wallet_t *)ctx;
     (void)prev;
+    (void)feerate;   /* step 1: not recorded */
     w->adopted_prev++;
     w->last_n_prev = n_prev;
     return ftw_adopt(ctx, tx, len, script, amount);

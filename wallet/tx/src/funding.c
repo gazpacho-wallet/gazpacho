@@ -404,7 +404,8 @@ gzt_err gzt_funding_spend_back(const secp256k1_context *ctx, const gzw_xprv *mas
 
 static gzt_err adopt(const secp256k1_context *ctx, const gzw_xprv *master, gzt_network net, uint32_t account,
                      const uint8_t *raw, size_t len, const gzt_adopt_input *ins, size_t n_in, uint32_t change_index,
-                     const uint8_t aux32[32], gzt_funding *f) {
+                     gzt_feerate ceiling, const uint8_t aux32[32], gzt_funding *f) {
+    (void)ceiling;   /* step 1: not checked */
     gzt_tx *tx = &f->priv_tx;
     gzw_network knet;
     gzw_bip86_output o;
@@ -475,10 +476,11 @@ static gzt_err adopt(const secp256k1_context *ctx, const gzw_xprv *master, gzt_n
 
 gzt_err gzt_funding_adopt(const secp256k1_context *ctx, const gzw_xprv *master, gzt_network net,
                           uint32_t account, const uint8_t *raw, size_t len, const gzt_adopt_input *ins,
-                          size_t n_in, uint32_t change_index, const uint8_t aux32[32], gzt_funding *out) {
+                          size_t n_in, uint32_t change_index, gzt_feerate ceiling, const uint8_t aux32[32],
+                          gzt_funding *out) {
     if (!out) return GZT_ERR_ARG;
     gzt_funding_wipe(out);
-    gzt_err e = adopt(ctx, master, net, account, raw, len, ins, n_in, change_index, aux32, out);
+    gzt_err e = adopt(ctx, master, net, account, raw, len, ins, n_in, change_index, ceiling, aux32, out);
     if (e) gzt_funding_wipe(out);
     return e;
 }

@@ -297,6 +297,7 @@ static void test_adopt(void)
     size_t len, n = 0, n2 = 0, ni;
     gzt_adopt_input in[GZT_MAX_INPUTS];
     gzw_bip86_output dest;
+    gzt_feerate ceil = {1000};   /* 1 sat/vB */
     memset(aux, 1, 32);
     r.require_change = 1;
     CHECK(gzt_funding_build(ctx, &master, &r, coins, 3, aux, &f) == GZT_OK);
@@ -310,7 +311,7 @@ static void test_adopt(void)
         in[i].change = c->change;
         in[i].index = c->index;
     }
-    CHECK(gzt_funding_adopt(ctx, &master, GZT_NET_SIGNET, 0, tx, len, in, ni, 50, aux, &g) == GZT_OK);
+    CHECK(gzt_funding_adopt(ctx, &master, GZT_NET_SIGNET, 0, tx, len, in, ni, 50, ceil, aux, &g) == GZT_OK);
     CHECK(memcmp(g.info.txid, f.info.txid, 32) == 0 && g.info.fee == f.info.fee && g.info.vsize == f.info.vsize);
     CHECK(g.info.amount == 100000 && g.info.has_change && g.info.change == f.info.change && g.info.change_index == 50);
     CHECK(gzt_funding_release(ctx, &master, &g, f.info.txid, aux, out, sizeof out, &n) == GZT_OK);
@@ -320,14 +321,14 @@ static void test_adopt(void)
     CHECK(gzt_funding_spend_back(ctx, &master, &g, 0, dest.script_pubkey, 34, 12, aux, out, sizeof out, &n) == GZT_OK);
     /* refused: the change is not at that index; a key path that is not the
      * input's; an input worth less than the outputs; inputs miscounted */
-    CHECK(gzt_funding_adopt(ctx, &master, GZT_NET_SIGNET, 0, tx, len, in, ni, 51, aux, &g) == GZT_ERR_KEY);
+    CHECK(gzt_funding_adopt(ctx, &master, GZT_NET_SIGNET, 0, tx, len, in, ni, 51, ceil, aux, &g) == GZT_ERR_KEY);
     in[0].index ^= 1;
-    CHECK(gzt_funding_adopt(ctx, &master, GZT_NET_SIGNET, 0, tx, len, in, ni, 50, aux, &g) == GZT_ERR_KEY);
+    CHECK(gzt_funding_adopt(ctx, &master, GZT_NET_SIGNET, 0, tx, len, in, ni, 50, ceil, aux, &g) == GZT_ERR_KEY);
     in[0].index ^= 1;
     in[0].amount = 1;
-    CHECK(gzt_funding_adopt(ctx, &master, GZT_NET_SIGNET, 0, tx, len, in, ni, 50, aux, &g) == GZT_ERR_ARG);
+    CHECK(gzt_funding_adopt(ctx, &master, GZT_NET_SIGNET, 0, tx, len, in, ni, 50, ceil, aux, &g) == GZT_ERR_ARG);
     in[0].amount = coins[f.info.selection.selected[0]].amount;
-    CHECK(gzt_funding_adopt(ctx, &master, GZT_NET_SIGNET, 0, tx, len, in, ni + 1, 50, aux, &g) == GZT_ERR_ARG);
+    CHECK(gzt_funding_adopt(ctx, &master, GZT_NET_SIGNET, 0, tx, len, in, ni + 1, 50, ceil, aux, &g) == GZT_ERR_ARG);
     CHECK(g.priv_state == 0);   /* wiped on failure */
     gzt_funding_wipe(&f);
     gzt_funding_wipe(&g);

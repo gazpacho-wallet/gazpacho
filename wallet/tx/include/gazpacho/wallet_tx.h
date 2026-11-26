@@ -386,10 +386,14 @@ typedef struct {
    its size and that it can be signed; then gzt_funding_release and
    gzt_funding_spend_back work on it as on a built one. GZT_ERR_ARG for a bad
    transaction or inputs, GZT_ERR_SCRIPT for output 0, GZT_ERR_KEY when a
-   script is not this wallet's. On failure *out is wiped. */
+   script is not this wallet's, GZT_ERR_FEE_CEILING when its fee is above
+   `ceiling` for its signed size, checked before anything is signed (a
+   journal that was changed cannot get a dear funding signed; the boundary
+   review of PR 101). On failure *out is wiped. */
 gzt_err gzt_funding_adopt(const secp256k1_context *ctx, const gzw_xprv *master, gzt_network net,
                           uint32_t account, const uint8_t *raw, size_t len, const gzt_adopt_input *ins,
-                          size_t n_in, uint32_t change_index, const uint8_t aux32[32], gzt_funding *out);
+                          size_t n_in, uint32_t change_index, gzt_feerate ceiling, const uint8_t aux32[32],
+                          gzt_funding *out);
 
 /* Wipe everything. */
 void gzt_funding_wipe(gzt_funding *f);

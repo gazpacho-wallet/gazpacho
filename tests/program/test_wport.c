@@ -1895,7 +1895,7 @@ static void test_spend_back_after_restart_adopted(void)
     CHECK(gzp_wport_publish(&b, &k, &h, 1, 110) == 0);
     CHECK(b.port.spend_back(b.port.ctx, txid, 0, 1000, sb, sizeof sb, &sbl) == 0);   /* not held yet */
     CHECK(b.port.adopt_plan != NULL);
-    if (b.port.adopt_plan) CHECK(b.port.adopt_plan(b.port.ctx, tx, len, prev, n_prev, factory, 300000) == 1);
+    if (b.port.adopt_plan) CHECK(b.port.adopt_plan(b.port.ctx, tx, len, prev, n_prev, factory, 300000, 100) == 1);
     CHECK(memcmp(b.plans[0].info.txid, txid, 32) == 0);
     CHECK(b.port.spend_back(b.port.ctx, txid, 0, 1000, sb, sizeof sb, &sbl) == 1);
     CHECK(b.port.sign_plan(b.port.ctx, txid, sig, sizeof sig, &sl) == 1);
@@ -1976,7 +1976,7 @@ static void test_nine_adoptions_at_resume(void)
     open_marked(&b, &mb);
     many_coins(&b, 9, 0xb0);
     for (int i = 0; i < 9; i++)
-        CHECK(b.port.adopt_plan && b.port.adopt_plan(b.port.ctx, tx[i], len[i], prev[i], np[i], factory, 100000) == 1);
+        CHECK(b.port.adopt_plan && b.port.adopt_plan(b.port.ctx, tx[i], len[i], prev[i], np[i], factory, 100000, 100) == 1);
     gzp_wport_close(&b);
 }
 
@@ -2017,7 +2017,7 @@ static void test_adopt_without_change(void)
     prev[0].amount = k.amount;
     prev[0].script_len = 34;
     memcpy(prev[0].script, k.script, 34);
-    CHECK(b.port.adopt_plan && b.port.adopt_plan(b.port.ctx, tx, len, prev, 1, factory, 500000 - 200) == 1);
+    CHECK(b.port.adopt_plan && b.port.adopt_plan(b.port.ctx, tx, len, prev, 1, factory, 500000 - 200, 100) == 1);
     CHECK(b.port.spend_back(b.port.ctx, f.info.txid, 0, 1000, sb, sizeof sb, &sbl) == 1);
     (void)sl;
     gzt_funding_wipe(&f);
@@ -2052,24 +2052,24 @@ static void test_adopt_refusals(void)
     }
     memcpy(p2, prev, sizeof prev);
     p2[0].script[10] ^= 1;   /* a foreign input */
-    CHECK(b.port.adopt_plan(b.port.ctx, tx, len, p2, np, factory, 100000) == 0);
+    CHECK(b.port.adopt_plan(b.port.ctx, tx, len, p2, np, factory, 100000, 100) == 0);
     memcpy(p2, prev, sizeof prev);
     p2[0].script[0] = 0x00;   /* P2WSH, this wallet's key bytes */
-    CHECK(b.port.adopt_plan(b.port.ctx, tx, len, p2, np, factory, 100000) == 0);
+    CHECK(b.port.adopt_plan(b.port.ctx, tx, len, p2, np, factory, 100000, 100) == 0);
     memcpy(bad, tx, len);   /* foreign change: output 1's key changed */
     CHECK(gz_tx_parse(bad, len, &info) && gz_tx_output(bad, len, &info, 1, &amt, &scr, &sl) && sl == 34);
     if (scr) bad[(size_t)(scr - bad) + 10] ^= 1;
-    CHECK(b.port.adopt_plan(b.port.ctx, bad, len, prev, np, factory, 100000) == 0);
+    CHECK(b.port.adopt_plan(b.port.ctx, bad, len, prev, np, factory, 100000, 100) == 0);
     memcpy(other, factory, 34);
     other[5] ^= 1;
-    CHECK(b.port.adopt_plan(b.port.ctx, tx, len, prev, np, other, 100000) == 0);   /* output 0 not the engine's */
-    CHECK(b.port.adopt_plan(b.port.ctx, tx, len, prev, np, factory, 100001) == 0);  /* nor its amount */
+    CHECK(b.port.adopt_plan(b.port.ctx, tx, len, prev, np, other, 100000, 100) == 0);   /* output 0 not the engine's */
+    CHECK(b.port.adopt_plan(b.port.ctx, tx, len, prev, np, factory, 100001, 100) == 0);  /* nor its amount */
     {
         static uint8_t t2[GZ_FUND_MAX_TX];
         size_t l2;
         many_coins(&b, (int)GZP_WPORT_PLANS, 0x40);   /* every slot taken */
         for (int i = 0; i < (int)GZP_WPORT_PLANS; i++) CHECK(plan(&b, 100000, t2, &l2) == 1);
-        CHECK(b.port.adopt_plan(b.port.ctx, tx, len, prev, np, factory, 100000) == 0);
+        CHECK(b.port.adopt_plan(b.port.ctx, tx, len, prev, np, factory, 100000, 100) == 0);
     }
     gzp_wport_close(&b);
 }

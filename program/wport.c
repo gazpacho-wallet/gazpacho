@@ -308,7 +308,7 @@ static int w_adopt(void *ctx, const uint8_t *tx, size_t len, const uint8_t scrip
  * when every input is this wallet's and its change is, so it can be signed
  * and spent back from after a restart (P97-3, review B of PR 97). */
 static int w_adopt_plan(void *ctx, const uint8_t *tx, size_t len, const gz_fund_prevout_t *prev, size_t n_prev,
-                        const uint8_t script[34], uint64_t amount)
+                        const uint8_t script[34], uint64_t amount, uint64_t feerate)
 {
     gzp_wport_t *w = ctx;
     gzt_adopt_input ins[GZT_MAX_INPUTS];
@@ -347,7 +347,8 @@ static int w_adopt_plan(void *ctx, const uint8_t *tx, size_t len, const gz_fund_
         /* the master for this check only, wiped at once (signer.md 2.1) */
         gzw_xprv m;
         int ok = master_now(w, &m) &&
-                 gzt_funding_adopt(w->secp, &m, w->net, 0, tx, len, ins, n_prev, ci, aux, &w->plans[k]) == GZT_OK;
+                 gzt_funding_adopt(w->secp, &m, w->net, 0, tx, len, ins, n_prev, ci, policy(feerate).ceiling, aux,
+                                   &w->plans[k]) == GZT_OK;
         gzw_wipe(&m, sizeof m);
         if (!ok || w->plans[k].info.amount != amount || memcmp(w->plans[k].priv_tx.out[0].script, script, 34) != 0) {
             gzt_funding_wipe(&w->plans[k]);
