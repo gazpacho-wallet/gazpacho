@@ -1504,6 +1504,11 @@ static int funds_ask(gz_node_t *c, int self, uint64_t own, uint64_t *need, uint6
     const gz_wallet_port_t *wp = c->cfg.wallet;
     *need = *have = 0;
     if (!wp || !wp->can_plan) return 3;
+    /* This lobby's own funding is already planned (a new attempt after a failed one): its
+     * coins are held by that plan, which the next attempt's plan replaces (H11), so they are
+     * this lobby's and enough. The wallet's dry run offers only coins no plan holds, so it
+     * would answer short, and the automatic start would wait for good (integration F21). */
+    if (c->fund_on && gz_fund_scope_state(c->fund, c->slots[self].scope, NULL) == GZ_FUND_SCOPE_OPEN) return 0;
     gz_fund_config_default(&fc, 1);
     fc.wallet = *wp;
     per = gz_fund_funding_fee_bound(&fc, GZ_FUND_MAX_INPUTS);
