@@ -520,9 +520,11 @@ static void w_node(int n, int ident, gz_member_signing_t signing, uint32_t outco
  * engine's here. */
 static secp256k1_context *TCTX;
 static void *TMEM[NN];          /* one engine memory per node, the scratch node included */
+static int W_SECRET_FAIL;       /* the key port gives no secret (a signer away) */
 static int w_secret(void *ctx, uint32_t epoch, uint32_t index, uint8_t sec[32])
 {
     (void)ctx; (void)epoch;
+    if (W_SECRET_FAIL) return 0;
     memset(sec, (int)(index % 200u) + 1, 32);
     return 1;
 }
@@ -1381,6 +1383,8 @@ static void test_join_ready_key_hook(void)
     }
     w_run(4000, 100);
     CHECK(slot(2, &t) && slot(2, &t)->lobby.m.have_terms && !memcmp(slot(2, &t)->gate_secret, (const uint8_t[32]){0}, 32));
+    /* and its gate is closed, not open with a key it does not have (boundary review of #55, Low) */
+    CHECK(slot(2, &t) && !slot(2, &t)->gate_open && !slot(2, &t)->gate_have && member_ready(2, &t) == 0);
     slot_t *s = slot(1, &t);
     CHECK(s && N[1].n->sign_on && s->gate_open && s->gate_have && !memcmp(s->gate_digest, d, 32));
     CHECK(gz_sg_keys(N[1].n, t.scope, d, &f, &kc) == 1);          /* the factory key, for the values joined for */
@@ -1394,6 +1398,65 @@ static void test_join_ready_key_hook(void)
     }
     CHECK(gz_sg_keys(N[1].n, t.scope, d, &f, &kc) == 0);
     w_free(2);
+}
+
+/* The boundary review of #55, Low: a join ready whose factory key cannot be derived (the key
+ * port gives no secret) leaves the gate closed, never open with gate_have and a zero secret;
+ * the seat is not counted Ready and the person readies again. */
+static void test_join_ready_derive_fails(void)
+{
+    terms_t t;
+    lt_key_t hk;
+    uint8_t d[32], one = 1;
+    secp256k1_keypair f, kc;
+    whost(&hk);
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node_engine(1, 1, GZ_MEMBER_SIGNING_AT_JOIN, GZ_TEST_SIGN_UNFINISHED);
+    for (int n = 0; n <= 1; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 4, 4, 3011);
+    CHECK(host_open(&t, 0) == 200);
+    gz_terms_current_digest(t.current, t.cn, d);
+    W_SECRET_FAIL = 1;
+    {
+        h_arg_t j[5] = {{12, t.scope, 32}, {14, hk.pub, 33}, {16, ADDR, sizeof ADDR - 1}, {24, &one, 1}, {26, d, 32}};
+        CHECK(w_cmd(1, GZ_CMD_LOBBY_JOIN, j, 5) == 200);
+    }
+    w_run(4000, 100);
+    W_SECRET_FAIL = 0;
+    slot_t *s = slot(1, &t);
+    CHECK(s && s->lobby.m.have_terms && !s->gate_open && !s->gate_have && !s->gate_derive);
+    CHECK(member_ready(1, &t) == 0);
+    CHECK(gz_sg_keys(N[1].n, t.scope, d, &f, &kc) == 0);
+    w_free(1);
+}
+
+/* Review A of #55 (refused-ready-keeps-gate): a ready with the passphrase that opens the gate
+ * and is then refused by the lobby closes the gate again. The member answered a ready check;
+ * a lock closes its gate but keeps it Ready (rule 4, the check in flight); a ready with the
+ * passphrase then opens the gate, and the lobby refuses it (already Ready at these values). */
+static void test_refused_ready_closes_gate(void)
+{
+    terms_t t;
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    w_node(1, 1, GZ_MEMBER_SIGNING_AT_JOIN, GZ_TEST_SIGN_FUNDING);
+    w_node(2, 2, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    w_node(3, 3, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    for (int n = 0; n <= 3; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 3, 3, 3012);
+    CHECK(host_open(&t, 0) == 200);
+    for (int n = 1; n <= 3; n++) CHECK(member_join(n, &t) == 200);
+    w_run(4000, 100);
+    CHECK(scope_cmd(1, GZ_CMD_LOBBY_READY, &t, 1) == 200);
+    w_run(1000, 100);
+    slot_t *s = slot(1, &t);
+    CHECK(host_state(&t) == GZ_LOBBY_READY_CHECK && s && gz_lobby_member_check_in_flight(&s->lobby.m));
+    CHECK(w_cmd(1, GZ_CMD_SIGNING_LOCK, NULL, 0) == 200);
+    CHECK(s && !s->gate_open && member_ready(1, &t) == 1);
+    CHECK(scope_cmd(1, GZ_CMD_LOBBY_READY, &t, 1) == 409);
+    CHECK(s && !s->gate_open && !s->gate_have);
+    w_free(3);
 }
 
 static void test_at_join_key_hook(void)
@@ -4279,6 +4342,26 @@ static void test_funds_check(void)
 }
 
 /* The early start with no wallet port: no_wallet, nothing started. */
+/* Review A of #55, confirmation of L2: terms whose set-aside would be 0 (a target above 256,
+ * past the fundability check's reach) are refused, 400 bad_terms, with no slot and no batch
+ * kept, also on the stand-in node (no signing engine, so no max_tree_nodes). They are refused
+ * before the set-aside guard: the host engine takes at most GZ_LOBBY_MAX_SEATS (32) seats,
+ * target and standbys, so the guard itself is unreachable (mutant set-aside-zero-taken,
+ * triaged equivalent in tests/node/mutants.txt). */
+static void test_set_aside_zero(void)
+{
+    terms_t t;
+    char e[64];
+    w_world(1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    CHECK(!N[0].n->sign_on);
+    make_terms(&t, 300, 3, 3806);                                  /* the last shape stretched to 300 */
+    size_t hb = N[0].n_batches;
+    CHECK(host_open(&t, 0) == 400 && slot(0, &t) == NULL && N[0].n_batches == hb);
+    CHECK(res_text(0, GZ_RESULT_REC_ERROR, e, sizeof e) && !strcmp(e, "bad_terms"));
+    no_errors(1);
+    w_free(1);
+}
+
 static void test_funds_no_wallet_start(void)
 {
     terms_t t;
@@ -4387,6 +4470,7 @@ int main(int argc, char **argv)
     test_index_unique();
     test_gate_closes_with_seat();
     test_funds_check();
+    test_set_aside_zero();
     test_funds_no_wallet_start();
     test_funds_auto_start();
     test_two_lobbies();
@@ -4396,6 +4480,8 @@ int main(int argc, char **argv)
     test_signing_set();
     test_at_join_key_hook();
     test_join_ready_key_hook();
+    test_join_ready_derive_fails();
+    test_refused_ready_closes_gate();
     test_tree_cap();
     test_may_ack_depth();
     test_route_held();
