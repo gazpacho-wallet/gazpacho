@@ -493,6 +493,11 @@ gz_status_t gz_lobby_host_listing(gz_lobby_host_t *h, const gz_link_t *link, gz_
 int gz_lobby_host_round_ok(const gz_lobby_host_t *h);
 /* The pause changed (cfg.paused): the start rule is applied again. */
 gz_status_t gz_lobby_host_pause_changed(gz_lobby_host_t *h, gz_action_list_t *out);
+/* 1 if the start rule asks for a ready check now: Open, not paused, and the
+ * rule's CHECK at this time and these seats. A query; it changes nothing. The
+ * rule itself is applied only at some seat events (a leave does not apply
+ * it), so the node asks this to end a wait for funds that no start needs. */
+int gz_lobby_host_start_due(const gz_lobby_host_t *h);
 /* Host commands. A command refused now gives GZ_NOTE_COMMAND_REFUSED.
  * gz_lobby_host_set_values returns GZ_ERR_ARGUMENT, with nothing appended
  * or changed, for values outside the terms' ranges. */

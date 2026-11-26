@@ -417,6 +417,7 @@ funds-deadline-reason-2	core/lobby/host.c	? end_lobby(h, 5, out) : GZ_OK;   /* M
 funds-idle-never	core/lobby/host.c	    if ((paused || rule != GZ_RULE_CHECK) && h->cfg.funds_idle)	    if (0 && h->cfg.funds_idle)
 funds-idle-not-paused	core/lobby/host.c	    if ((paused || rule != GZ_RULE_CHECK) && h->cfg.funds_idle)	    if ((rule != GZ_RULE_CHECK) && h->cfg.funds_idle)
 funds-idle-hook-off	core/node/lobbyslot.c	        hc.funds_idle = ls_funds_idle;	        hc.funds_idle = NULL;
+funds-wait-kept-after-leave	core/node/lobbyslot.c	if (st == GZ_OK && s->host && s->funds_blocked && !gz_lobby_host_start_due(&s->lobby.h))	if (0)
 funds-recheck-off	core/node/composite.c	        if (st == GZ_OK && c->cfg.host) st = gz_ls_funds_recheck(c, out);\n	
 funds-attention-off	core/node/view.c	        if (s->funds_blocked && s->lobby.h.state == GZ_LOBBY_OPEN) code = GZ_ATT_HOST_FUNDS_SHORT;   /* the more pressing */\n	
 funds-blocked-never-cleared	core/node/lobbyslot.c	    s->funds_blocked = r != 0;	    s->funds_blocked |= r != 0;

@@ -1113,6 +1113,11 @@ gz_status_t gz_ls_after(gz_node_t *c, int i, gz_action_list_t *out)
             st = gz_c_slot_inline(c, ENG_SLOT0 + i, gate_closed_inline, out);
         }
     }
+    /* The wait for funds ends once no start is due (review B of #55, the Low): the host
+     * engine applies its rule only at some seat events, and a leave below the target is
+     * not one of them, so the slot asks after every step. */
+    if (st == GZ_OK && s->host && s->funds_blocked && !gz_lobby_host_start_due(&s->lobby.h))
+        s->funds_blocked = 0;
     if (st == GZ_OK) st = state_line(c, s, out);
     if (st == GZ_OK) st = gz_view_slot(c, i, 0, out); /* its view, after the step's saves (rule 8) */
     if (st == GZ_OK && c->api.status_dirty) {          /* a hold released in this step */

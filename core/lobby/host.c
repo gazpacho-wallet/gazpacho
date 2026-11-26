@@ -348,6 +348,16 @@ static gz_status_t apply_rule(gz_lobby_host_t *h, int at_deadline, gz_action_lis
     return GZ_OK;
 }
 
+int gz_lobby_host_start_due(const gz_lobby_host_t *h)
+{
+    uint16_t j, r;
+    uint32_t rc;
+    if (!h || h->state != GZ_LOBBY_OPEN) return 0;
+    if (h->cfg.paused && h->cfg.paused(h->cfg.seat_ctx)) return 0;
+    counts(h, &j, &r, &rc);
+    return gz_lobby_start_rule(h->terms.target, h->terms.minimum, h->terms.deadline, now_ms(h) / 1000, rc) == GZ_RULE_CHECK;
+}
+
 gz_status_t gz_lobby_host_pause_changed(gz_lobby_host_t *h, gz_action_list_t *out)
 {
     if (!h || !out) return GZ_ERR_ARGUMENT;
