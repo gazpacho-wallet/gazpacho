@@ -1,0 +1,43 @@
+# Mutants of the exit engine (tools/mutate-exit.py, CTest exit_mutants).
+# NAME ## FILE ## OLD ## NEW [## N]
+# A survivor that is not a fault is triaged with "# survivor: NAME why".
+# Reviews A and B of #104 named the first group; each must stay killed.
+watch-failed-ignored ## exit_engine.c ## if (c->kind == GZ_CHAIN_WATCH_FAILED) f->failed = 1; ## (void)0;
+parse-locktime ## exit_engine.c ## if (want && (info.n_in != n_want || info.locktime != locktime || info.version < 2)) return 0; ## if (want && (info.n_in != n_want || info.version < 2)) return 0;
+parse-version ## exit_engine.c ## if (want && (info.n_in != n_want || info.locktime != locktime || info.version < 2)) return 0; ## if (want && (info.n_in != n_want || info.locktime != locktime)) return 0;
+parse-count ## exit_engine.c ## if (want && (info.n_in != n_want || info.locktime != locktime || info.version < 2)) return 0; ## if (want && (info.locktime != locktime || info.version < 2)) return 0;
+parse-outpoint ## exit_engine.c ## if (memcmp(op, b, 36) != 0 || sl != 0) return 0; ## if (sl != 0) return 0;
+parse-scriptsig ## exit_engine.c ## if (memcmp(op, b, 36) != 0 || sl != 0) return 0; ## if (memcmp(op, b, 36) != 0) return 0;
+parse-final-sequence ## exit_engine.c ## if (want[k].csv ? seq != want[k].csv : seq == 0xffffffffu) return 0; ## if (want[k].csv && seq != want[k].csv) return 0;
+parse-csv-sequence ## exit_engine.c ## if (want[k].csv ? seq != want[k].csv : seq == 0xffffffffu) return 0; ## if (!want[k].csv && seq == 0xffffffffu) return 0;
+parse-no-witness ## exit_engine.c ## if (len > GZ_XE_MAX_SWEEP || !gz_xe_strip_witness(tx, len, work, cap, &bl, &wit) || !wit) return 0; ## if (len > GZ_XE_MAX_SWEEP || !gz_xe_strip_witness(tx, len, work, cap, &bl, &wit)) return 0;
+# survivor: parse-no-witness all_witnessed, the next line, refuses a transaction without a witness too (its marker); kept as the belt to its braces
+parse-empty-witness ## exit_engine.c ## if (!all_witnessed(tx, len)) return 0; ## (void)0;
+parse-only-input-0 ## exit_engine.c ## if (want) {\n            op_bytes ## if (want && k == 0) {\n            op_bytes
+dead-never ## exit_engine.c ## if (!f || f->failed || (f->known && !ours && confs(x, f) >= B)) dead = 1; ## if (0) dead = 1;
+dead-at-one ## exit_engine.c ## if (!f || f->failed || (f->known && !ours && confs(x, f) >= B)) dead = 1; ## if (!f || f->failed || (f->known && !ours && confs(x, f) >= 1)) dead = 1;
+own-mempool ## exit_engine.c ## if (own_txid && memcmp(f->spender, own_txid, 32) == 0) return 0; ## (void)own_txid;
+owed-channel ## exit_engine.c ## x->tip >= nd->cltv && !owed_below(p, nd->first, 1) ## x->tip >= nd->cltv
+owed-input ## exit_engine.c ## || owed_below(p, nd->first, nd->count)) continue; ## ) continue;
+host-load-sweep ## exit_engine.c ## slot->used = 1;\n        slot->born_tip ## slot->used = 0;\n        slot->born_tip
+resume-no-sweep ## exit_engine.c ## if (x->sweep[k].used && (st = broadcast(out, x->sweep[k].tx, x->sweep[k].len)) != GZ_OK) return st;\n    return set_watches ## (void)k;\n    return set_watches
+tip-hash-unchecked ## exit_engine.c ## (given && memcmp(c->block_hash, x->tip_hash, 32) != 0) ## 0
+s2-at-timeout ## exit_engine.c ## f->height > n->cltv ? GZ_XE_S2 ## f->height >= n->cltv ? GZ_XE_S2
+late-never ## exit_engine.c ## if ((int64_t)x->tip > due && !x->st[i].late) { ## if (0) {
+settled-at-one ## exit_engine.c ## if (!(ours && confs(x, f) >= B)) settled = 0; ## if (!(ours && confs(x, f) >= 1)) settled = 0;
+funding-elsewhere-never ## exit_engine.c ## if (confs(x, f) >= B) return end_exit(x, GZ_XE_END_FUNDING_SPENT, out); ## (void)0;
+# The fixes of the same reviews.
+member-end-at-one ## exit_engine.c ## if (confs(x, f) >= p->c.B) { ## if (confs(x, f) >= 1) {
+demote-on-absence ## exit_engine.c ## if (c == 0 && now >= GZ_XE_ST_CONFIRMED && own_reorged(x, node)) { ## if (c == 0 && now >= GZ_XE_ST_CONFIRMED) {
+failed-sweepable ## exit_engine.c ## if (!f->watched || !f->synced || f->failed) return 0; ## if (!f->watched || !f->synced) return 0;
+failed-deep-not-confirmed ## exit_engine.c ## if (t->failed) return GZ_XE_DEEP; ## if (t->failed) return 0;
+retire-never ## exit_engine.c ## if (!s->sighted && x->tip >= s->born_tip + GZ_XE_SWEEP_LIFE) { ## if (0) {
+port-every-decision ## exit_engine.c ## if (x->port_tip_known && x->port_tip == x->tip) return GZ_OK; ## (void)0;
+held-back-never ## exit_engine.c ## if (++x->st[i].refused >= (x->plan.c.A ? x->plan.c.A : 1) && !x->st[i].held) { ## if (0) {
+verify-skipped ## exit_engine.c ## if (!steps_verified(in, out, order)) return GZ_XE_PLAN_BAD_SIGNATURE; ## (void)order;
+tree-half-ungated ## exit_engine.c ## if (in->has_channel || in->balance_sat) return GZ_XE_PLAN_NOT_TREE_HALF; ## (void)0;
+owed-optional ## exit_engine.c ## if (r != 1 || v.len != sizeof p->owed) return 0;\n        memcpy ## if (r == 1 && v.len != sizeof p->owed) return 0;\n        memcpy
+plan-after-start ## exit_engine.c ## if (x->started || x->ended || !dec_plan(s, &x->plan)) return GZ_ERR_CORRUPT; ## if (!dec_plan(s, &x->plan)) return GZ_ERR_CORRUPT;
+stale-never-refreshed ## exit_engine.c ## if (x->tip < f->zero_tip + GZ_XE_STALE_TIPS) continue; ## continue;
+begin-without-tip ## exit_engine.c ## if (!x->tip_known) { *refused = GZ_XE_REFUSED_NO_TIP; return GZ_OK; } ## (void)0;
+seen-unknown-corrupt ## exit_engine.c ## if (!(f = find_fact(x, &o, &kind, &idx))) return GZ_OK; ## if (!(f = find_fact(x, &o, &kind, &idx))) return GZ_ERR_CORRUPT;
