@@ -179,10 +179,12 @@ wallet/tests/test_wallet_rare.c	gzw_bip32_master	6
 wallet/tests/test_wallet_rare.c	gzw_bip86_account_xprv	1
 wallet/tests/test_wallet_rare.c	gzw_bip86_tweaked_keypair	2
 wallet/tests/test_wallet_rare.c	secp256k1_ec_seckey_negate	1
+wallet/tx/include/gazpacho/wallet_tx.h	gzt_funding_adopt	1
 wallet/tx/include/gazpacho/wallet_tx.h	gzt_funding_build	1
 wallet/tx/include/gazpacho/wallet_tx.h	gzt_funding_release	1
 wallet/tx/include/gazpacho/wallet_tx.h	gzt_funding_spend_back	1
 wallet/tx/include/gazpacho/wallet_tx.h	gzt_sign_keypath	1
+wallet/tx/src/funding.c	gzt_funding_adopt	1
 wallet/tx/src/funding.c	gzt_funding_build	1
 wallet/tx/src/funding.c	gzt_funding_release	1
 wallet/tx/src/funding.c	gzt_funding_spend_back	1
@@ -202,9 +204,10 @@ wallet/tx/tests/test_tx_faults.c	gzt_funding_build	2
 wallet/tx/tests/test_tx_faults.c	gzt_funding_release	1
 wallet/tx/tests/test_tx_faults.c	gzt_sign_keypath	1
 wallet/tx/tests/test_tx_faults.c	gzw_taproot_tweak_seckey	1
-wallet/tx/tests/test_tx_funding_port.c	gzt_funding_build	14
-wallet/tx/tests/test_tx_funding_port.c	gzt_funding_release	1
-wallet/tx/tests/test_tx_funding_port.c	gzt_funding_spend_back	8
+wallet/tx/tests/test_tx_funding_port.c	gzt_funding_adopt	7
+wallet/tx/tests/test_tx_funding_port.c	gzt_funding_build	16
+wallet/tx/tests/test_tx_funding_port.c	gzt_funding_release	4
+wallet/tx/tests/test_tx_funding_port.c	gzt_funding_spend_back	9
 wallet/tx/tests/test_tx_funding_port.c	gzw_bip32_master	1
 wallet/tx/tests/test_tx_vectors.c	gzt_sign_keypath	3
 wallet/tx/tests/test_tx_vectors.c	gzw_taproot_tweak_seckey	3
@@ -252,7 +255,9 @@ wallet/vectors/official_vectors.c	secp256k1_schnorrsig_sign_custom	1
 #   gzt_sign_keypath), every secret wiped on every path, fresh aux.
 # program/wport.c: the wallet port (P4.6): the host's funding, its signature
 #   and its spend-backs (gzt_funding_build, gzt_funding_release,
-#   gzt_funding_spend_back), each with a master key derived for that one
+#   gzt_funding_spend_back), and a plan from the journal held again after a
+#   restart (gzt_funding_adopt: it signs a copy once, to check the funding
+#   and measure it, within the plan's fee ceiling), each with a master key derived for that one
 #   operation from the seed source and wiped at once (master_now,
 #   gzw_bip32_master); no private key is kept between operations or across a
 #   lock (test_master_not_kept). The addresses come from the account's public
@@ -271,12 +276,14 @@ program/sweep.c	gzt_sign_keypath	1
 program/sweep.c	gzw_bip32_master	1
 program/sweep.c	gzw_bip86_tweaked_keypair	1
 program/sweep.c	secp256k1_keypair_create	1
+program/wport.c	gzt_funding_adopt	1
 program/wport.c	gzt_funding_build	1
 program/wport.c	gzt_funding_release	1
 program/wport.c	gzt_funding_spend_back	1
 program/wport.c	gzw_bip32_master	1
 tests/node/test_node_lobby.c	gate_secret	3
-tests/program/test_wport.c	gzw_bip32_master	1
+tests/program/test_wport.c	gzt_funding_build	1
+tests/program/test_wport.c	gzw_bip32_master	2
 # tests/lobby/test_lobby.c secp256k1_schnorrsig_sign32: REASON MISSING
 tests/lobby/test_lobby.c	secp256k1_schnorrsig_sign32	1
 # ---- END integration-slice1
