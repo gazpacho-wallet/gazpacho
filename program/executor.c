@@ -1252,7 +1252,8 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
         gz_runner_init(&ex->runner, ex->rslots, GZP_RUNNER_SLOTS, ex->rbytes, GZP_RUNNER_BYTES,
                        ex->incarnation, execute, ex) != GZ_OK) {
         gzp_exec_close_storage(ex);
-        return GZP_RUN_FAILED;
+        rc = GZP_RUN_FAILED;
+        goto wipe;
     }
     gz_action_list_init(&ex->list, ex->lslots, GZP_LIST_SLOTS, ex->lbytes, GZP_LIST_BYTES);
 
@@ -1296,7 +1297,8 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
         if (gzp_net_open(ex->net) != 0) {
             free(fds);
             gzp_exec_close_storage(ex);
-            return GZP_RUN_FAILED;
+            rc = GZP_RUN_FAILED;
+            goto wipe; /* the node ran: its memory is wiped as at every end */
         }
         if (ex->net->listening) gzp_log("listening address=%s:%u", ex->net->listen_host, (unsigned)ex->net->bound_port);
         /* The node learns the tip at every start (review of PR 27, L4). */
@@ -1328,6 +1330,7 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
      * signing engine's any round's secret nonces and keypairs: wiped when the
      * incarnation ends, on a lock, a restart or a stop (review A of PR 54,
      * M-2). The next start rebuilds both from the journal. */
+wipe:
     if (ex->node) OPENSSL_cleanse(ex->node, gz_node_size());
     if (ex->sign_mem) OPENSSL_cleanse(ex->sign_mem, gz_node_sign_size());
     return rc;

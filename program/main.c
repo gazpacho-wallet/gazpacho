@@ -767,6 +767,13 @@ int main(int argc, char **argv)
 
     for (i = 1;; i++) {
         int r = gzp_exec_incarnation(&ex, i);
+#ifdef GZP_TEST_BUILD
+        {
+            int nz, sz;
+            gzp_exec_test_memory_zero(&ex, &nz, &sz);
+            gzp_log("incarnation-end rc=%d node-zero=%d sign-zero=%d", r, nz, sz);
+        }
+#endif
         uint64_t now;
         if (r == GZP_RUN_STOP) {
             rc = 0;

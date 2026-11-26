@@ -218,6 +218,24 @@ def main():
         check(fg is not None and fg.group(2) == "2", "9: and it is counted, not reset (%s)" % (fg.group(0) if fg else None))
         p.stop()
 
+        # 11. An incarnation that fails after its node started (the listen port is
+        #     taken, so the network does not open) still wipes the node's and the
+        #     signing engine's memory (review A of PR 54, the Low on 1867a7c).
+        import socket
+        taken = socket.socket()
+        taken.bind(("127.0.0.1", 0))
+        taken.listen(1)
+        q = Proc("listen-taken", [exe, "--data-dir", os.path.join(work, "listen-taken"), "--role", "host", "--name", "h",
+                                  "--listen", "127.0.0.1:%d" % taken.getsockname()[1], "--no-chain", "--no-interface",
+                                  "--test-passphrase-file", _pass_file(), "--test-kdf-floor"], logs)
+        procs.append(q)
+        ie = q.wait_for(r"incarnation-end rc=(-?\d+) node-zero=(\d) sign-zero=(\d)", timeout=90)
+        check(q.find(r"ready incarnation=")[0] is not None and ie is not None and ie.group(2) == "1" and ie.group(3) == "1",
+              "11: the network fails to open after the node started: its memory is wiped all the same (%s)"
+              % (ie.group(0) if ie else None))
+        q.exit_code(timeout=30)
+        taken.close()
+
         # 5. The release program stays locked without the local interface.
         if release:
             rfolder = os.path.join(work, "release")
