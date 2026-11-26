@@ -13,8 +13,11 @@
 # the other 4 go at S4).
 core/gazpacho/include/gazpacho/ports.h	host_secret	1
 core/node/internal.h	gate_secret	1
-core/node/lobbyslot.c	gate_secret	5
-core/node/lobbyslot.c	hook:secret	1
+# #55 (boundary review, label OK): 5 to 7, the join-ready derive deferred to gz_ls_after
+# (memcpy into gate_secret) and the wipe of gate_secret on a failed join (slot_begin).
+core/node/lobbyslot.c	gate_secret	7
+# #55 (boundary review, label OK): 1 to 2, keys.secret() at the deferred join-ready derive.
+core/node/lobbyslot.c	hook:secret	2
 core/node/signslot.c	gate_secret	1
 core/node/signslot.c	hook:secret	2
 core/node/signslot.c	hook:sign	2
@@ -22,6 +25,9 @@ core/node/signslot.c	host_secret	2
 core/node/signslot.c	secp256k1_keypair_create	3
 core/signing/signing.c	secp256k1_keypair_sec	1
 program/executor.c	host_secret	1
+# #55 (boundary review, label OK): test_join_ready_key_hook reads gate_secret, comparing it with zero
+# (no key before the terms, none for other values, every byte wiped at a lock).
+tests/node/test_node_lobby.c	gate_secret	3
 tests/node/test_node_lobby.c	hook:secret	1
 # K1 (#95, review B L-4), growth: test_k1_ls_sign_no_factory asks the slots' signing hook to sign with
 # the factory key (member, host: refused) and the contribution key (signs) (2 -> 5)
