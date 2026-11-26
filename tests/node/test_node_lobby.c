@@ -11,6 +11,7 @@
 #include "node_test.h"
 #include "../lobby/lobby_test.h"
 #include "internal.h"
+#include "gazpacho/funding.h"
 #include <secp256k1.h>
 
 #define NN 7                    /* node 0 is the host; 1 to 5 members; 6 a scratch node */
@@ -29,6 +30,7 @@ typedef struct {
 typedef struct { uint64_t id, at; } wtimer_t;
 typedef struct {
     int used, up, wanted, node;
+    int closer;                 /* up -1: the node whose DISCONNECT is closing it */
     gz_link_t mlink;            /* the member's side: (its key, the host's) */
     uint32_t epoch, index;
 } wconn_t;
@@ -173,12 +175,22 @@ static int w_verify(void *ctx, const uint8_t pub[33], const uint8_t msg[32], con
 
 static int w_point(void *ctx, const uint8_t pub[33]) { return lt_point_ok(ctx, pub); }
 
+static int SIGNS[NN];          /* member signatures of each node (w_sign) */
+/* The wallet port's dry run of a host's funding (cfg.funds.can_plan), per node: 0 enough,
+ * 1 short, 2 cannot tell; W_NO_WALLET: the next w_node has no port at all. */
+static int FUNDS[NN], W_NO_WALLET;
+static uint64_t FUNDS_ASKED[NN];
+static gz_wallet_port_t WWALLET[NN];
+
+static int w_can_plan(void *ctx, uint64_t amount, uint64_t feerate, uint64_t *have_sat, size_t *n_coins);
+
 static int w_sign(void *ctx, int host, uint32_t epoch, uint32_t index, const uint8_t msg[32], uint8_t sig[64])
 {
     static const uint8_t aux[32];
     lt_key_t k;
     int n = node_of(ctx);
     if (SIGN_FAIL[n]) return 0;
+    if (!host) SIGNS[n]++;
     if (host) {
         if (IDENT[n] != 0) return 0;
         whost(&k);
@@ -186,6 +198,17 @@ static int w_sign(void *ctx, int host, uint32_t epoch, uint32_t index, const uin
         wkey(IDENT[n], epoch, index, &k);
     }
     return secp256k1_schnorrsig_sign32(lt_ctx(), sig, msg, &k.kp, aux);
+}
+
+static int w_can_plan(void *ctx, uint64_t amount, uint64_t feerate, uint64_t *have_sat, size_t *n_coins)
+{
+    int n = node_of(ctx);
+    (void)feerate;
+    FUNDS_ASKED[n] = amount;
+    if (FUNDS[n] == 2) return -1;
+    *n_coins = 1;
+    *have_sat = FUNDS[n] == 1 ? amount / 2 : amount + 100000;
+    return FUNDS[n] == 1 ? 0 : 1;
 }
 
 static void w_forget(void *ctx, const uint8_t scope[32])
@@ -230,7 +253,7 @@ static void post(int n, size_t from)
                 s->len = a->u.send.records.len;
                 if (s->len) memcpy(s->rec, a->u.send.records.data, s->len);
             }
-            if (!c || !c->up || NQ == 8192) continue; /* no connection: the program drops it */
+            if (!c || c->up != 1 || NQ == 8192) continue; /* no connection, or closing: the program drops it */
             wmsg_t *m = &Q[NQ++];
             m->to = n == 0 ? c->node : 0;
             if (n == 0) m->link = c->mlink;
@@ -261,7 +284,10 @@ static void post(int n, size_t from)
             wconn_t *c = conn_of_member_key(n == 0 ? a->u.disconnect.link.remote.key : a->u.disconnect.link.local.key);
             if (!c) continue;
             if (n != 0) c->wanted = 0; /* the member's CONNECT stands no longer */
-            if (c->up) c->up = -1;     /* reported down to both sides at the next turn */
+            if (c->up == 1) {          /* reported down to both sides at the next turn */
+                c->up = -1;
+                c->closer = n;
+            }
         } else if (a->kind == GZ_ACTION_NOTIFY && a->u.notify.code == GZ_NOTIFY_COMMAND_RESULT) {
             RES_LEN[n] = a->u.notify.bytes.len <= sizeof RES[0] ? a->u.notify.bytes.len : 0;
             if (RES_LEN[n]) memcpy(RES[n], a->u.notify.bytes.data, RES_LEN[n]);
@@ -349,9 +375,11 @@ static void w_peer(int n, const gz_link_t *l, int up, int outbound, uint32_t epo
     w_event(n, &ev);
 }
 
+static unsigned long DELIVERED[NN];
 static void w_msg(int n, const gz_link_t *l, uint16_t kind, const uint8_t scope[32], const uint8_t *rec, size_t len)
 {
     gz_event_t ev;
+    DELIVERED[n]++;
     memset(&ev, 0, sizeof ev);
     ev.kind = GZ_EVENT_MESSAGE_RECEIVED;
     ev.u.message.link = *l;
@@ -374,10 +402,17 @@ static void w_turn(void)
         hl = h_link(hk.pub, c->mlink.local.key);
         if (c->up == -1) {
             c->up = 0;
-            for (size_t k = 0; k < NQ; k++) /* a connection's messages die with it */
+            /* A DISCONNECT is ordered (action.h): what its side queued on the
+             * link is sent first, then it is closed; what the other side had
+             * queued to it is lost (the program reads nothing more on a closing
+             * link, program/net.c), and nothing sent after it goes. */
+            for (size_t k = 0; k < NQ; k++)
                 if (Q[k].rec && (!memcmp(&Q[k].link, &hl, sizeof hl) || !memcmp(&Q[k].link, &c->mlink, sizeof hl))) {
-                    free(Q[k].rec);
+                    wmsg_t m = Q[k];
                     Q[k].rec = NULL;
+                    if ((m.to == 0 ? c->node : 0) == c->closer && ALIVE[m.to])
+                        w_msg(m.to, &m.link, m.kind, m.scope, m.rec, m.len);
+                    free(m.rec);
                 }
             w_peer(0, &hl, 0, 0, 0, 0);
             w_peer(c->node, &c->mlink, 0, 1, c->epoch, c->index);
@@ -394,7 +429,9 @@ static void w_turn(void)
         if (!m.rec) continue;
         Q[k].rec = NULL;
         c = conn_of_member_key(m.to == 0 ? m.link.remote.key : m.link.local.key);
-        if (c && c->up == 1 && ALIVE[m.to]) w_msg(m.to, &m.link, m.kind, m.scope, m.rec, m.len);
+        /* Closing (a DISCONNECT, up -1): what the closing side queued before it still goes. */
+        if (c && (c->up == 1 || (c->up == -1 && (m.to == 0 ? c->node : 0) == c->closer)) && ALIVE[m.to])
+            w_msg(m.to, &m.link, m.kind, m.scope, m.rec, m.len);
         free(m.rec);
     }
     NQ = 0;
@@ -450,11 +487,13 @@ static gz_status_t w_start(int n)
     return more ? GZ_ERR_BUG : GZ_OK;
 }
 
+static uint32_t W_TEST_ENGINES; /* test engines in the next w_node (test_index_unique) */
+
 static void w_node(int n, int ident, gz_member_signing_t signing, uint32_t outcome)
 {
     h_t *h = &N[n];
     memset(VW[n], 0, sizeof VW[n]); /* a new program: its view starts empty */
-    h_init(h, ident == 0, 0);
+    h_init(h, ident == 0, W_TEST_ENGINES);
     IDENT[n] = ident;
     h->confirm_auto = 0;
     h->clock = NOW;
@@ -470,6 +509,9 @@ static void w_node(int n, int ident, gz_member_signing_t signing, uint32_t outco
     h->cfg.member_signing = signing;
     h->cfg.test_sign_outcome = outcome;
     h->cfg.test_sign_delay_ms = 50;
+    WWALLET[n].can_plan = w_can_plan;
+    WWALLET[n].ctx = h;
+    h->cfg.wallet = W_NO_WALLET ? NULL : &WWALLET[n];
     h_new_node(h);
 }
 
@@ -477,7 +519,7 @@ static void w_node(int n, int ident, gz_member_signing_t signing, uint32_t outco
  * secrets; its hand-offs still go to the stand-in (`outcome`), so only the key hook and the gate are the
  * engine's here. */
 static secp256k1_context *TCTX;
-static void *TMEM[4];
+static void *TMEM[NN];          /* one engine memory per node, the scratch node included */
 static int w_secret(void *ctx, uint32_t epoch, uint32_t index, uint8_t sec[32])
 {
     (void)ctx; (void)epoch;
@@ -510,6 +552,9 @@ static void w_node_engine(int n, int ident, gz_member_signing_t signing, uint32_
     h->cfg.secp = TCTX;
     h->cfg.sign_mem = TMEM[n];
     h->cfg.sign_mem_size = gz_node_sign_size();
+    WWALLET[n].can_plan = w_can_plan;
+    WWALLET[n].ctx = h;
+    h->cfg.wallet = W_NO_WALLET ? NULL : &WWALLET[n];
     h_new_node(h);
 }
 
@@ -527,6 +572,9 @@ static void w_reset(void)
     memset(FORGETS, 0, sizeof FORGETS);
     memset(UNSEATS, 0, sizeof UNSEATS);
     NOW = W_NOW0;
+    memset(FUNDS, 0, sizeof FUNDS);
+    memset(FUNDS_ASKED, 0, sizeof FUNDS_ASKED);
+    W_NO_WALLET = 0;
     memset(VW, 0, sizeof VW);
     VIEW_ERRORS = 0;
 }
@@ -627,11 +675,21 @@ static int member_join(int n, const terms_t *t)
     return w_cmd(n, GZ_CMD_LOBBY_JOIN, a, 3);
 }
 
+static slot_t *slot(int n, const terms_t *t);
+
+/* With `unlock`: the ready given with the passphrase, for the values the
+ * member holds (16, the seen_current_digest; review of #79, M1), or the
+ * terms' own before it has any. */
 static int scope_cmd(int n, uint16_t code, const terms_t *t, int unlock)
 {
-    uint8_t u = 1;
-    h_arg_t a[2] = {{12, t->scope, 32}, {14, &u, 1}};
-    return w_cmd(n, code, a, unlock ? 2 : 1);
+    uint8_t u = 1, d[32];
+    const slot_t *s = slot(n, t);
+    if (s && !s->host && s->lobby.m.have_terms)
+        memcpy(d, s->lobby.m.frozen ? s->lobby.m.frozen_digest : s->lobby.m.current_digest, 32);
+    else
+        gz_terms_current_digest(t->current, t->cn, d);
+    h_arg_t a[3] = {{12, t->scope, 32}, {14, &u, 1}, {16, d, 32}};
+    return w_cmd(n, code, a, unlock ? 3 : 1);
 }
 
 static slot_t *slot(int n, const terms_t *t)
@@ -1116,7 +1174,7 @@ static void test_refusals(void)
         memset(x, 0, sizeof *x);
     }
     /* Unknown commands in the lobby's and the node's ranges. */
-    CHECK(w_cmd(1, 0x01ff, NULL, 0) == 404 && w_cmd(1, 0x04ff, NULL, 0) == 404 && w_cmd(0, 0x0109, NULL, 0) == 404);
+    CHECK(w_cmd(1, 0x01ff, NULL, 0) == 404 && w_cmd(1, 0x04ff, NULL, 0) == 404 && w_cmd(0, 0x010b, NULL, 0) == 404);
     /* The test commands for the stand-in's slots do not reach a slot that
      * holds a lobby: it is closed by its lobby alone, with its records. */
     {
@@ -1292,6 +1350,52 @@ static int ready_seen(int n, const terms_t *t, const uint8_t digest[32])
  * values than the lobby's is refused and opens nothing; a lock closes the gate and the key is gone. The
  * contribution key (no factory asked) is the lobby's in any case. Kills sg-at-join-any-digest and the
  * reviewer's a-atjoin-bypass. */
+/* A join ready under AT_JOIN (field 24, bound by 26) with the signing engine: the lobby's
+ * factory key is derived at the join, as a ready's is (#52), so the key hook gives it for
+ * the digest joined for, and not for another (review of #79's join-secret routing). */
+static void test_join_ready_key_hook(void)
+{
+    terms_t t;
+    lt_key_t hk;
+    uint8_t d[32], other[32], one = 1;
+    secp256k1_keypair f, kc;
+    whost(&hk);
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node_engine(1, 1, GZ_MEMBER_SIGNING_AT_JOIN, GZ_TEST_SIGN_UNFINISHED);
+    w_node_engine(2, 2, GZ_MEMBER_SIGNING_AT_JOIN, GZ_TEST_SIGN_UNFINISHED);
+    for (int n = 0; n <= 2; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 4, 4, 3010);
+    CHECK(host_open(&t, 0) == 200);
+    gz_terms_current_digest(t.current, t.cn, d);
+    memcpy(other, d, 32);
+    other[0] ^= 1;
+    {
+        h_arg_t j[5] = {{12, t.scope, 32}, {14, hk.pub, 33}, {16, ADDR, sizeof ADDR - 1}, {24, &one, 1}, {26, d, 32}};
+        CHECK(w_cmd(1, GZ_CMD_LOBBY_JOIN, j, 5) == 200);
+        /* no key before the terms are here (L-4): the join holds none */
+        CHECK(slot(1, &t) && !memcmp(slot(1, &t)->gate_secret, (const uint8_t[32]){0}, 32));
+        /* member 2 joined ready for values the host does not have: no key at all, ever */
+        h_arg_t j2[5] = {{12, t.scope, 32}, {14, hk.pub, 33}, {16, ADDR, sizeof ADDR - 1}, {24, &one, 1}, {26, other, 32}};
+        CHECK(w_cmd(2, GZ_CMD_LOBBY_JOIN, j2, 5) == 200);
+    }
+    w_run(4000, 100);
+    CHECK(slot(2, &t) && slot(2, &t)->lobby.m.have_terms && !memcmp(slot(2, &t)->gate_secret, (const uint8_t[32]){0}, 32));
+    slot_t *s = slot(1, &t);
+    CHECK(s && N[1].n->sign_on && s->gate_open && s->gate_have && !memcmp(s->gate_digest, d, 32));
+    CHECK(gz_sg_keys(N[1].n, t.scope, d, &f, &kc) == 1);          /* the factory key, for the values joined for */
+    CHECK(gz_sg_keys(N[1].n, t.scope, other, &f, &kc) == 0);      /* and for no other */
+    /* a lock closes the gate: the secret is wiped, every byte, and the key is gone */
+    CHECK(w_cmd(1, GZ_CMD_SIGNING_LOCK, NULL, 0) == 200);
+    w_run(1000, 100);
+    if (s) {
+        uint8_t zero[32] = {0};
+        CHECK(!s->gate_have && !memcmp(s->gate_secret, zero, 32));
+    }
+    CHECK(gz_sg_keys(N[1].n, t.scope, d, &f, &kc) == 0);
+    w_free(2);
+}
+
 static void test_at_join_key_hook(void)
 {
     terms_t t;
@@ -1317,8 +1421,12 @@ static void test_at_join_key_hook(void)
     CHECK(gz_sg_keys(N[1].n, t.scope, d, &f, &kc) == 0 && gz_sg_keys(N[1].n, t.scope, NULL, NULL, &kc) == 1);
     /* a ready for values the lobby does not have: refused, the gate untouched (L5) */
     CHECK(ready_seen(1, &t, other) == 409 && !s->gate_have && !s->gate_open);
-    /* a passphrase ready without the digest: a bad request */
-    CHECK(scope_cmd(1, GZ_CMD_LOBBY_READY, &t, 1) == 400 && !s->gate_have);
+    /* a passphrase ready without the digest: a bad request (scope_cmd sends one since W12) */
+    {
+        uint8_t u1 = 1;
+        h_arg_t r[2] = {{12, t.scope, 32}, {14, &u1, 1}};
+        CHECK(w_cmd(1, GZ_CMD_LOBBY_READY, r, 2) == 400 && !s->gate_have);
+    }
     /* the ready for the values shown: the gate opens, bound to them */
     CHECK(ready_seen(1, &t, d) == 200 && s->gate_have && memcmp(s->gate_digest, d, 32) == 0);
     w_run(1000, 100);
@@ -1415,7 +1523,7 @@ static void test_hostile(unsigned long events, uint64_t seed)
 {
     static const uint16_t kinds[] = {16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 63, 64, 70, 78, 80, 81, 130,
                                      32767, 0, 2, 0xffff, 15, 17};
-    static const uint16_t codes[] = {GZ_CMD_API_PAUSE, GZ_CMD_API_SET_SIGNING, 0x0d7f,
+    static const uint16_t codes[] = {GZ_CMD_API_PAUSE, GZ_CMD_API_SET_SIGNING, GZ_CMD_API_SET_CONDITIONS, 0x0d7f, 0x010a,
                                      GZ_CMD_LOBBY_OPEN, GZ_CMD_LOBBY_JOIN, GZ_CMD_LOBBY_READY, GZ_CMD_LOBBY_UNREADY,
                                      GZ_CMD_LOBBY_LEAVE, GZ_CMD_LOBBY_SET_VALUES, GZ_CMD_LOBBY_REMOVE,
                                      GZ_CMD_LOBBY_CANCEL, GZ_CMD_SIGNING_UNLOCK, GZ_CMD_SIGNING_LOCK, 0x7e86, 0x0109,
@@ -1619,6 +1727,86 @@ static void test_gate_refused_ready(void)
     w_free(1);
 }
 
+/* The host sets the lobby's values again (the same values, a new version):
+ * every member's current digest changes. */
+static int host_set_same_values(const terms_t *t)
+{
+    slot_t *s = slot(0, t);
+    uint8_t vals[8 * GZ_TERMS_MAX_ADJ];
+    size_t n;
+    if (!s) return -1;
+    n = s->lobby.h.values.n_values;
+    for (size_t k = 0; k < n; k++) gz_put_u64(vals + 8 * k, s->lobby.h.values.val[k].value);
+    h_arg_t a[2] = {{12, t->scope, 32}, {14, vals, 8 * n}};
+    return w_cmd(0, GZ_CMD_LOBBY_SET_VALUES, a, 2);
+}
+
+/* The AT_JOIN gate is bound to the terms the person saw (RULE-NODE:GATE_DIGEST;
+ * kills sg-gate-digest-off and sg-refused-ready-rebinds, which no test reached
+ * before #89's CI ran these mutants).
+ *
+ * Why the existing tests missed them. test_at_join_key_hook readies for the
+ * shown values and then for other values, but the second ready is refused at
+ * its own digest check (RULE-NODE:READY_SEEN_DIGEST), before the gate is
+ * touched; and the lobby's current terms never change behind an open gate,
+ * so the gate's own compare in ls_may_answer is never asked a question it
+ * could answer wrongly. A refused ready that had rebound the gate (the only
+ * way to reach the restore) needs a ready for the current values that the
+ * lobby itself refuses; no test made one.
+ *
+ * 1. The member readies for the values shown: the gate opens for that digest.
+ * 2. The host sets new values (a new version): the gate does not answer for
+ *    them. The member is not ready, and no factory key exists for them.
+ * 3. A ready for the new values that the lobby refuses (it is made to refuse
+ *    by marking the member not joined, a state the lobby refuses a ready in):
+ *    the gate keeps the digest it had, not the refused ready's.
+ * 4. The person readies for the new values: the gate opens for them. */
+static void test_gate_bound_to_terms(void)
+{
+    terms_t t;
+    uint8_t d[32], d2[32];
+    secp256k1_keypair f, kc;
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node_engine(1, 1, GZ_MEMBER_SIGNING_AT_JOIN, GZ_TEST_SIGN_UNFINISHED);
+    w_node(2, 2, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node(3, 3, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    for (int n = 0; n <= 3; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 4, 4, 5000);
+    CHECK(host_open(&t, 0) == 200);
+    for (int n = 1; n <= 3; n++) CHECK(member_join(n, &t) == 200);
+    w_run(4000, 100);
+    slot_t *s = slot(1, &t);
+    CHECK(s && N[1].n->sign_on && s->lobby.m.have_terms);
+    if (!s) { w_free(3); return; }
+    memcpy(d, s->lobby.m.current_digest, 32);
+    /* 1 */
+    CHECK(ready_seen(1, &t, d) == 200 && s->gate_open && s->gate_have && memcmp(s->gate_digest, d, 32) == 0);
+    w_run(1000, 100);
+    CHECK(member_ready(1, &t) == 1 && host_ready(&t) == 3);
+    /* 2 */
+    CHECK(host_set_same_values(&t) == 200);
+    w_run(2000, 100);
+    memcpy(d2, s->lobby.m.current_digest, 32);
+    CHECK(memcmp(d2, d, 32) != 0);                          /* the member has the new values */
+    CHECK(host_ready(&t) == 2);                             /* the gate does not answer for them: the other two re-ready, not this one */
+    CHECK(memcmp(s->gate_digest, d, 32) == 0);              /* still bound to what the person saw */
+    CHECK(gz_sg_keys(N[1].n, t.scope, d2, &f, &kc) == 0);   /* no factory key for the new values */
+    /* 3 */
+    s->lobby.m.joined = 0;
+    CHECK(ready_seen(1, &t, d2) == 409);
+    s->lobby.m.joined = 1;
+    CHECK(s->gate_have && memcmp(s->gate_digest, d, 32) == 0);   /* the refused ready did not rebind */
+    CHECK(gz_sg_keys(N[1].n, t.scope, d2, &f, &kc) == 0);
+    /* 4 */
+    CHECK(ready_seen(1, &t, d2) == 200 && memcmp(s->gate_digest, d2, 32) == 0);
+    w_run(1000, 100);
+    CHECK(member_ready(1, &t) == 1 && gz_sg_keys(N[1].n, t.scope, d2, &f, &kc) == 1);
+    CHECK(gz_sg_keys(N[1].n, t.scope, d, &f, &kc) == 0);    /* and none for the old values */
+    no_errors(3);
+    w_free(3);
+}
+
 /* ---- 7. a slot left out at a start keeps its place (review B of PR 44, H1) ---------- */
 
 /* The key port cannot give a slot's keys at a start, and gives them again
@@ -1647,7 +1835,7 @@ static void test_left_out(void)
     {   /* and its attention item, emitted at the start (P6a) */
         char aid[80];
         const char *id = gz_api_local_id(N[1].n, t[0].scope);
-        snprintf(aid, sizeof aid, "att_%s", id ? id : "");
+        snprintf(aid, sizeof aid, "att_%s", id ? id + 4 : "");
         CHECK(id && vf8(view_of(1, GZ_VIEW_ATTENTION, aid), GZ_VAT_CODE) == GZ_ATT_LOBBY_LEFT_OUT);
     }
     CHECK(member_join(1, &t[0]) == 503 && scope_cmd(1, GZ_CMD_LOBBY_READY, &t[0], 0) == 503);
@@ -1687,7 +1875,10 @@ static void test_left_out(void)
 /* slot_opened with an even field this program does not know (a newer
  * program requires it), or a key index whose pair would wrap: damage, so the
  * start refuses it. An odd unknown field is skipped (review B of PR 44, L3,
- * L4). */
+ * L4). A key index above 0xfffffff0, which allocation never reaches, is
+ * refused too, as a second defence after the sealed journal: near the top
+ * the contribution index would meet the program's reserved indexes and the
+ * factory index wrap (cases 4 and 5; 0xfffffff0 itself still loads, case 6). */
 static void test_node_record_fields(void)
 {
     lt_key_t hk;
@@ -1695,7 +1886,8 @@ static void test_node_record_fields(void)
     whost(&hk);
     w_reset();
     make_terms(&t, 3, 3, 700);
-    for (int k = 0; k < 4; k++) {
+    static const uint32_t index_of[7] = {1, 0xffffffffu, 1, 1, 0xfffffffeu, 0xfffffff1u, 0xfffffff0u};
+    for (int k = 0; k < 7; k++) {
         h_t *x = &N[SCRATCH];
         uint8_t rec[300], v[4];
         size_t at = 0;
@@ -1710,18 +1902,23 @@ static void test_node_record_fields(void)
         gz_rec_put(rec, sizeof rec, &at, 10, (const uint8_t *)ADDR, sizeof ADDR - 1);
         gz_put_u32(v, 0);
         gz_rec_put(rec, sizeof rec, &at, 12, v, 4);
-        gz_put_u32(v, k == 1 ? 0xffffffffu : 1);
+        gz_put_u32(v, index_of[k]);
         gz_rec_put(rec, sizeof rec, &at, 14, v, 4);
         v[0] = 1;
         gz_rec_put(rec, sizeof rec, &at, 22, v, 1);
-        if (k == 2) gz_rec_put(rec, sizeof rec, &at, 24, v, 1); /* unknown, even */
+        if (k == 2) gz_rec_put(rec, sizeof rec, &at, 26, v, 1); /* unknown, even (24 is the conditions' version now) */
+        if (k == 4) gz_rec_put(rec, sizeof rec, &at, 24, v, 1); /* the conditions' version, not 4 bytes */
         if (k == 3) gz_rec_put(rec, sizeof rec, &at, 25, v, 1); /* unknown, odd */
         h_add_batch(x, 1, 1, GZ_RECORD_SLOT_OPENED, rec, at);
         x->incarnation = 1;
         h_new_node(x);
         st = w_start(SCRATCH);
-        CHECK(k == 1 || k == 2 ? st == GZ_ERR_CORRUPT : st == GZ_OK);
-        if (k == 0 || k == 3) CHECK(gz_route_slot_by_scope(x->n, t.scope) >= 0);
+        if (k == 1 || k == 2 || k == 4 || k == 5) {
+            CHECK(st == GZ_ERR_CORRUPT);   /* the start refuses: no slot is loaded */
+        } else {
+            CHECK(st == GZ_OK);
+            CHECK(gz_route_slot_by_scope(x->n, t.scope) >= 0);
+        }
         ALIVE[SCRATCH] = 0;
         NT[SCRATCH] = 0;
         for (int i = 0; i < 64; i++)
@@ -1905,7 +2102,7 @@ static void test_view_seats(void)
     w = view_of(1, GZ_VIEW_LOBBY, lid(1, &t));
     CHECK(w && vf8(w, GZ_VLB_SEAT) == GZ_VSEAT_JOINED && vf(w, GZ_VLB_LOCKED_SINCE, &v) && vf(w, GZ_VLB_GATE, &v) &&
           v.data[0] == GZ_GATE_PER_LOBBY && v.data[1] == 0 && vf8(w, GZ_VLB_DOING) == GZ_DOING_IN_LOBBY_NOT_COUNTED);
-    snprintf(aid, sizeof aid, "att_%s", lid(1, &t));
+    snprintf(aid, sizeof aid, "att_%s", lid(1, &t) + 4);
     w = view_of(1, GZ_VIEW_ATTENTION, aid);
     CHECK(w && !w->gone && vf8(w, GZ_VAT_CODE) == GZ_ATT_UNLOCK_TO_TAKE_PART);
     w = view_of(0, GZ_VIEW_HOST_LOBBY, lid(0, &t));
@@ -1927,7 +2124,7 @@ static void test_view_seats(void)
     CHECK(v.len == 2 * GZ_VHL_SEAT_LEN && v.data[GZ_VHL_SEAT_LEN + 33] == GZ_VSEAT_REFUSED &&
           (v.data[GZ_VHL_SEAT_LEN + 34] & GZ_VHL_F_REFUSED) && gz_get_u16(v.data + GZ_VHL_SEAT_LEN + 35) == 1 &&
           v.data[GZ_VHL_SEAT_LEN + 37] == GZ_STAGE_OPEN);
-    snprintf(aid, sizeof aid, "att_%s", lid(0, &t));
+    snprintf(aid, sizeof aid, "att_%s", lid(0, &t) + 4);
     w = view_of(0, GZ_VIEW_ATTENTION, aid);
     CHECK(w && !w->gone && vf8(w, GZ_VAT_CODE) == GZ_ATT_MEMBER_REFUSED);
     no_errors(2);
@@ -1998,8 +2195,13 @@ static void test_api_pause_and_signing(void)
     CHECK(w_restart(1) == GZ_OK && member_join(1, &u) == 409);
     CHECK(vf(view_of(1, GZ_VIEW_STATUS, GZ_VIEW_STATUS_ID), GZ_VST_PAUSE, &v) && v.data[0] == GZ_PAUSE_ON);
     {
+        uint8_t pv[4];
         h_arg_t p0[1] = {{12, &off, 1}};
-        CHECK(w_req(1, GZ_CMD_API_PAUSE, "Rq4mT9cV2xE7nR0aW5zK", "/api/v1/pause", 1, p0, 1) == 200);
+        /* A resume names the pause's version (review of PR 75, M1): without it, 409. */
+        CHECK(w_req(1, GZ_CMD_API_PAUSE, "Rq4mT9cV2xE7nR0aW5zJ", "/api/v1/pause", 1, p0, 1) == 409);
+        gz_put_u32(pv, N[1].n->api.pause_version);
+        h_arg_t p0v[2] = {{12, &off, 1}, {14, pv, 4}};
+        CHECK(w_req(1, GZ_CMD_API_PAUSE, "Rq4mT9cV2xE7nR0aW5zK", "/api/v1/pause", 1, p0v, 2) == 200);
     }
     CHECK(member_join(1, &u) == 200);
     /* A paused host runs no ready check, even with its target ready. */
@@ -2022,8 +2224,10 @@ static void test_api_pause_and_signing(void)
         CHECK(vf8(w, GZ_VHL_STAGE) == GZ_LOBBY_CANCELLED && vf(w, GZ_VHL_END_REASON, &v) && gz_get_u16(v.data) == 2);
     }
     {
-        h_arg_t p0[1] = {{12, &off, 1}};
-        CHECK(w_req(0, GZ_CMD_API_PAUSE, "Tq4mT9cV2xE7nR0aW5zK", "/api/v1/pause", 1, p0, 1) == 200);
+        uint8_t pv[4];
+        gz_put_u32(pv, N[0].n->api.pause_version);
+        h_arg_t p0[2] = {{12, &off, 1}, {14, pv, 4}};
+        CHECK(w_req(0, GZ_CMD_API_PAUSE, "Tq4mT9cV2xE7nR0aW5zK", "/api/v1/pause", 1, p0, 2) == 200);
     }
     w_run(3000, 100);
     CHECK(host_state(&u) >= GZ_LOBBY_READY_CHECK || host_state(&u) == -1);
@@ -2241,11 +2445,13 @@ static int res_text(int n, uint64_t type, char *out, size_t cap)
     return 1;
 }
 
+/* A pause or resume as the interface sends it: with the version it read. */
 static int w_pause(int n, int on, const char *rid)
 {
-    uint8_t v = (uint8_t)on;
-    h_arg_t a[1] = {{12, &v, 1}};
-    return w_req(n, GZ_CMD_API_PAUSE, rid, "/api/v1/pause", 1, a, 1);
+    uint8_t v = (uint8_t)on, pv[4];
+    gz_put_u32(pv, N[n].n->api.pause_version);
+    h_arg_t a[2] = {{12, &v, 1}, {14, pv, 4}};
+    return w_req(n, GZ_CMD_API_PAUSE, rid, "/api/v1/pause", 1, a, 2);
 }
 
 /* The member's running stand-in round in lobby t, or NULL. */
@@ -2386,7 +2592,8 @@ static void test_pause_rows(void)
         uint64_t since = N[1].n->api.pause_since;
         CHECK(since != 0 && w_restart(1) == GZ_OK);
         w = view_of(1, GZ_VIEW_STATUS, GZ_VIEW_STATUS_ID);
-        CHECK(vf(w, GZ_VST_PAUSE, &v) && v.len == 9 && v.data[0] == GZ_PAUSE_ON && gz_get_u64(v.data + 1) == since);
+        CHECK(vf(w, GZ_VST_PAUSE, &v) && v.len == 13 && v.data[0] == GZ_PAUSE_ON && gz_get_u64(v.data + 1) == since &&
+              gz_get_u32(v.data + 9) == N[1].n->api.pause_version && N[1].n->api.pause_version == 1);
         CHECK(slot(1, &t) != NULL && member_round(1, &t) == GZ_LOBBY_FUNDING); /* Awaiting funding: unchanged */
     }
     no_errors(3);
@@ -2435,12 +2642,14 @@ static void test_pause_rows(void)
     w_run(2000, 100);
     CHECK(member_ready(1, &t) == 1 && host_ready(&t) == 1);
     {
-        uint8_t rec[16];
+        uint8_t rec[24];
         size_t at = 0;
-        uint8_t on = GZ_PAUSE_ON, since[8];
+        uint8_t on = GZ_PAUSE_ON, since[8], ver[4];
         gz_put_u64(since, NOW);
+        gz_put_u32(ver, 1);
         gz_rec_put(rec, sizeof rec, &at, 2, &on, 1);
         gz_rec_put(rec, sizeof rec, &at, 4, since, 8);
+        gz_rec_put(rec, sizeof rec, &at, 8, ver, 4);
         h_add_batch(&N[1], N[1].incarnation, ++N[1].seq, GZ_RECORD_PAUSE, rec, at);
     }
     mark = NSENT;
@@ -2463,41 +2672,276 @@ static void test_pause_rows(void)
     w_free(1);
 }
 
-/* Request ids are kept by the 30-day rule (M1): a live object's never goes;
- * a table full of kept ids answers 503 and does nothing; a 31 days old id of
- * an ended object makes room. */
+/* Request ids are kept by 7.4 without ever blocking the wallet (review A of
+ * PR 55, M1 and N1):
+ * - the reviewer's RV4, 600 API requests in a row: none is refused, and
+ *   the ring keeps the newest of the ids with no object;
+ * - a lobby whose share is full refuses only its own next call; a leave, which
+ *   protects the member's funds, still goes, and other lobbies are untouched;
+ * - a live lobby's id is never dropped, and stays a replay;
+ * - the 30 days run on a clock that a wall clock set back cannot stretch. */
 static void test_api_request_keep(void)
+{
+    terms_t t, u, v;
+    char rid[40], q[64];
+    size_t nb;
+    uint8_t l = 0;
+    lt_key_t hk;
+    whost(&hk);
+    w_world(1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    make_terms(&t, 3, 3, 1500);
+    make_terms(&u, 3, 3, 1501);
+    make_terms(&v, 3, 3, 1502);
+    h_arg_t a[3] = {{12, t.outer, t.on}, {14, t.current, t.cn}, {16, &l, 1}};
+    char oid[GZ_LOCAL_ID_MAX + 1];
+    CHECK(w_req(0, GZ_CMD_LOBBY_OPEN, "OpenKeptLobby00001", "/api/v1/host/lobbies", 1, a, 3) == 200);
+    CHECK(host_open(&u, 0) == 200);
+    snprintf(oid, sizeof oid, "%s", lid(0, &t));
+    /* RV4: 600 requests with a digest, none refused. */
+    for (int k = 0; k < 600; k++) {
+        snprintf(rid, sizeof rid, "KeepFill%010d", k);
+        CHECK(w_pause(0, (k & 1) == 0, rid) == 200);
+    }
+    CHECK(N[0].n->api.pause == GZ_PAUSE_OFF);
+    nb = N[0].n_batches;
+    CHECK(w_pause(0, 0, "KeepFill0000000599") == 200 && N[0].n_batches == nb);   /* the newest: a replay */
+    CHECK(res_text(0, GZ_RESULT_REC_PARAMS, q, sizeof q) && !strcmp(q, "{\"replayed\":true}"));
+    CHECK(gz_api_req_kept(N[0].n, "KeepFill0000000000") == 0);                   /* the ring's oldest went */
+    CHECK(gz_api_req_kept(N[0].n, "KeepFill0000000590") == 1 && gz_api_req_kept(N[0].n, "KeepFill0000000568") == 1 &&
+          gz_api_req_kept(N[0].n, "KeepFill0000000567") == 0); /* the newest GZ_API_RING (32) of them, no more */
+    /* The open of the live lobby is still kept, and a replay. */
+    CHECK(w_req(0, GZ_CMD_LOBBY_OPEN, "OpenKeptLobby00001", "/api/v1/host/lobbies", 1, a, 3) == 200 && N[0].n_batches == nb);
+    CHECK(res_text(0, GZ_RESULT_REC_OBJECT, q, sizeof q) && !strcmp(q, oid));
+    /* The member's share of lobby t: its join and 63 calls that save. */
+    {
+        h_arg_t j[3] = {{12, t.scope, 32}, {14, hk.pub, 33}, {16, ADDR, sizeof ADDR - 1}};
+        h_arg_t s1[1] = {{12, t.scope, 32}};
+        CHECK(w_req(1, GZ_CMD_LOBBY_JOIN, "JoinShareLobby0001", "/api/v1/lobbies/join", 1, j, 3) == 200);
+        w_run(2000, 100);
+        CHECK(member_ready(1, &t) == 1);
+        for (int k = 0; k < GZ_API_LOBBY_SHARE - 1; k++) {
+            snprintf(rid, sizeof rid, "ShareToggle%07d", k);
+            CHECK(w_req(1, (k & 1) == 0 ? GZ_CMD_LOBBY_UNREADY : GZ_CMD_LOBBY_READY, rid, "/api/v1/lobbies/x/ready", 1,
+                        s1, 1) == 200);
+        }
+        CHECK(member_ready(1, &t) == 0);
+        nb = N[1].n_batches;
+        CHECK(w_req(1, GZ_CMD_LOBBY_READY, "ShareOneTooMany001", "/api/v1/lobbies/x/ready", 1, s1, 1) == 503 &&
+              N[1].n_batches == nb && member_ready(1, &t) == 0);
+        CHECK(res_text(1, GZ_RESULT_REC_ERROR, q, sizeof q) && !strcmp(q, "node_busy"));
+        /* Another lobby's join is not touched; nor is a pause. */
+        h_arg_t j2[3] = {{12, u.scope, 32}, {14, hk.pub, 33}, {16, ADDR, sizeof ADDR - 1}};
+        CHECK(w_req(1, GZ_CMD_LOBBY_JOIN, "JoinOtherLobby0001", "/api/v1/lobbies/join", 1, j2, 3) == 200 && slot(1, &u));
+        CHECK(w_pause(1, 0, "PauseOffWhileFull1") == 200);
+        /* The leave protects the member: it has the reserve. */
+        CHECK(w_req(1, GZ_CMD_LOBBY_LEAVE, "LeaveWhileFull0001", "/api/v1/lobbies/x/leave", 1, s1, 1) == 200 &&
+              slot(1, &t) == NULL);
+    }
+    /* A wall clock set back a year does not stretch the 30 days: they run on. */
+    {
+        h_arg_t o[3] = {{12, v.outer, v.on}, {14, v.current, v.cn}, {16, &l, 1}};
+        CHECK(w_req(0, GZ_CMD_LOBBY_OPEN, "OpenClockBack00001", "/api/v1/host/lobbies", 1, o, 3) == 200);
+        CHECK(scope_cmd(0, GZ_CMD_LOBBY_CANCEL, &v, 0) == 200 && slot(0, &v) == NULL);
+        CHECK(gz_api_req_kept(N[0].n, "OpenClockBack00001") == 1);
+        NOW -= 365ull * 24 * 3600 * 1000;
+        N[0].clock = NOW;
+        CHECK(gz_api_req_kept(N[0].n, "OpenClockBack00001") == 1);
+        NOW += 29ull * 24 * 3600 * 1000;
+        N[0].clock = NOW;
+        CHECK(gz_api_req_kept(N[0].n, "OpenClockBack00001") == 1);
+        NOW += 2ull * 24 * 3600 * 1000;
+        N[0].clock = NOW;
+        CHECK(gz_api_req_kept(N[0].n, "OpenClockBack00001") == 2);
+        NOW += 365ull * 24 * 3600 * 1000;
+    }
+    /* 31 days on, the live lobby's open is still kept, and a replay (M2). */
+    NOW += 31ull * 24 * 3600 * 1000;
+    N[0].clock = NOW;
+    CHECK(slot(0, &t) != NULL && gz_api_req_kept(N[0].n, "OpenKeptLobby00001") == 1);
+    nb = N[0].n_batches;
+    CHECK(w_req(0, GZ_CMD_LOBBY_OPEN, "OpenKeptLobby00001", "/api/v1/host/lobbies", 1, a, 3) == 200 && N[0].n_batches == nb);
+    CHECK(res_text(0, GZ_RESULT_REC_PARAMS, q, sizeof q) && !strcmp(q, "{\"replayed\":true}"));
+    no_errors(1);
+    w_free(1);
+}
+
+/* A request_id record as an earlier run saved it: `object` may be "". */
+static void add_req_record(int n, const char *rid, const char *object, uint64_t created)
+{
+    uint8_t r[200], st[2], cr[8], d[32];
+    size_t at = 0;
+    memset(d, 9, 32);
+    gz_put_u16(st, 200);
+    gz_put_u64(cr, created);
+    gz_rec_put(r, sizeof r, &at, 2, (const uint8_t *)rid, strlen(rid));
+    gz_rec_put(r, sizeof r, &at, 4, (const uint8_t *)"POST", 4);
+    gz_rec_put(r, sizeof r, &at, 6, (const uint8_t *)"/api/v1/x", 9);
+    gz_rec_put(r, sizeof r, &at, 8, d, 32);
+    gz_rec_put(r, sizeof r, &at, 10, st, 2);
+    if (object[0]) gz_rec_put(r, sizeof r, &at, 12, (const uint8_t *)object, strlen(object));
+    gz_rec_put(r, sizeof r, &at, 14, cr, 8);
+    h_add_batch(&N[n], N[n].incarnation, ++N[n].seq, GZ_RECORD_REQUEST_ID, r, at);
+}
+
+/* The review of PR 75: M1, a stale resume never turns a later pause off, and
+ * M2, the guarantees N1 rests on, each tested. */
+static void test_api_request_keep_more(void)
 {
     terms_t t;
     char rid[40], q[64];
     size_t nb;
-    uint8_t l = 0;
+    lt_key_t hk;
+    whost(&hk);
     w_world(1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
-    make_terms(&t, 3, 3, 1500);
-    h_arg_t a[3] = {{12, t.outer, t.on}, {14, t.current, t.cn}, {16, &l, 1}};
-    char oid[GZ_LOCAL_ID_MAX + 1];
-    CHECK(w_req(0, GZ_CMD_LOBBY_OPEN, "OpenKeptLobby00001", "/api/v1/host/lobbies", 1, a, 3) == 200);
-    snprintf(oid, sizeof oid, "%s", lid(0, &t));
-    for (int k = 0; k < GZ_API_MAX_REQUESTS - 1; k++) {
-        snprintf(rid, sizeof rid, "KeepFill%010d", k);
-        CHECK(w_pause(0, (k & 1) == 0, rid) == 200);
+    /* M1: pause (A), resume (B), 40 more no-object calls, pause again (C);
+     * then B, pushed out of the ring, arrives again: 409, the pause stays on. */
+    {
+        uint8_t off = 0, pvb[4];
+        CHECK(w_pause(1, 1, "StalePauseA0000001") == 200);
+        gz_put_u32(pvb, N[1].n->api.pause_version);
+        h_arg_t b[2] = {{12, &off, 1}, {14, pvb, 4}};
+        CHECK(w_req(1, GZ_CMD_API_PAUSE, "StaleResumeB000001", "/api/v1/pause", 1, b, 2) == 200);
+        for (int k = 0; k < 40; k++) {
+            snprintf(rid, sizeof rid, "StaleToggle%07d", k);
+            CHECK(w_pause(1, (k & 1) == 0, rid) == 200);
+        }
+        CHECK(w_pause(1, 1, "StalePauseC0000001") == 200 && N[1].n->api.pause == GZ_PAUSE_ON);
+        CHECK(gz_api_req_kept(N[1].n, "StaleResumeB000001") == 0);
+        nb = N[1].n_batches;
+        CHECK(w_req(1, GZ_CMD_API_PAUSE, "StaleResumeB000001", "/api/v1/pause", 1, b, 2) == 409 &&
+              N[1].n->api.pause == GZ_PAUSE_ON && N[1].n_batches == nb);
+        CHECK(res_text(1, GZ_RESULT_REC_ERROR, q, sizeof q) && !strcmp(q, "changed_elsewhere"));
+        CHECK(w_pause(1, 0, "ResumeAgain0000001") == 200 && N[1].n->api.pause == GZ_PAUSE_OFF);
+        /* A stale pause on is not refused: it only tightens. */
+        uint8_t on = 1, pv0[4];
+        gz_put_u32(pv0, 0);
+        h_arg_t s[2] = {{12, &on, 1}, {14, pv0, 4}};
+        CHECK(w_req(1, GZ_CMD_API_PAUSE, "StalePauseOn000001", "/api/v1/pause", 1, s, 2) == 200 &&
+              N[1].n->api.pause == GZ_PAUSE_ON);
+        CHECK(w_pause(1, 0, "ResumeAgain0000002") == 200 && N[1].n->api.pause == GZ_PAUSE_OFF);
     }
-    CHECK(N[0].n->api.pause == GZ_PAUSE_ON);
-    nb = N[0].n_batches;
-    CHECK(w_pause(0, 0, "KeepFillOneTooMany") == 503 && N[0].n_batches == nb && N[0].n->api.pause == GZ_PAUSE_ON);
-    CHECK(res_text(0, GZ_RESULT_REC_ERROR, q, sizeof q) && !strcmp(q, "node_busy"));
-    /* The first pause, retried, is still a replay (RV4): it does nothing. */
-    CHECK(w_pause(0, 1, "KeepFill0000000000") == 200 && N[0].n_batches == nb && N[0].n->api.pause == GZ_PAUSE_ON);
-    /* 31 days on (no timer has run: the lobby is still Open), the pauses' ids
-     * may go, the open's may not: its lobby is live. The resume applies the
-     * start rule, so the lobby, past its deadline, ends now; its id still
-     * stays, for 30 days from this end. */
-    NOW += 31ull * 24 * 3600 * 1000;
-    CHECK(slot(0, &t) != NULL);
-    CHECK(w_pause(0, 0, "KeepAfterThirtyOne") == 200 && N[0].n->api.pause == GZ_PAUSE_OFF);
-    nb = N[0].n_batches;
-    CHECK(w_req(0, GZ_CMD_LOBBY_OPEN, "OpenKeptLobby00001", "/api/v1/host/lobbies", 1, a, 3) == 200 && N[0].n_batches == nb);
-    CHECK(res_text(0, GZ_RESULT_REC_OBJECT, q, sizeof q) && !strcmp(q, oid));
+    /* The ring after a restart: the newest 32 ids with no object come back,
+     * no more (p75-ring-not-loaded). */
+    {
+        for (int k = 0; k < 40; k++) {
+            snprintf(rid, sizeof rid, "RingRestart%07d", k);
+            CHECK(w_pause(1, (k & 1) == 0, rid) == 200);
+        }
+        CHECK(w_restart(1) == GZ_OK);
+        CHECK(gz_api_req_kept(N[1].n, "RingRestart0000039") == 1 && gz_api_req_kept(N[1].n, "RingRestart0000008") == 1 &&
+              gz_api_req_kept(N[1].n, "RingRestart0000007") == 0);
+        nb = N[1].n_batches;
+        CHECK(w_pause(1, 0, "RingRestart0000039") == 200 && N[1].n_batches == nb);
+        CHECK(res_text(1, GZ_RESULT_REC_PARAMS, q, sizeof q) && !strcmp(q, "{\"replayed\":true}"));
+    }
+    /* The ended-lobby fallback (p75-ended-fallback-off): the table full of ids
+     * of lobbies ended within 30 days, a new join and its leave still go. */
+    {
+        int k = 0, refused = 0;
+        for (; k < GZ_API_MAX_REQUESTS / 2 + 1; k++) {
+            make_terms(&t, 3, 3, 20000 + (uint32_t)k);
+            h_arg_t j[3] = {{12, t.scope, 32}, {14, hk.pub, 33}, {16, ADDR, sizeof ADDR - 1}};
+            h_arg_t s1[1] = {{12, t.scope, 32}};
+            snprintf(rid, sizeof rid, "FillJoin%010d", k);
+            refused += w_req(1, GZ_CMD_LOBBY_JOIN, rid, "/api/v1/lobbies/join", 1, j, 3) != 200;
+            snprintf(rid, sizeof rid, "FillLeave%09d", k);
+            refused += w_req(1, GZ_CMD_LOBBY_LEAVE, rid, "/api/v1/lobbies/x/leave", 1, s1, 1) != 200;
+        }
+        CHECK(refused == 0);
+        make_terms(&t, 3, 3, 29999);
+        h_arg_t j[3] = {{12, t.scope, 32}, {14, hk.pub, 33}, {16, ADDR, sizeof ADDR - 1}};
+        h_arg_t s1[1] = {{12, t.scope, 32}};
+        CHECK(w_req(1, GZ_CMD_LOBBY_JOIN, "FillJoinTheLast001", "/api/v1/lobbies/join", 1, j, 3) == 200 && slot(1, &t));
+        CHECK(w_req(1, GZ_CMD_LOBBY_LEAVE, "FillLeaveTheLast01", "/api/v1/lobbies/x/leave", 1, s1, 1) == 200 &&
+              slot(1, &t) == NULL);
+    }
+    /* The reserve's upper bound (p75-reserve-unbounded): a live lobby with its
+     * share and reserve all kept (as an earlier run saved them) refuses its
+     * leave too; a lobby is never given more than its place in the table. */
+    {
+        char id[GZ_LOCAL_ID_MAX + 1];
+        make_terms(&t, 3, 3, 30001);
+        CHECK(member_join(1, &t) == 200 && slot(1, &t));
+        snprintf(id, sizeof id, "%s", lid(1, &t));
+        for (int k = 0; k < GZ_API_LOBBY_SHARE + GZ_API_LOBBY_RESERVE; k++) {
+            snprintf(rid, sizeof rid, "Bound%013d", k);
+            add_req_record(1, rid, id, NOW);
+        }
+        CHECK(w_restart(1) == GZ_OK && slot(1, &t));
+        h_arg_t s1[1] = {{12, t.scope, 32}};
+        nb = N[1].n_batches;
+        CHECK(w_req(1, GZ_CMD_LOBBY_LEAVE, "BoundLeave00000001", "/api/v1/lobbies/x/leave", 1, s1, 1) == 503 &&
+              slot(1, &t) && N[1].n_batches == nb);
+    }
+    /* A host's cancel protects its set-aside funds: it has the reserve too
+     * (review of PR 75, L1); another call of the full lobby is refused. */
+    {
+        char id[GZ_LOCAL_ID_MAX + 1];
+        uint8_t vals[24];
+        make_terms(&t, 3, 3, 30002);
+        CHECK(host_open(&t, 0) == 200 && slot(0, &t));
+        snprintf(id, sizeof id, "%s", lid(0, &t));
+        for (int k = 0; k < GZ_API_LOBBY_SHARE; k++) {
+            snprintf(rid, sizeof rid, "HostShare%09d", k);
+            add_req_record(0, rid, id, NOW);
+        }
+        CHECK(w_restart(0) == GZ_OK && slot(0, &t));
+        gz_put_u64(vals, 600);
+        gz_put_u64(vals + 8, 1000);
+        gz_put_u64(vals + 16, 1000);
+        h_arg_t sv[2] = {{12, t.scope, 32}, {14, vals, 24}};
+        h_arg_t s1[1] = {{12, t.scope, 32}};
+        CHECK(w_req(0, GZ_CMD_LOBBY_SET_VALUES, "HostShareFull00001", "/api/v1/host/lobbies/x", 1, sv, 2) == 503);
+        CHECK(w_req(0, GZ_CMD_LOBBY_CANCEL, "HostCancelFull0001", "/api/v1/host/lobbies/x/cancel", 1, s1, 1) == 200 &&
+              slot(0, &t) == NULL);
+    }
+    /* The keep clock across a restart (p75-keep-load-ignored): the clock set
+     * back a year, then a restart; the ids still age on from their making. */
+    {
+        uint64_t made = NOW;
+        add_req_record(1, "KeepAcross00000001", "", made);
+        CHECK(w_restart(1) == GZ_OK);
+        NOW -= 365ull * 24 * 3600 * 1000;
+        N[1].clock = NOW;
+        CHECK(w_restart(1) == GZ_OK);
+        NOW += 31ull * 24 * 3600 * 1000;
+        N[1].clock = NOW;
+        CHECK(gz_api_req_kept(N[1].n, "KeepAcross00000001") == 2);
+        NOW += 365ull * 24 * 3600 * 1000;
+    }
+    no_errors(1);
+    w_free(1);
+}
+
+/* An attention item's id is whole for the longest local id (N2): two lobbies
+ * whose 64-character ids share their first 63 get two items. */
+static void test_attention_long_ids(void)
+{
+    terms_t t, u;
+    char a1[80], a2[80], x[GZ_LOCAL_ID_MAX + 1];
+    w_world(1, GZ_MEMBER_SIGNING_AT_JOIN, GZ_TEST_SIGN_FUNDING);
+    make_terms(&t, 3, 3, 1510);
+    make_terms(&u, 3, 3, 1511);
+    CHECK(host_open(&t, 0) == 200 && host_open(&u, 0) == 200 && member_join(1, &t) == 200 && member_join(1, &u) == 200);
+    w_run(2000, 100);
+    for (int k = 0; k < 2; k++) {
+        uint8_t r[120];
+        size_t at = 0;
+        memcpy(x, "lob_", 4);
+        memset(x + 4, 'q', 59);
+        x[63] = k ? 'b' : 'a';
+        x[64] = 0;
+        gz_rec_put(r, sizeof r, &at, 2, (k ? u : t).scope, 32);
+        gz_rec_put(r, sizeof r, &at, 4, (const uint8_t *)x, 64);
+        h_add_batch(&N[1], N[1].incarnation, ++N[1].seq, GZ_RECORD_LOCAL_IDS, r, at);
+    }
+    CHECK(w_restart(1) == GZ_OK);
+    CHECK(strlen(lid(1, &t)) == 64 && strlen(lid(1, &u)) == 64 && strcmp(lid(1, &t), lid(1, &u)) != 0);
+    snprintf(a1, sizeof a1, "att_%s", lid(1, &t) + 4);
+    snprintf(a2, sizeof a2, "att_%s", lid(1, &u) + 4);
+    CHECK(strlen(a1) == 64 && strcmp(a1, a2) != 0);
+    CHECK(vf8(view_of(1, GZ_VIEW_ATTENTION, a1), GZ_VAT_CODE) == GZ_ATT_UNLOCK_TO_TAKE_PART &&
+          vf8(view_of(1, GZ_VIEW_ATTENTION, a2), GZ_VAT_CODE) == GZ_ATT_UNLOCK_TO_TAKE_PART);
     no_errors(1);
     w_free(1);
 }
@@ -2514,6 +2958,9 @@ static void test_api_replay_detail(void)
     h_arg_t a[3] = {{12, t.outer, t.on}, {14, t.current, t.cn}, {16, &l, 1}};
     CHECK(w_req(0, GZ_CMD_LOBBY_OPEN, "ReplayDetail000001", "/api/v1/host/lobbies", 1, a, 3) == 200);
     snprintf(id, sizeof id, "%s", lid(0, &t));
+    /* The first answer names the object it opened, as a replay does (review of #79: the
+     * program answers a call with that object; without it the answer was empty). */
+    CHECK(id[0] && res_text(0, GZ_RESULT_REC_OBJECT, q, sizeof q) && !strcmp(q, id));
     nb = N[0].n_batches;
     /* Another path, or another method, with the same id and digest: 409, with the first call named. */
     CHECK(w_req(0, GZ_CMD_LOBBY_OPEN, "ReplayDetail000001", "/api/v1/host/lobbiez", 1, a, 3) == 409 && N[0].n_batches == nb);
@@ -2552,6 +2999,7 @@ static void test_api_replay_detail(void)
     CHECK(res_text(0, GZ_RESULT_REC_PARAMS, q, sizeof q) && !strcmp(q, "{\"replayed\":true}"));
     /* The ready count follows the values version (rv-host-ready-any-version). */
     CHECK(member_join(1, &t) == 200);
+    CHECK(res_text(1, GZ_RESULT_REC_OBJECT, q, sizeof q) && !strcmp(q, lid(1, &t)));   /* a join names its lobby */
     w_run(2000, 100);
     CHECK(host_ready(&t) == 1);
     {
@@ -2658,6 +3106,7 @@ static void test_api_records(void)
         gz_rec_put(r, sizeof r, &at, 2, &st, 1);
         gz_rec_put(r, sizeof r, &at, 4, x8, 8);
         gz_rec_put(r, sizeof r, &at, 6, held, 32 * (size_t)n);
+        gz_rec_put(r, sizeof r, &at, 8, x8, 4);
         CHECK(start_on(GZ_RECORD_PAUSE, r, at) == (n == 8 ? GZ_OK : GZ_ERR_CORRUPT));
         if (n == 8) /* none of them holds a slot: released at the start, saved on */
             CHECK(N[SCRATCH].n->api.pause == GZ_PAUSE_ON && N[SCRATCH].n->api.n_held == 0 &&
@@ -2669,14 +3118,27 @@ static void test_api_records(void)
         at = 0;
         gz_rec_put(r, sizeof r, &at, 2, &st, 1);
         gz_rec_put(r, sizeof r, &at, 4, x8, 8);
-        CHECK(start_on(GZ_RECORD_PAUSE, r, at) == GZ_ERR_CORRUPT);
+        gz_rec_put(r, sizeof r, &at, 8, x8, 4);
+        CHECK(start_on(GZ_RECORD_PAUSE, r, at) == GZ_ERR_CORRUPT);   /* held, with no lobby */
         scratch_free();
         st = GZ_PAUSE_ON;
         at = 0;
         gz_rec_put(r, sizeof r, &at, 2, &st, 1);
         gz_rec_put(r, sizeof r, &at, 4, x8, 8);
-        gz_rec_put(r, sizeof r, &at, 8, &st, 1);
-        CHECK(start_on(GZ_RECORD_PAUSE, r, at) == GZ_ERR_CORRUPT);
+        gz_rec_put(r, sizeof r, &at, 8, x8, 4);
+        CHECK(start_on(GZ_RECORD_PAUSE, r, at) == GZ_OK);            /* the control: a good record */
+        scratch_free();
+        at = 0;
+        gz_rec_put(r, sizeof r, &at, 2, &st, 1);
+        gz_rec_put(r, sizeof r, &at, 4, x8, 8);
+        gz_rec_put(r, sizeof r, &at, 8, x8, 4);
+        gz_rec_put(r, sizeof r, &at, 10, &st, 1);
+        CHECK(start_on(GZ_RECORD_PAUSE, r, at) == GZ_ERR_CORRUPT);   /* an unknown even field */
+        scratch_free();
+        at = 0;
+        gz_rec_put(r, sizeof r, &at, 2, &st, 1);
+        gz_rec_put(r, sizeof r, &at, 4, x8, 8);
+        CHECK(start_on(GZ_RECORD_PAUSE, r, at) == GZ_ERR_CORRUPT);   /* no version */
         scratch_free();
     }
     /* local_ids: no "lob_", or an unknown even field */
@@ -2782,12 +3244,881 @@ static void test_api_ids_kept(void)
         const wview_t *w = &VW[1][k];
         gz_bytes_t v;
         if (!w->used || w->kind != GZ_VIEW_ATTENTION) continue;
-        CHECK(!strncmp(w->id, "att_lob_", 8) && !vf(w, 12, &v));
+        CHECK(!strncmp(w->id, "att_", 4) && strlen(w->id) == 20 && !vf(w, 12, &v)); /* "att_" and the 16 hex of the id */
     }
     CHECK(view_of(1, GZ_VIEW_ATTENTION, "att_x") == NULL);
     no_errors(1);
     w_free(1);
 }
+
+
+/* ---- the person's conditions (0x0d03) and the early start (0x0109) ------------ */
+
+static int set_cond(int n, const char *rid, const gz_lobby_conditions_t *cd, uint32_t version, const uint8_t *echo,
+                    size_t ne)
+{
+    static uint8_t b[COND_MAX];
+    uint8_t v[4];
+    size_t bl = gz_ls_cond_encode(cd, b, sizeof b), na = 2;
+    h_arg_t a[3] = {{12, b, bl}, {14, v, 4}, {16, echo, ne}};
+    gz_put_u32(v, version);
+    if (echo) na = 3;
+    return rid ? w_req(n, GZ_CMD_API_SET_CONDITIONS, rid, "/api/v1/conditions", 3, a, na)
+               : w_cmd(n, GZ_CMD_API_SET_CONDITIONS, a, na);
+}
+
+static int host_refused(const terms_t *t)
+{
+    slot_t *s = slot(0, t);
+    int r = 0;
+    if (!s) return -1;
+    for (uint16_t k = 0; k < s->lobby.h.n_seats; k++)
+        r += s->lobby.h.seats[k].refused == 1 && s->lobby.h.seats[k].refused_stage == GZ_STAGE_OPEN &&
+             s->lobby.h.seats[k].state == GZ_SEAT_LEFT;
+    return r;
+}
+
+/* Member n's link to the host goes down and stays down: its CONNECT is
+ * forgotten, as a program whose transport lost it would. */
+static void link_down(int n)
+{
+    lt_key_t hk;
+    whost(&hk);
+    for (int i = 0; i < 64; i++)
+        if (C[i].used && C[i].node == n && C[i].up == 1) {
+            gz_link_t hl = h_link(hk.pub, C[i].mlink.local.key);
+            for (size_t k = 0; k < NQ; k++) /* lost, not flushed: the link broke */
+                if (Q[k].rec && (!memcmp(&Q[k].link, &hl, sizeof hl) || !memcmp(&Q[k].link, &C[i].mlink, sizeof hl))) {
+                    free(Q[k].rec);
+                    Q[k].rec = NULL;
+                }
+            C[i].up = -1;
+            C[i].closer = -1; /* a break: neither side's messages go */
+            C[i].wanted = 0;
+        }
+    w_turn();
+}
+
+/* local-api.md 13.2: PUT /conditions's core. Saved with a version and read
+ * back at a start; a lobby the new conditions refuse is left (reason 1, in
+ * the batch of the save), seen by the host as a refusal; a loosening needs
+ * the fresh sign-in and its exact echo, and changes no lobby's copy; a link
+ * that is down is left once it is up again, also across a restart. */
+static void test_api_conditions(void)
+{
+    terms_t t, u;
+    gz_lobby_conditions_t none, tight;
+    uint8_t ch = GZ_TT_CHANNEL, bad[1] = {9};
+    char q[600], p[600], id1[GZ_LOCAL_ID_MAX + 1], id2[GZ_LOCAL_ID_MAX + 1];
+    size_t mark;
+    gz_lobby_msg_t m;
+    gz_bytes_t v;
+    wview_t *w;
+    const uint32_t one_batch[3] = {GZ_RECORD_CONDITIONS, GZ_REC_LOBBY_ENDED, GZ_RECORD_SLOT_CLOSED};
+    memset(&none, 0, sizeof none);
+    tight = none;
+    tight.limits.min_channel_sat = 200000; /* T1's channel is 100,000 */
+    w_world(2, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    make_terms(&t, 4, 3, 1900);
+    make_terms(&u, 4, 3, 1901);
+    CHECK(host_open(&t, 0) == 200 && host_open(&u, 0) == 200);
+    CHECK(member_join(1, &t) == 200 && member_join(2, &t) == 200);
+    w_run(2000, 100);
+    CHECK(member_ready(1, &t) == 1 && member_ready(2, &t) == 1 && host_state(&t) == GZ_LOBBY_OPEN && host_ready(&t) == 2);
+    snprintf(id1, sizeof id1, "%s", lid(1, &t));
+    snprintf(id2, sizeof id2, "%s", lid(2, &t));
+    /* The form. */
+    {
+        uint8_t v4[4] = {0, 0, 0, 0};
+        h_arg_t a[2] = {{12, bad, 1}, {14, v4, 4}};
+        CHECK(w_cmd(1, GZ_CMD_API_SET_CONDITIONS, a, 2) == 400 && w_cmd(1, GZ_CMD_API_SET_CONDITIONS, a + 1, 1) == 400);
+    }
+    CHECK(h_records_of(&N[1], GZ_RECORD_CONDITIONS) == 0);
+    /* A tightening needs no fresh sign-in. Member 1's lobby no longer fits:
+     * it leaves, reason 1, in the batch of the save, and says which. */
+    mark = NSENT;
+    CHECK(set_cond(1, NULL, &tight, 0, NULL, 0) == 200);
+    snprintf(p, sizeof p, "{\"version\":1,\"left_lobbies\":[\"%s\"]}", id1);
+    CHECK(res_text(1, GZ_RESULT_REC_PARAMS, q, sizeof q) && !strcmp(q, p));
+    CHECK(slot(1, &t) == NULL && sent_count(1, mark, GZ_KIND_LEAVE) == 1 &&
+          last_sent(1, mark, GZ_KIND_LEAVE, NULL, &m) && m.has_reason && m.reason == 1);
+    CHECK(h_records_of(&N[1], GZ_RECORD_CONDITIONS) == 1 && batch_with(1, one_batch, 3));
+    w_run(1000, 100);
+    CHECK(host_refused(&t) == 1 && host_ready(&t) == 1 && member_ready(2, &t) == 1);
+    w = view_of(0, GZ_VIEW_HOST_LOBBY, lid(0, &t));
+    CHECK(w && vf(w, GZ_VHL_COUNTS, &v) && v.len == 8 && gz_get_u16(v.data + 6) == 1);
+    w = view_of(1, GZ_VIEW_STATUS, GZ_VIEW_STATUS_ID);
+    CHECK(w && vf(w, GZ_VST_CONDITIONS, &v) && v.len == 4 + COND_HEAD && gz_get_u32(v.data) == 1 &&
+          gz_get_u64(v.data + 4 + 3) == 200000 && !vf(w, GZ_VST_PRESET, &v));
+    /* An older version: changed elsewhere, nothing saved. */
+    CHECK(set_cond(1, NULL, &tight, 0, NULL, 0) == 409 && res_text(1, GZ_RESULT_REC_ERROR, q, sizeof q) &&
+          !strcmp(q, "changed_elsewhere") && h_records_of(&N[1], GZ_RECORD_CONDITIONS) == 1);
+    /* A loosening: not as a plain command (403); as an API request only with
+     * the exact list of what it loosens (409 with the list, then 200). */
+    CHECK(set_cond(1, NULL, &none, 1, NULL, 0) == 403);
+    CHECK(set_cond(1, "CondLoosenNoEcho01", &none, 1, NULL, 0) == 409 && res_text(1, GZ_RESULT_REC_ERROR, q, sizeof q) &&
+          !strcmp(q, "confirm_mismatch") && res_text(1, GZ_RESULT_REC_PARAMS, q, sizeof q) && !strcmp(q, "{\"loosens\":[30]}"));
+    CHECK(set_cond(1, "CondLoosenBadEcho1", &none, 1, bad, 1) == 409 && h_records_of(&N[1], GZ_RECORD_CONDITIONS) == 1);
+    CHECK(set_cond(1, "CondLoosenEcho0001", &none, 1, &ch, 1) == 200 && res_text(1, GZ_RESULT_REC_PARAMS, q, sizeof q) &&
+          !strcmp(q, "{\"version\":2,\"left_lobbies\":[]}"));
+    CHECK(h_records_of(&N[1], GZ_RECORD_CONDITIONS) == 2 && h_records_of(&N[1], GZ_RECORD_REQUEST_ID) == 1);
+    /* Nothing loosens with an echo: also a mismatch (a stale preview). */
+    CHECK(set_cond(1, "CondTightenEcho001", &tight, 2, &ch, 1) == 409);
+    /* A preset is saved with the conditions. */
+    {
+        static uint8_t b[COND_MAX];
+        uint8_t v4[4], pre[] = "everyday", badp[] = "Every";
+        size_t bl = gz_ls_cond_encode(&none, b, sizeof b);
+        h_arg_t a[3] = {{12, b, bl}, {14, v4, 4}, {18, badp, 5}};
+        gz_put_u32(v4, 2);
+        CHECK(w_cmd(1, GZ_CMD_API_SET_CONDITIONS, a, 3) == 400);
+        a[2].v = pre;
+        a[2].len = 8;
+        CHECK(w_cmd(1, GZ_CMD_API_SET_CONDITIONS, a, 3) == 200);
+        w = view_of(1, GZ_VIEW_STATUS, GZ_VIEW_STATUS_ID);
+        CHECK(w && vf(w, GZ_VST_PRESET, &v) && v.len == 8 && !memcmp(v.data, "everyday", 8) &&
+              vf(w, GZ_VST_CONDITIONS, &v) && gz_get_u32(v.data) == 3);
+    }
+    /* Read back at a start: version, conditions and preset. */
+    CHECK(w_restart(1) == GZ_OK);
+    CHECK(N[1].n->api.have_cond && N[1].n->api.cond_version == 3 && !strcmp(N[1].n->api.preset, "everyday") &&
+          N[1].n->api.cond.limits.min_channel_sat == 0);
+    w = view_of(1, GZ_VIEW_STATUS, GZ_VIEW_STATUS_ID);
+    CHECK(w && vf(w, GZ_VST_CONDITIONS, &v) && gz_get_u32(v.data) == 3);
+    /* A join that names no conditions copies the saved ones (here: none, so
+     * the lobby fits and member 1 joins it). */
+    CHECK(member_join(1, &u) == 200);
+    w_run(2000, 100);
+    CHECK(member_ready(1, &u) == 1 && slot(1, &u)->cond.limits.min_channel_sat == 0);
+
+    /* Member 2's link is down when its conditions tighten: its lobby is left
+     * only once the leave can reach the host. It is not up again before a
+     * restart: the saved conditions do it at the start. */
+    link_down(2);
+    CHECK(slot(2, &t) && !slot(2, &t)->lobby.m.connected);
+    mark = NSENT;
+    CHECK(set_cond(2, NULL, &tight, 0, NULL, 0) == 200 && res_text(2, GZ_RESULT_REC_PARAMS, q, sizeof q) &&
+          !strcmp(q, "{\"version\":1,\"left_lobbies\":[]}"));
+    CHECK(slot(2, &t) && !slot(2, &t)->lobby.m.ended && sent_count(2, mark, GZ_KIND_LEAVE) == 0 &&
+          gz_lobby_member_misfits(&slot(2, &t)->lobby.m, &tight));
+    CHECK(w_restart(2) == GZ_OK);
+    CHECK(N[2].n->api.have_cond && N[2].n->api.cond_version == 1 && N[2].n->api.cond.limits.min_channel_sat == 200000);
+    mark = NSENT;
+    w_run(3000, 100);
+    CHECK(slot(2, &t) == NULL && sent_count(2, mark, GZ_KIND_LEAVE) == 1 &&
+          last_sent(2, mark, GZ_KIND_LEAVE, NULL, &m) && m.reason == 1);
+    CHECK(host_refused(&t) == 2 && host_ready(&t) == 0);
+    /* Its next join copies the saved conditions, which T1 does not fit: it
+     * never joins. */
+    CHECK(member_join(2, &u) == 200);
+    w_run(2000, 100);
+    CHECK(slot(2, &u) && slot(2, &u)->cond.limits.min_channel_sat == 200000 && !slot(2, &u)->lobby.m.joined);
+    (void)id2;
+    no_errors(2);
+    w_free(2);
+}
+
+/* local-api.md 15.2: POST /host/lobbies/{id}/start's core, the early start;
+ * and 13.2's signing_now: no conditions change leaves a lobby whose round
+ * is on. */
+static void test_api_start(void)
+{
+    terms_t t;
+    uint8_t e8[8];
+    uint64_t aside;
+    char q[600], p[600], id[GZ_LOCAL_ID_MAX + 1];
+    gz_bytes_t v;
+    wview_t *w;
+    gz_lobby_conditions_t tight, fits;
+    const uint32_t freeze_batch[2] = {GZ_REC_FREEZE, GZ_RECORD_REQUEST_ID};
+    w_world(3, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    make_terms(&t, 4, 3, 2000);
+    CHECK(host_open(&t, 0) == 200 && member_join(1, &t) == 200 && member_join(2, &t) == 200);
+    w_run(2000, 100);
+    CHECK(host_state(&t) == GZ_LOBBY_OPEN && host_ready(&t) == 2);
+    aside = gz_fund_set_aside_sat(&slot(0, &t)->lobby.h.terms);
+    CHECK(aside == 802811); /* terms.md T7: T1's tree for 3 or 4 members at 100 sat/kvB */
+    w = view_of(0, GZ_VIEW_HOST_LOBBY, lid(0, &t));
+    CHECK(w && vf(w, GZ_VHL_SET_ASIDE, &v) && v.len == 8 && gz_get_u64(v.data) == aside);
+    h_arg_t a[2] = {{12, t.scope, 32}, {14, e8, 8}};
+    gz_put_u64(e8, aside);
+    /* The person's, freshly: never a plain command. */
+    CHECK(w_cmd(0, GZ_CMD_LOBBY_START, a, 2) == 403 && w_cmd(0, GZ_CMD_LOBBY_START, a, 1) == 400);
+    /* The echo must be the funding engine's set-aside amount. */
+    gz_put_u64(e8, aside - 1);
+    snprintf(p, sizeof p, "{\"set_aside_sat\":%llu}", (unsigned long long)aside);
+    CHECK(w_req(0, GZ_CMD_LOBBY_START, "StartWrongEcho0001", "/api/v1/host/lobbies/x/start", 1, a, 2) == 409 &&
+          res_text(0, GZ_RESULT_REC_ERROR, q, sizeof q) && !strcmp(q, "confirm_mismatch") &&
+          res_text(0, GZ_RESULT_REC_PARAMS, q, sizeof q) && !strcmp(q, p));
+    gz_put_u64(e8, aside + 1);
+    CHECK(w_req(0, GZ_CMD_LOBBY_START, "StartWrongEcho0002", "/api/v1/host/lobbies/x/start", 1, a, 2) == 409);
+    gz_put_u64(e8, aside);
+    /* Two of the minimum's three. */
+    CHECK(w_req(0, GZ_CMD_LOBBY_START, "StartBelowMinimum1", "/api/v1/host/lobbies/x/start", 1, a, 2) == 409 &&
+          res_text(0, GZ_RESULT_REC_ERROR, q, sizeof q) && !strcmp(q, "below_minimum") &&
+          res_text(0, GZ_RESULT_REC_PARAMS, q, sizeof q) && !strcmp(q, "{\"ready\":2,\"minimum\":3}"));
+    CHECK(h_records_of(&N[0], GZ_REC_FREEZE) == 0 && h_records_of(&N[0], GZ_RECORD_REQUEST_ID) == 0);
+    CHECK(member_join(3, &t) == 200);
+    w_run(3000, 100);
+    CHECK(host_state(&t) == GZ_LOBBY_OPEN && host_ready(&t) == 3); /* the rule waits: target 4 */
+    /* Paused: no ready check, by the rule or by start (11.3). */
+    CHECK(w_pause(0, 1, "StartPausedOn00001") == 200);
+    CHECK(w_req(0, GZ_CMD_LOBBY_START, "StartWhilePaused01", "/api/v1/host/lobbies/x/start", 1, a, 2) == 409 &&
+          res_text(0, GZ_RESULT_REC_ERROR, q, sizeof q) && !strcmp(q, "paused"));
+    CHECK(w_pause(0, 0, "StartPausedOff0001") == 200 && host_state(&t) == GZ_LOBBY_OPEN);
+    /* Start now: the ready check, its freeze in the batch of the request id. */
+    CHECK(w_req(0, GZ_CMD_LOBBY_START, "StartNowAtMinimum1", "/api/v1/host/lobbies/x/start", 1, a, 2) == 202 &&
+          res_text(0, GZ_RESULT_REC_PARAMS, q, sizeof q) && !strcmp(q, "{\"stage\":\"ready_check\"}"));
+    CHECK(host_state(&t) == GZ_LOBBY_READY_CHECK && h_records_of(&N[0], GZ_REC_FREEZE) == 1 && batch_with(0, freeze_batch, 2));
+    /* Its replay does nothing again; a new start is not_open. */
+    CHECK(w_req(0, GZ_CMD_LOBBY_START, "StartNowAtMinimum1", "/api/v1/host/lobbies/x/start", 1, a, 2) == 202 &&
+          res_text(0, GZ_RESULT_REC_PARAMS, q, sizeof q) && !strcmp(q, "{\"replayed\":true}"));
+    CHECK(w_req(0, GZ_CMD_LOBBY_START, "StartNowAgain00001", "/api/v1/host/lobbies/x/start", 1, a, 2) == 409 &&
+          res_text(0, GZ_RESULT_REC_ERROR, q, sizeof q) && !strcmp(q, "not_open"));
+    for (int k = 0; k < 2400 && !(ss_of(1, &t) && ss_of(2, &t) && ss_of(3, &t)); k++) {
+        NOW += 25;
+        w_turn();
+    }
+    CHECK(host_state(&t) == GZ_LOBBY_SIGNING && ss_of(1, &t) && ss_of(2, &t) && ss_of(3, &t));
+    /* signing_now: conditions that would leave a lobby whose round is on are
+     * refused, with nothing saved; ones it still fits are taken. */
+    memset(&tight, 0, sizeof tight);
+    tight.limits.min_channel_sat = 200000;
+    fits = tight;
+    fits.limits.min_channel_sat = 50000;
+    snprintf(id, sizeof id, "%s", lid(1, &t));
+    snprintf(p, sizeof p, "{\"lobby_ids\":[\"%s\"]}", id);
+    CHECK(set_cond(1, NULL, &tight, 0, NULL, 0) == 409 && res_text(1, GZ_RESULT_REC_ERROR, q, sizeof q) &&
+          !strcmp(q, "signing_now") && res_text(1, GZ_RESULT_REC_PARAMS, q, sizeof q) && !strcmp(q, p));
+    CHECK(h_records_of(&N[1], GZ_RECORD_CONDITIONS) == 0 && slot(1, &t) && !slot(1, &t)->lobby.m.ended);
+    CHECK(set_cond(1, NULL, &fits, 0, NULL, 0) == 200 && h_records_of(&N[1], GZ_RECORD_CONDITIONS) == 1);
+    w_run(2000, 100);
+    CHECK(slot(1, &t) && !slot(1, &t)->lobby.m.ended && ss_of(1, &t));
+    no_errors(3);
+    w_free(3);
+}
+
+
+/* Review of #77. L1: after a ready check that ended without a start, an
+ * early start with the same seats is refused (refused_now) until a seat
+ * changes. L2: the set-aside amount the start echoes is the funding at the
+ * target, the amount the opening's preview showed, for every target the
+ * tests use. */
+static void test_api_start_guard(void)
+{
+    terms_t t;
+    uint8_t e8[8], cb[COND_MAX];
+    char q[200];
+    gz_lobby_conditions_t hint;
+    gz_tree_params_t tp;
+    gz_terms_outer_t o;
+    lt_key_t hk;
+    /* L2 */
+    for (uint16_t target = 3; target <= 8; target++) {
+        terms_t x;
+        make_terms(&x, target, 3, 2100 + target);
+        CHECK(lt_outer(x.outer, x.on, &o) && gz_tree_params(&o, target, &tp) == GZ_TREE_P_OK &&
+              gz_fund_set_aside_sat(&o) == tp.funding_amount);
+    }
+    /* L1: three members whose ready hint is four, in a lobby of four (minimum three). */
+    memset(&hint, 0, sizeof hint);
+    hint.min_members = 4;
+    size_t cn = gz_ls_cond_encode(&hint, cb, sizeof cb);
+    w_world(3, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    make_terms(&t, 4, 3, 2200);
+    CHECK(host_open(&t, 0) == 200);
+    whost(&hk);
+    for (int n = 1; n <= 3; n++) {
+        h_arg_t j[4] = {{12, t.scope, 32}, {14, hk.pub, 33}, {16, ADDR, sizeof ADDR - 1}, {18, cb, cn}};
+        CHECK(w_cmd(n, GZ_CMD_LOBBY_JOIN, j, 4) == 200);
+    }
+    w_run(3000, 100);
+    CHECK(host_state(&t) == GZ_LOBBY_OPEN && host_ready(&t) == 3);
+    h_arg_t a[2] = {{12, t.scope, 32}, {14, e8, 8}};
+    gz_put_u64(e8, gz_fund_set_aside_sat(&slot(0, &t)->lobby.h.terms));
+    CHECK(w_req(0, GZ_CMD_LOBBY_START, "GuardStartFirst001", "/api/v1/host/lobbies/x/start", 1, a, 2) == 202);
+    w_run(40000, 100); /* T1's ready window is 30 s: the check ends, no start (each wants four) */
+    CHECK(host_state(&t) == GZ_LOBBY_OPEN && host_ready(&t) == 3 && slot(0, &t)->lobby.h.check_failed);
+    CHECK(w_req(0, GZ_CMD_LOBBY_START, "GuardStartAgain001", "/api/v1/host/lobbies/x/start", 1, a, 2) == 409 &&
+          res_text(0, GZ_RESULT_REC_ERROR, q, sizeof q) && !strcmp(q, "refused_now") &&
+          host_state(&t) == GZ_LOBBY_OPEN);
+    /* A seat event: member 1 unreadies and readies again. */
+    CHECK(scope_cmd(1, GZ_CMD_LOBBY_UNREADY, &t, 0) == 200);
+    w_run(500, 100);
+    CHECK(scope_cmd(1, GZ_CMD_LOBBY_READY, &t, 0) == 200);
+    w_run(1000, 100);
+    CHECK(host_ready(&t) == 3);
+    CHECK(w_req(0, GZ_CMD_LOBBY_START, "GuardStartAfter001", "/api/v1/host/lobbies/x/start", 1, a, 2) == 202 &&
+          host_state(&t) == GZ_LOBBY_READY_CHECK);
+    no_errors(3);
+    w_free(3);
+}
+
+/* Review of #77, L3: with saved conditions, a join that names its own
+ * conditions looser than them needs the fresh sign-in and the echo of what
+ * it loosens (field 22), as PUT /conditions does; a confirmed one keeps its
+ * looser copy until the person's conditions next change. */
+static void test_api_join_looser(void)
+{
+    terms_t t;
+    gz_lobby_conditions_t none, tight;
+    uint8_t cb[COND_MAX], tb[COND_MAX], ch = GZ_TT_CHANNEL, bad = 9;
+    char q[200];
+    lt_key_t hk;
+    memset(&none, 0, sizeof none);
+    tight = none;
+    tight.limits.min_channel_sat = 200000;
+    size_t cn = gz_ls_cond_encode(&none, cb, sizeof cb), tn = gz_ls_cond_encode(&tight, tb, sizeof tb);
+    w_world(1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    make_terms(&t, 4, 3, 2300);
+    CHECK(host_open(&t, 0) == 200);
+    CHECK(set_cond(1, NULL, &tight, 0, NULL, 0) == 200);
+    whost(&hk);
+    h_arg_t j[5] = {{12, t.scope, 32}, {14, hk.pub, 33}, {16, ADDR, sizeof ADDR - 1}, {18, cb, cn}, {22, &ch, 1}};
+    /* Looser than the saved ones, as a plain command: refused, no slot. */
+    CHECK(w_cmd(1, GZ_CMD_LOBBY_JOIN, j, 4) == 403 && slot(1, &t) == NULL);
+    /* As an API request: the echo must be exactly what it loosens. */
+    CHECK(w_req(1, GZ_CMD_LOBBY_JOIN, "JoinLooserNoEcho01", "/api/v1/lobbies/x/join", 4, j, 4) == 409 &&
+          res_text(1, GZ_RESULT_REC_ERROR, q, sizeof q) && !strcmp(q, "confirm_mismatch") &&
+          res_text(1, GZ_RESULT_REC_PARAMS, q, sizeof q) && !strcmp(q, "{\"loosens\":[30]}") && slot(1, &t) == NULL);
+    j[4].v = &bad;
+    CHECK(w_req(1, GZ_CMD_LOBBY_JOIN, "JoinLooserBadEcho1", "/api/v1/lobbies/x/join", 4, j, 5) == 409 && slot(1, &t) == NULL);
+    /* Its own conditions no looser than the saved ones: a plain join. */
+    {
+        h_arg_t k[4] = {{12, t.scope, 32}, {14, hk.pub, 33}, {16, ADDR, sizeof ADDR - 1}, {18, tb, tn}};
+        terms_t u;
+        make_terms(&u, 4, 3, 2301);
+        CHECK(host_open(&u, 0) == 200);
+        k[0].v = u.scope;
+        CHECK(w_cmd(1, GZ_CMD_LOBBY_JOIN, k, 4) == 200 && slot(1, &u) != NULL);
+    }
+    /* With the echo: it joins under its looser copy and stays, also across a restart. */
+    j[4].v = &ch;
+    CHECK(w_req(1, GZ_CMD_LOBBY_JOIN, "JoinLooserEcho0001", "/api/v1/lobbies/x/join", 4, j, 5) == 200);
+    w_run(2000, 100);
+    CHECK(slot(1, &t) && member_ready(1, &t) == 1 && slot(1, &t)->cond.limits.min_channel_sat == 0);
+    CHECK(w_restart(1) == GZ_OK);
+    w_run(2000, 100);
+    CHECK(slot(1, &t) && member_ready(1, &t) == 1);
+    /* Confirmation of #77, N2: the same conditions saved anew, and a
+     * loosening, tighten nothing: the confirmed looser copy stays. */
+    CHECK(set_cond(1, NULL, &tight, 1, NULL, 0) == 200);
+    w_run(1000, 100);
+    CHECK(slot(1, &t) && member_ready(1, &t) == 1 && !slot(1, &t)->lobby.m.ended);
+    {
+        gz_lobby_conditions_t looser = tight;
+        looser.limits.min_channel_sat = 150000;
+        CHECK(set_cond(1, "CondLoosenAfterJn1", &looser, 2, &ch, 1) == 200);
+        w_run(1000, 100);
+        CHECK(slot(1, &t) && member_ready(1, &t) == 1);
+        /* A change that tightens something reaches it: it is left. */
+        looser.limits.min_channel_sat = 250000;
+        CHECK(set_cond(1, NULL, &looser, 3, NULL, 0) == 200);
+        w_run(1000, 100);
+        CHECK(slot(1, &t) == NULL && host_refused(&t) == 1);
+    }
+    no_errors(1);
+    w_free(1);
+}
+
+/* Review of #77, L5: a DISCONNECT sends what its own side had queued on the
+ * link first (action.h); what the other side had queued to it is lost, as
+ * the program reads nothing more on a closing link (program/net.c). */
+static void test_harness_flush(void)
+{
+    terms_t t;
+    wconn_t *c = NULL;
+    lt_key_t hk;
+    w_world(1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    make_terms(&t, 4, 3, 2400);
+    CHECK(host_open(&t, 0) == 200 && member_join(1, &t) == 200);
+    w_run(2000, 100);
+    for (int i = 0; i < 64; i++)
+        if (C[i].used && C[i].node == 1 && C[i].up == 1) c = &C[i];
+    CHECK(c != NULL);
+    if (!c) return;
+    whost(&hk);
+    /* One hello each way, then member 1 closes the link. */
+    for (int dir = 0; dir < 2 && NQ < 8190; dir++) {
+        wmsg_t *m = &Q[NQ++];
+        m->to = dir == 0 ? 0 : 1;
+        m->link = dir == 0 ? h_link(hk.pub, c->mlink.local.key) : c->mlink;
+        m->kind = GZ_KIND_HELLO;
+        memcpy(m->scope, t.scope, 32);
+        m->len = 0;
+        m->rec = malloc(1);
+    }
+    c->up = -1;
+    c->closer = 1;
+    c->wanted = 0; /* and it stays down */
+    unsigned long d0 = DELIVERED[0], d1 = DELIVERED[1];
+    w_turn();
+    CHECK(DELIVERED[0] > d0 && DELIVERED[1] == d1);
+    no_errors(1);
+    w_free(1);
+}
+
+
+/* Confirmation of #77, N1: a slot's field 24 (the saved conditions' version
+ * when it joined) above the loaded conditions' version, or a conditions
+ * record whose field 8 (the last tightening) is above its own version, is a
+ * corrupt journal; checked once the walk is over, whatever the order. */
+static void test_cond_seen_load(void)
+{
+    lt_key_t hk;
+    terms_t t;
+    whost(&hk);
+    w_reset();
+    make_terms(&t, 3, 3, 710);
+    for (int k = 0; k < 5; k++) {
+        h_t *x = &N[SCRATCH];
+        uint8_t rec[300], v[4], cr[64];
+        size_t at = 0, cat = 0;
+        gz_status_t st;
+        w_node(SCRATCH, 5, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+        gz_put_u32(v, 1);
+        gz_rec_put(rec, sizeof rec, &at, 2, v, 4);
+        gz_rec_put(rec, sizeof rec, &at, 4, t.scope, 32);
+        v[0] = 0;
+        gz_rec_put(rec, sizeof rec, &at, 6, v, 1);
+        gz_rec_put(rec, sizeof rec, &at, 8, hk.pub, 33);
+        gz_rec_put(rec, sizeof rec, &at, 10, (const uint8_t *)ADDR, sizeof ADDR - 1);
+        gz_put_u32(v, 0);
+        gz_rec_put(rec, sizeof rec, &at, 12, v, 4);
+        gz_put_u32(v, 1);
+        gz_rec_put(rec, sizeof rec, &at, 14, v, 4);
+        v[0] = 1;
+        gz_rec_put(rec, sizeof rec, &at, 22, v, 1);
+        gz_put_u32(v, 5);
+        gz_rec_put(rec, sizeof rec, &at, 24, v, 4);      /* joined under conditions version 5 */
+        /* k 0: no conditions saved; 1: version 4; 2: version 5; 3: version 5,
+         * last tightening 6; 4: version 5, last tightening 5. */
+        gz_rec_put(cr, sizeof cr, &cat, 2, v, 0);
+        gz_put_u32(v, k == 1 ? 4 : 5);
+        gz_rec_put(cr, sizeof cr, &cat, 4, v, 4);
+        if (k >= 3) {
+            gz_put_u32(v, k == 3 ? 6 : 5);
+            gz_rec_put(cr, sizeof cr, &cat, 8, v, 4);
+        }
+        h_add_batch(x, 1, 1, GZ_RECORD_SLOT_OPENED, rec, at);
+        if (k) h_add_batch(x, 1, 2, GZ_RECORD_CONDITIONS, cr, cat);
+        x->incarnation = 1;
+        h_new_node(x);
+        st = w_start(SCRATCH);
+        CHECK(k == 2 || k == 4 ? st == GZ_OK : st == GZ_ERR_CORRUPT);
+        if (k == 2) {
+            int i = gz_route_slot_by_scope(x->n, t.scope);
+            CHECK(i >= 0 && x->n->slots[i].cond_seen == 5);
+        }
+        ALIVE[SCRATCH] = 0;
+        NT[SCRATCH] = 0;
+        for (int i = 0; i < 64; i++)
+            if (C[i].used && C[i].node == SCRATCH) C[i].used = 0;
+        h_free(x);
+        memset(x, 0, sizeof *x);
+    }
+    CHECK(ERRORS == 0);
+}
+
+/* A member asks a host for its lobbies (W12: LOBBY_QUERY; messages.md 6.1):
+ * the listed lobby is seen, checked and shown (kind 2 with no seat, its fit,
+ * its signed terms), the unlisted one is not; the query is answered (kind
+ * 10); a join of the seen lobby keeps its local id. A host key that is not
+ * the host's gets nothing (failed, no_answer); a host that is down,
+ * unreachable. The query's key pair is saved before its CONNECT. */
+static void test_discovery(void)
+{
+    terms_t t, u;
+    lt_key_t hk;
+    char qid[32], lob[GZ_LOCAL_ID_MAX + 1];
+    gz_bytes_t v;
+    wview_t *w;
+    size_t nb;
+    whost(&hk);
+    w_world(1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    make_terms(&t, 3, 3, 3100);
+    make_terms(&u, 3, 3, 3101);
+    CHECK(host_open(&t, 1) == 200 && host_open(&u, 0) == 200);
+    {
+        h_arg_t q[2] = {{12, hk.pub, 33}, {14, ADDR, sizeof ADDR - 1}};
+        nb = N[1].n_batches;
+        CHECK(w_req(1, GZ_CMD_LOBBY_QUERY, "QueryHostLobbies01", "/api/v1/discovery/query", 1, q, 2) == 202);
+        CHECK(N[1].n_batches == nb + 1 && h_records_of(&N[1], GZ_RECORD_KEY_INDEX) >= 1);
+        CHECK(res_text(1, GZ_RESULT_REC_OBJECT, qid, sizeof qid) && !strncmp(qid, "q_", 2));
+        CHECK(w_req(1, GZ_CMD_LOBBY_QUERY, "QueryHostLobbies02", "/api/v1/discovery/query", 1, q, 2) == 409);
+    }
+    w = view_of(1, GZ_VIEW_DISCOVERY, qid);
+    CHECK(w && vf8(w, GZ_VDQ_STATE) == 1);
+    w_run(4000, 100);
+    w = view_of(1, GZ_VIEW_DISCOVERY, qid);
+    CHECK(w && vf8(w, GZ_VDQ_STATE) == 2 && vf(w, GZ_VDQ_LOBBIES, &v) && v.len == 20 && !vf(w, GZ_VDQ_FAILED, &v));
+    lob[0] = 0;
+    if (vf(w, GZ_VDQ_LOBBIES, &v) && v.len < sizeof lob) {
+        memcpy(lob, v.data, v.len);
+        lob[v.len] = 0;
+    }
+    CHECK(gz_api_local_id(N[1].n, t.scope) && !strcmp(gz_api_local_id(N[1].n, t.scope), lob));
+    CHECK(gz_api_local_id(N[1].n, u.scope) == NULL);           /* unlisted: not seen */
+    w = view_of(1, GZ_VIEW_LOBBY, lob);
+    CHECK(w && vf8(w, GZ_VLB_SEAT) == GZ_VSEAT_NONE && vf(w, GZ_VLB_FINGERPRINT, &v) && !memcmp(v.data, t.scope, 32));
+    CHECK(vf(w, GZ_VLB_OUTER, &v) && v.len == t.on && !memcmp(v.data, t.outer, t.on));
+    CHECK(vf(w, GZ_VLB_FIT, &v) && v.len == 18 && v.data[0] == GZ_VFIT_FITS && vf(w, GZ_VLB_SEEN, &v));
+    CHECK(vf(w, GZ_VLB_HOST_KEY, &v) && !memcmp(v.data, hk.pub, 33));
+    /* The link is closed once answered; a join of the seen lobby keeps its id. */
+    CHECK(slot(1, &t) == NULL && member_join(1, &t) == 200 && !strcmp(lid(1, &t), lob));
+    w_run(2000, 100);
+    CHECK(member_ready(1, &t) == 1 && view_of(1, GZ_VIEW_LOBBY, lob) && vf8(view_of(1, GZ_VIEW_LOBBY, lob), GZ_VLB_SEAT) == GZ_VSEAT_READY);
+    /* A restart keeps the joined lobby's id (saved with its slot). */
+    CHECK(w_restart(1) == GZ_OK && !strcmp(lid(1, &t), lob));
+    /* Another host key: the offers do not check out against it; nothing seen. */
+    {
+        lt_key_t other;
+        wkey(5, 0, 900, &other);
+        h_arg_t q[2] = {{12, other.pub, 33}, {14, ADDR, sizeof ADDR - 1}};
+        CHECK(w_req(1, GZ_CMD_LOBBY_QUERY, "QueryOtherKey00001", "/api/v1/discovery/query", 1, q, 2) == 202);
+        CHECK(res_text(1, GZ_RESULT_REC_OBJECT, qid, sizeof qid));
+        w_run(12000, 250);
+        w = view_of(1, GZ_VIEW_DISCOVERY, qid);
+        CHECK(w && vf8(w, GZ_VDQ_STATE) == 3 && !vf(w, GZ_VDQ_LOBBIES, &v) && vf(w, GZ_VDQ_FAILED, &v) && v.len == 9 &&
+              !memcmp(v.data, "no_answer", 9));
+    }
+    /* The host down: unreachable. */
+    {
+        h_arg_t q[2] = {{12, hk.pub, 33}, {14, ADDR, sizeof ADDR - 1}};
+        ALIVE[0] = 0;
+        CHECK(w_req(1, GZ_CMD_LOBBY_QUERY, "QueryHostDown00001", "/api/v1/discovery/query", 1, q, 2) == 202);
+        CHECK(res_text(1, GZ_RESULT_REC_OBJECT, qid, sizeof qid));
+        w_run(12000, 250);
+        w = view_of(1, GZ_VIEW_DISCOVERY, qid);
+        CHECK(w && vf8(w, GZ_VDQ_STATE) == 3 && vf(w, GZ_VDQ_FAILED, &v) && v.len == 11 && !memcmp(v.data, "unreachable", 11));
+        ALIVE[0] = 1;
+    }
+    /* A host asks nobody: not a member. */
+    {
+        h_arg_t q[2] = {{12, hk.pub, 33}, {14, ADDR, sizeof ADDR - 1}};
+        CHECK(w_req(0, GZ_CMD_LOBBY_QUERY, "QueryFromHost00001", "/api/v1/discovery/query", 1, q, 2) == 409);
+    }
+    no_errors(1);
+    w_free(1);
+}
+
+/* Decision K21 (local-api.md 15.3): a seat that refused stays shown as
+ * refused while the member, back as a new seat with a new key, readies; the
+ * lobby's next attempt (its ready check) ends the showing. */
+static void test_refusal_until_next_attempt(void)
+{
+    terms_t t;
+    lt_key_t hk, m3;
+    gz_link_t l3;
+    gz_bytes_t v;
+    wview_t *w;
+    uint8_t rec[4] = {0x01, 0x02, 0x00, 0x01}, e8[8];
+    whost(&hk);
+    w_world(4, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    make_terms(&t, 4, 3, 2100);
+    CHECK(host_open(&t, 0) == 200 && member_join(1, &t) == 200 && member_join(2, &t) == 200 && member_join(3, &t) == 200);
+    w_run(2000, 100);
+    CHECK(host_ready(&t) == 3);
+    /* Member 3 refuses at Open (leave reason 1): its seat is refused, never left. */
+    wkey(3, 0, slot(3, &t)->key_index, &m3);
+    l3 = h_link(hk.pub, m3.pub);
+    w_msg(0, &l3, GZ_KIND_LEAVE, t.scope, rec, sizeof rec);
+    w = view_of(0, GZ_VIEW_HOST_LOBBY, lid(0, &t));
+    CHECK(w && vf(w, GZ_VHL_COUNTS, &v) && gz_get_u16(v.data + 6) == 1);
+    /* Member 4 comes (as a rejoin does, a new key): ready, and the refused seat is still shown. */
+    CHECK(member_join(4, &t) == 200);
+    w_run(2000, 100);
+    w = view_of(0, GZ_VIEW_HOST_LOBBY, lid(0, &t));
+    CHECK(host_ready(&t) == 3 && w && vf(w, GZ_VHL_COUNTS, &v) && gz_get_u16(v.data + 6) == 1 && host_state(&t) == GZ_LOBBY_OPEN);
+    /* The early start begins the next attempt: the refusal is no longer shown. */
+    gz_put_u64(e8, gz_fund_set_aside_sat(&slot(0, &t)->lobby.h.terms));
+    h_arg_t a[2] = {{12, t.scope, 32}, {14, e8, 8}};
+    CHECK(w_req(0, GZ_CMD_LOBBY_START, "K21StartAttempt001", "/api/v1/host/lobbies/x/start", 1, a, 2) == 202);
+    w = view_of(0, GZ_VIEW_HOST_LOBBY, lid(0, &t));
+    CHECK(host_state(&t) == GZ_LOBBY_READY_CHECK && w && vf(w, GZ_VHL_COUNTS, &v) && gz_get_u16(v.data + 6) == 0);
+    CHECK(vf(w, GZ_VHL_SEATS, &v));
+    for (size_t k = 0; k + GZ_VHL_SEAT_LEN <= v.len; k += GZ_VHL_SEAT_LEN)
+        CHECK(v.data[k + 33] != GZ_VSEAT_REFUSED && !(v.data[k + 34] & GZ_VHL_F_REFUSED));
+    no_errors(4);
+    w_free(4);
+}
+
+/* AT_JOIN, joined ready with the passphrase (LOBBY_JOIN 24, W12): the gate is
+ * open from the join, so the member readies by itself and is counted; without
+ * it, the member joins, locked, and is not. */
+static void test_join_unlocked(void)
+{
+    terms_t t;
+    lt_key_t hk;
+    uint8_t one = 1;
+    whost(&hk);
+    w_world(2, GZ_MEMBER_SIGNING_AT_JOIN, GZ_TEST_SIGN_UNFINISHED);
+    make_terms(&t, 3, 3, 3200);
+    CHECK(host_open(&t, 0) == 200);
+    uint8_t d[32];
+    gz_terms_current_digest(t.current, t.cn, d);
+    h_arg_t j[5] = {{12, t.scope, 32}, {14, hk.pub, 33}, {16, ADDR, sizeof ADDR - 1}, {24, &one, 1}, {26, d, 32}};
+    CHECK(w_cmd(1, GZ_CMD_LOBBY_JOIN, j, 5) == 200 && member_join(2, &t) == 200);
+    w_run(3000, 100);
+    CHECK(member_ready(1, &t) == 1 && slot(1, &t)->gate_open && host_ready(&t) == 1);
+    CHECK(member_ready(2, &t) != 1 && !slot(2, &t)->gate_open);
+    no_errors(2);
+    w_free(2);
+}
+
+/* Review of #79, M1: the gate opened by a join or a ready under AT_JOIN is
+ * bound to the values the person reviewed (local-api.md 14.3 rule 2). The
+ * host changes its values between the query and the join: the member does
+ * not ready under values it never saw, and the person must ready again. */
+static void test_gate_bound_to_seen(void)
+{
+    terms_t t;
+    lt_key_t hk;
+    uint8_t one = 1, d0[32], d1[32], vals[24];
+    gz_bytes_t v;
+    wview_t *w;
+    slot_t *s;
+    whost(&hk);
+    w_world(1, GZ_MEMBER_SIGNING_AT_JOIN, GZ_TEST_SIGN_UNFINISHED);
+    make_terms(&t, 3, 3, 3300);
+    CHECK(host_open(&t, 0) == 200);
+    gz_terms_current_digest(t.current, t.cn, d0);            /* what the person reviewed */
+    {
+        h_arg_t j[4] = {{12, t.scope, 32}, {14, hk.pub, 33}, {16, ADDR, sizeof ADDR - 1}, {24, &one, 1}};
+        CHECK(w_cmd(1, GZ_CMD_LOBBY_JOIN, j, 4) == 400 && slot(1, &t) == NULL);   /* no digest: refused */
+    }
+    gz_put_u64(vals, 600);
+    gz_put_u64(vals + 8, 1000);
+    gz_put_u64(vals + 16, 1000);
+    {
+        h_arg_t sv[2] = {{12, t.scope, 32}, {14, vals, 24}};
+        CHECK(w_cmd(0, GZ_CMD_LOBBY_SET_VALUES, sv, 2) == 200);
+    }
+    {
+        h_arg_t j[5] = {{12, t.scope, 32}, {14, hk.pub, 33}, {16, ADDR, sizeof ADDR - 1}, {24, &one, 1}, {26, d0, 32}};
+        CHECK(w_cmd(1, GZ_CMD_LOBBY_JOIN, j, 5) == 200);
+    }
+    w_run(3000, 100);
+    s = slot(1, &t);
+    CHECK(s && s->gate_open && s->lobby.m.have_terms && memcmp(s->lobby.m.current_digest, d0, 32) != 0);
+    CHECK(member_ready(1, &t) != 1 && host_ready(&t) == 0);  /* not under values the person never saw */
+    w = view_of(1, GZ_VIEW_LOBBY, lid(1, &t));
+    CHECK(w && vf(w, GZ_VLB_GATE, &v) && v.len == 42 && !memcmp(v.data + 10, d0, 32));   /* opened for d0 */
+    if (s) {
+        h_arg_t r0[2] = {{12, t.scope, 32}, {14, &one, 1}};
+        h_arg_t r1[3] = {{12, t.scope, 32}, {14, &one, 1}, {16, d0, 32}};
+        CHECK(w_cmd(1, GZ_CMD_LOBBY_READY, r0, 2) == 400);   /* a ready names what it was for */
+        CHECK(w_cmd(1, GZ_CMD_LOBBY_READY, r1, 3) == 409);   /* terms_changed */
+        w_run(1000, 100);
+        CHECK(member_ready(1, &t) != 1 && host_ready(&t) == 0);
+        memcpy(d1, s->lobby.m.current_digest, 32);
+        h_arg_t r2[3] = {{12, t.scope, 32}, {14, &one, 1}, {16, d1, 32}};
+        CHECK(w_cmd(1, GZ_CMD_LOBBY_READY, r2, 3) == 200);   /* the person readies again, for the new values */
+        w_run(2000, 100);
+        CHECK(member_ready(1, &t) == 1 && host_ready(&t) == 1);
+        w = view_of(1, GZ_VIEW_LOBBY, lid(1, &t));
+        CHECK(w && vf(w, GZ_VLB_GATE, &v) && v.len == 42 && !memcmp(v.data + 10, d1, 32));
+    }
+    no_errors(1);
+    w_free(1);
+}
+
+/* Review of #79, M3 (local-api.md 7.4): a ready replayed without the
+ * passphrase is looked up first and answered from the first answer; a new
+ * request without it (28) is refused, keeps no id, and does nothing. */
+static void test_ready_replay_without_passphrase(void)
+{
+    terms_t t;
+    uint8_t one = 1, d[32];
+    char e[64];
+    const char *path = "/api/v1/lobbies/lob_x/ready";
+    w_world(1, GZ_MEMBER_SIGNING_AT_JOIN, GZ_TEST_SIGN_UNFINISHED);
+    make_terms(&t, 3, 3, 3400);
+    CHECK(host_open(&t, 0) == 200 && member_join(1, &t) == 200);
+    w_run(3000, 100);
+    CHECK(slot(1, &t) && slot(1, &t)->lobby.m.have_terms && member_ready(1, &t) != 1);
+    memset(d, 0, sizeof d);
+    if (slot(1, &t)) memcpy(d, slot(1, &t)->lobby.m.current_digest, 32);
+    h_arg_t with[3] = {{12, t.scope, 32}, {14, &one, 1}, {16, d, 32}};
+    h_arg_t without[3] = {{12, t.scope, 32}, {16, d, 32}, {28, &one, 1}};
+    CHECK(w_req(1, GZ_CMD_LOBBY_READY, "ReadyNoPassNew0001", path, 8, without, 3) == 400);
+    CHECK(res_text(1, GZ_RESULT_REC_ERROR, e, sizeof e) && !strcmp(e, "missing_field"));
+    w_run(1000, 100);
+    CHECK(member_ready(1, &t) != 1 && slot(1, &t) && !slot(1, &t)->gate_open);    /* nothing done */
+    CHECK(w_req(1, GZ_CMD_LOBBY_READY, "ReadyWithPass00001", path, 7, with, 3) == 200);
+    w_run(2000, 100);
+    CHECK(member_ready(1, &t) == 1);
+    CHECK(w_req(1, GZ_CMD_LOBBY_READY, "ReadyWithPass00001", path, 7, without, 3) == 200);
+    CHECK(res_text(1, GZ_RESULT_REC_PARAMS, e, sizeof e) && !strcmp(e, "{\"replayed\":true}"));
+    no_errors(1);
+    w_free(1);
+}
+
+/* Review of #79, M2: a query's seen lobbies live in a table of their own
+ * and end at the next query, so repeated queries neither fill the
+ * program's view table nor churn the saved ids (an ended lobby's id stays). */
+static void test_discovery_repeat(void)
+{
+    terms_t t, x;
+    lt_key_t hk;
+    char xid[GZ_LOCAL_ID_MAX + 1], tid[GZ_LOCAL_ID_MAX + 1], rid[40];
+    int used = 0, live = 0, now = 0;
+    whost(&hk);
+    w_world(1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    make_terms(&t, 3, 3, 3500);
+    make_terms(&x, 3, 3, 3501);
+    CHECK(host_open(&t, 1) == 200 && host_open(&x, 0) == 200 && member_join(1, &x) == 200);
+    w_run(2000, 100);
+    snprintf(xid, sizeof xid, "%s", lid(1, &x));
+    CHECK(xid[0] && scope_cmd(1, GZ_CMD_LOBBY_LEAVE, &x, 0) == 200);
+    w_run(5000, 100);
+    CHECK(slot(1, &x) == NULL && gz_api_local_id(N[1].n, x.scope) && !strcmp(gz_api_local_id(N[1].n, x.scope), xid));
+    for (int k = 0; k < API_MAX_IDS; k++) used += N[1].n->api.ids[k].used;
+    tid[0] = 0;
+    for (int i = 0; i < 40; i++) {
+        h_arg_t q[2] = {{12, hk.pub, 33}, {14, ADDR, sizeof ADDR - 1}};
+        const char *id;
+        snprintf(rid, sizeof rid, "QueryRepeat%08d", i);
+        CHECK(w_req(1, GZ_CMD_LOBBY_QUERY, rid, "/api/v1/discovery/query", (uint8_t)(i + 1), q, 2) == 202);
+        w_run(4000, 100);
+        id = gz_api_local_id(N[1].n, t.scope);
+        CHECK(id != NULL);
+        if (id && !tid[0]) snprintf(tid, sizeof tid, "%s", id);
+        CHECK(id && !strcmp(id, tid));                           /* seen again: the same id for the run */
+    }
+    for (int k = 0; k < NV; k++)
+        live += VW[1][k].used && !VW[1][k].stale && !VW[1][k].gone && VW[1][k].kind == GZ_VIEW_DISCOVERY;
+    CHECK(live == 1);                                            /* only the last query */
+    for (int k = 0; k < API_MAX_IDS; k++) now += N[1].n->api.ids[k].used;
+    CHECK(now == used);                                          /* the seen lobby is not among the saved ids */
+    CHECK(gz_api_local_id(N[1].n, x.scope) && !strcmp(gz_api_local_id(N[1].n, x.scope), xid));
+    no_errors(1);
+    w_free(1);
+}
+
+/* Review of #79: no two links get the same key index (a query's fresh pair
+ * must not tie it to the member's other links). A member with a test engine
+ * target (the program's --connect, which picks its own index), then queries,
+ * a join, a restart, more of each: every pair is apart from every other. */
+static uint32_t PAIRS[32];
+static int NPAIRS;
+
+static void pair_note(uint32_t first)
+{
+    if (NPAIRS < 32) PAIRS[NPAIRS++] = first;
+}
+
+static void test_index_unique(void)
+{
+    terms_t t, u;
+    lt_key_t hk;
+    char rid[40];
+    int ok = 1;
+    whost(&hk);
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    W_TEST_ENGINES = 1;                                        /* the member has the program's --connect engine */
+    w_node(1, 1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    W_TEST_ENGINES = 0;
+    for (int n = 0; n <= 1; n++) CHECK(w_start(n) == GZ_OK);
+    NPAIRS = 0;
+    {
+        h_arg_t a[2] = {{12, hk.pub, 33}, {14, ADDR, sizeof ADDR - 1}};
+        /* the test engine answers no result notice; its saved target is the check */
+        CHECK(w_cmd(1, GZ_TE_CMD_CONNECT, a, 2) >= 0 && N[1].n->n_test == 1 && N[1].n->test[0].n_targets == 1);
+        if (N[1].n->test[0].n_targets) pair_note(N[1].n->test[0].targets[0].index);
+    }
+    make_terms(&t, 3, 3, 3600);
+    make_terms(&u, 3, 3, 3601);
+    CHECK(host_open(&t, 1) == 200 && host_open(&u, 1) == 200);
+    for (int round = 0; round < 2; round++) {
+        h_arg_t q[2] = {{12, hk.pub, 33}, {14, ADDR, sizeof ADDR - 1}};
+        snprintf(rid, sizeof rid, "QueryIndexUnique%02d", round);
+        CHECK(w_req(1, GZ_CMD_LOBBY_QUERY, rid, "/api/v1/discovery/query", (uint8_t)(40 + round), q, 2) == 202);
+        pair_note(N[1].n->dq.key_index);
+        w_run(4000, 100);
+        CHECK(member_join(1, round ? &u : &t) == 200 && slot(1, round ? &u : &t));
+        if (slot(1, round ? &u : &t)) pair_note(slot(1, round ? &u : &t)->key_index);
+        w_run(2000, 100);
+        if (!round) {
+            /* The test engine's own view object (test builds only, id "test-...") starts at
+             * version 0 at every start; it alone is forgotten here, so the version rule still
+             * holds for every other object the member emits across this restart. */
+            for (int k = 0; k < NV; k++)
+                if (VW[1][k].used && !strncmp(VW[1][k].id, "test-", 5)) memset(&VW[1][k], 0, sizeof VW[1][k]);
+            CHECK(w_restart(1) == GZ_OK);                     /* the allocator comes back from the journal */
+        }
+    }
+    CHECK(NPAIRS == 5);
+    for (int i = 0; i < NPAIRS; i++)
+        for (int j = i + 1; j < NPAIRS; j++)
+            if (PAIRS[i] == PAIRS[j] || PAIRS[i] == PAIRS[j] + 1 || PAIRS[i] + 1 == PAIRS[j]) ok = 0;
+    if (!ok)
+        for (int i = 0; i < NPAIRS; i++) printf("  pair %d: %u\n", i, (unsigned)PAIRS[i]);
+    CHECK(ok);
+    no_errors(1);
+    w_free(1);
+}
+
+/* Review of #79 (local-api.md 14.3 rule 1): the per-lobby gate closes when the
+ * seat ends, not only when the slot closes. A member that joined ready with the
+ * passphrase and then leaves, and one whose tightened conditions make it refuse:
+ * each gate is closed at once, its scoped secret wiped, the view says closed,
+ * and nothing more is signed for it. */
+static void test_gate_closes_with_seat(void)
+{
+    terms_t t;
+    lt_key_t hk;
+    gz_bytes_t v;
+    wview_t *w;
+    int forgets, signs;
+    char l1[GZ_LOCAL_ID_MAX + 1], l2[GZ_LOCAL_ID_MAX + 1];
+    whost(&hk);
+    w_world(2, GZ_MEMBER_SIGNING_AT_JOIN, GZ_TEST_SIGN_UNFINISHED);
+    make_terms(&t, 4, 3, 3700);
+    CHECK(host_open(&t, 0) == 200 && member_join(1, &t) == 200 && member_join(2, &t) == 200);
+    w_run(3000, 100);
+    CHECK(scope_cmd(1, GZ_CMD_LOBBY_READY, &t, 1) == 200 && scope_cmd(2, GZ_CMD_LOBBY_READY, &t, 1) == 200);
+    w_run(2000, 100);
+    CHECK(slot(1, &t) && slot(1, &t)->gate_open && slot(2, &t) && slot(2, &t)->gate_open);
+    snprintf(l1, sizeof l1, "%s", lid(1, &t));
+    snprintf(l2, sizeof l2, "%s", lid(2, &t));
+    /* 1 leaves */
+    forgets = FORGETS[1];
+    CHECK(scope_cmd(1, GZ_CMD_LOBBY_LEAVE, &t, 0) == 200);
+    w_run(500, 100);
+    if (slot(1, &t)) CHECK(slot(1, &t)->lobby.m.left && !slot(1, &t)->gate_open && !slot(1, &t)->gate_have);
+    /* the lobby object as the program last holds it, whether the slot is still there or not */
+    w = view_of(1, GZ_VIEW_LOBBY, l1);
+    CHECK(w && (!vf(w, GZ_VLB_GATE, &v) || (v.len == 10 && v.data[1] == 0)));  /* closed, opened for nothing */
+    CHECK(FORGETS[1] == forgets + 1);                                          /* the scoped secret wiped */
+    /* 2's conditions tighten past the lobby's minimum: it refuses (leaves, reason 1) */
+    forgets = FORGETS[2];
+    signs = SIGNS[2];
+    {
+        uint8_t cb[64];
+        size_t n = 27;
+        memset(cb, 0, sizeof cb);
+        gz_put_u16(cb + 1, 4);                      /* min_members, the ready hint */
+        gz_put_u16(cb + 23, 4);                     /* limits.min_members */
+        h_arg_t a[2] = {{12, cb, n}, {14, (const uint8_t *)"\0\0\0\0", 4}};
+        CHECK(w_req(2, GZ_CMD_API_SET_CONDITIONS, "GateClosesRefused01", "/api/v1/conditions", 3, a, 2) == 200);
+    }
+    w_run(2000, 100);
+    if (slot(2, &t))
+        CHECK((slot(2, &t)->lobby.m.left || slot(2, &t)->lobby.m.ended) && !slot(2, &t)->gate_open && !slot(2, &t)->gate_have);
+    w = view_of(2, GZ_VIEW_LOBBY, l2);
+    CHECK(w && (!vf(w, GZ_VLB_GATE, &v) || (v.len == 10 && v.data[1] == 0)));
+    CHECK(FORGETS[2] == forgets + 1);
+    w_run(20000, 500);
+    CHECK(SIGNS[2] == signs + 1 || SIGNS[2] == signs);   /* its leave at most; nothing after */
+    signs = SIGNS[2];
+    w_run(20000, 500);
+    CHECK(SIGNS[2] == signs && SIGNS[1] >= 0);
+    no_errors(2);
+    w_free(2);
+}
+
 
 /* Slice 1 blocker C1 (local-api.md, leave: too_late): once a partial signature of the member's has left,
  * the person's leave is refused while that round is not resolved, so that the lobby, and with it the
@@ -2890,8 +4221,9 @@ static void test_leave_partials_out(void)
 }
 
 /* Review B of PR 81, B-1: a host that takes the member's ack and never funds does not keep the lobby for good.
- * The member's round is Complete (acked at tip 1000); the tips reach the member's signing engine, and at the
- * ack tip plus C11's funding deadline the round is Abandoned and the leave goes through. */
+ * The member's round is Complete (acked at tip 1000); the tips reach the member's signing engine, and once a tip
+ * is past the ack tip plus C11's funding deadline (B-6: past, not at) the round is Abandoned and the leave goes
+ * through. */
 static void test_leave_after_funding_deadline(void)
 {
     terms_t t;
@@ -2925,7 +4257,11 @@ static void test_leave_after_funding_deadline(void)
     CHECK(w_event(1, &ev) == GZ_OK);
     size_t mark = N[1].n_log;
     CHECK(r->state == GZ_SIGN_ROUND_COMPLETE && scope_cmd(1, GZ_CMD_LOBBY_LEAVE, &t, 0) == 409 && said(1, mark, "too_late"));
-    ev.u.chain.height = 1000 + dl;
+    ev.u.chain.height = 1000 + dl;                                  /* at the deadline: not yet (C11: past it) */
+    CHECK(w_event(1, &ev) == GZ_OK);
+    mark = N[1].n_log;
+    CHECK(r->state == GZ_SIGN_ROUND_COMPLETE && scope_cmd(1, GZ_CMD_LOBBY_LEAVE, &t, 0) == 409 && said(1, mark, "too_late"));
+    ev.u.chain.height = 1000 + dl + 1;
     CHECK(w_event(1, &ev) == GZ_OK);
     CHECK(r->state == GZ_SIGN_ROUND_ABANDONED);
     CHECK(scope_cmd(1, GZ_CMD_LOBBY_LEAVE, &t, 0) == 200);
@@ -2936,17 +4272,281 @@ static void test_leave_after_funding_deadline(void)
     w_free(3);
 }
 
+
+/* The index ceiling at allocation (review of PR 87, L1): a slot never takes a
+ * key index the next start would refuse as damage. Allocation gives
+ * highest_index + 1, so it must stop once highest_index reaches
+ * GZ_LS_KEY_INDEX_MAX: at 0xfffffff0 the next index would be 0xfffffff1.
+ * Both open paths, the host's and the member's; one below, the last index
+ * is still given and loads again after a restart. */
+static void test_index_ceiling(void)
+{
+    terms_t t[4];
+    w_world(1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    for (int i = 0; i < 4; i++) make_terms(&t[i], 3, 3, 1900 + (uint32_t)i);
+    size_t hb = N[0].n_batches, mb = N[1].n_batches;
+    N[0].n->np.highest_index = GZ_LS_KEY_INDEX_MAX;
+    CHECK(host_open(&t[0], 0) == 503 && slot(0, &t[0]) == NULL && N[0].n_batches == hb);
+    N[1].n->np.highest_index = GZ_LS_KEY_INDEX_MAX;
+    CHECK(member_join(1, &t[1]) == 503 && slot(1, &t[1]) == NULL && N[1].n_batches == mb);
+    N[0].n->np.highest_index = GZ_LS_KEY_INDEX_MAX - 1;
+    CHECK(host_open(&t[2], 0) == 200 && slot(0, &t[2]) && slot(0, &t[2])->key_index == GZ_LS_KEY_INDEX_MAX);
+    N[1].n->np.highest_index = GZ_LS_KEY_INDEX_MAX - 1;
+    CHECK(member_join(1, &t[3]) == 200 && slot(1, &t[3]) && slot(1, &t[3])->key_index == GZ_LS_KEY_INDEX_MAX);
+    /* what was given loads again */
+    CHECK(w_restart(0) == GZ_OK && slot(0, &t[2]) && slot(0, &t[2])->key_index == GZ_LS_KEY_INDEX_MAX);
+    CHECK(w_restart(1) == GZ_OK && slot(1, &t[3]) && slot(1, &t[3])->key_index == GZ_LS_KEY_INDEX_MAX);
+    w_free(1);
+}
+/* Local-api.md 15.2's funds check (#80) at LOBBY_OPEN and the early start: the wallet's dry
+ * run is asked; short gives funds_short (with need and have), a port that cannot tell
+ * coins_unknown, no port no_wallet; nothing is opened or started on a refusal. The interim
+ * rule for several lobbies: one dry run over this lobby's set-aside and the others'
+ * (unfunded) set-asides, each other with a fee bound and a change's dust. */
+static void test_funds_check(void)
+{
+    terms_t t, u;
+    char e[64], q[200];
+    uint64_t one;
+    gz_fund_config_t fc;
+    w_world(3, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    make_terms(&t, 4, 3, 3800);
+    make_terms(&u, 4, 3, 3801);
+    FUNDS[0] = 1;
+    CHECK(host_open(&t, 0) == 409 && slot(0, &t) == NULL);
+    CHECK(res_text(0, GZ_RESULT_REC_ERROR, e, sizeof e) && !strcmp(e, "funds_short"));
+    CHECK(res_text(0, GZ_RESULT_REC_PARAMS, q, sizeof q) && strstr(q, "\"need_sat\":") && strstr(q, "\"have_sat\":"));
+    FUNDS[0] = 2;
+    CHECK(host_open(&t, 0) == 409 && slot(0, &t) == NULL);
+    CHECK(res_text(0, GZ_RESULT_REC_ERROR, e, sizeof e) && !strcmp(e, "coins_unknown"));
+    FUNDS[0] = 0;
+    CHECK(host_open(&t, 0) == 200 && slot(0, &t) != NULL);
+    one = FUNDS_ASKED[0];
+    CHECK(one == gz_fund_set_aside_sat(&slot(0, &t)->lobby.h.terms));      /* one lobby: its own set-aside */
+    /* a second lobby: one dry run over both, the first with a fee bound and dust on top */
+    CHECK(host_open(&u, 0) == 200 && slot(0, &u) != NULL);
+    memset(&fc, 0, sizeof fc);
+    fc.feerate = 100;
+    CHECK(FUNDS_ASKED[0] == gz_fund_set_aside_sat(&slot(0, &u)->lobby.h.terms) + one +
+                            gz_fund_funding_fee_bound(&fc, GZ_FUND_MAX_INPUTS) + GZ_FUND_CHANGE_DUST);
+    /* the early start asks again */
+    for (int n = 1; n <= 3; n++) CHECK(member_join(n, &t) == 200);
+    w_run(3000, 100);
+    {
+        uint8_t ech[8];
+        gz_put_u64(ech, gz_ls_set_aside(slot(0, &t)));
+        h_arg_t a[2] = {{12, t.scope, 32}, {14, ech, 8}};
+        FUNDS[0] = 1;
+        CHECK(w_req(0, GZ_CMD_LOBBY_START, "StartFundsShort001", "/api/v1/host/lobbies/x/start", 1, a, 2) == 409);
+        CHECK(res_text(0, GZ_RESULT_REC_ERROR, e, sizeof e) && !strcmp(e, "funds_short"));
+        FUNDS[0] = 2;
+        CHECK(w_req(0, GZ_CMD_LOBBY_START, "StartFundsUnknown1", "/api/v1/host/lobbies/x/start", 1, a, 2) == 409);
+        CHECK(res_text(0, GZ_RESULT_REC_ERROR, e, sizeof e) && !strcmp(e, "coins_unknown"));
+        CHECK(host_state(&t) == GZ_LOBBY_OPEN);                            /* nothing started */
+    }
+    no_errors(3);
+    w_free(3);
+    /* no wallet port at all: open refused, no_wallet (fail closed; a release build until integration) */
+    w_reset();
+    W_NO_WALLET = 1;
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    W_NO_WALLET = 0;
+    CHECK(w_start(0) == GZ_OK);
+    CHECK(host_open(&t, 0) == 409 && slot(0, &t) == NULL);
+    CHECK(res_text(0, GZ_RESULT_REC_ERROR, e, sizeof e) && !strcmp(e, "no_wallet"));
+    no_errors(0);
+    w_free(0);
+}
+
+/* The early start with no wallet port: no_wallet, nothing started. */
+static void test_funds_no_wallet_start(void)
+{
+    terms_t t;
+    char e[64];
+    w_reset();
+    for (int n = 0; n <= 3; n++) {
+        w_node(n, n, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+        CHECK(w_start(n) == GZ_OK);
+    }
+    make_terms(&t, 4, 3, 3802);
+    CHECK(host_open(&t, 0) == 200);
+    for (int n = 1; n <= 3; n++) CHECK(member_join(n, &t) == 200);
+    w_run(3000, 100);
+    /* the host restarts without a port (the wallet went away): its start is refused */
+    N[0].cfg.wallet = NULL;
+    CHECK(w_restart(0) == GZ_OK);
+    w_run(3000, 100);
+    {
+        uint8_t ech[8];
+        gz_put_u64(ech, gz_ls_set_aside(slot(0, &t)));
+        h_arg_t a[2] = {{12, t.scope, 32}, {14, ech, 8}};
+        CHECK(w_req(0, GZ_CMD_LOBBY_START, "StartNoWallet00001", "/api/v1/host/lobbies/x/start", 1, a, 2) == 409);
+        CHECK(res_text(0, GZ_RESULT_REC_ERROR, e, sizeof e) && !strcmp(e, "no_wallet"));
+        CHECK(host_state(&t) == GZ_LOBBY_OPEN);
+    }
+    no_errors(3);
+    w_free(3);
+}
+
+
+/* The signing engine runs only with a secp256k1 context (node.h): a node
+ * given the engine's memory but no context starts without it, and never
+ * reaches the engine with a NULL context (mutant sg-init-without-secp). */
+static void test_sign_needs_secp(void)
+{
+    h_t *x = &N[SCRATCH];
+    w_reset();
+    w_node_engine(SCRATCH, 5, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    CHECK(w_start(SCRATCH) == GZ_OK && x->n->sign_on && x->n->sign != NULL);   /* the control: with a context */
+    x->cfg.secp = NULL;
+    h_new_node(x);
+    CHECK(w_start(SCRATCH) == GZ_OK && !x->n->sign_on && x->n->sign == NULL);
+    ALIVE[SCRATCH] = 0;
+    NT[SCRATCH] = 0;
+    for (int i = 0; i < 64; i++)
+        if (C[i].used && C[i].node == SCRATCH) C[i].used = 0;
+    h_free(x);
+    memset(x, 0, sizeof *x);
+}
+/* Review B of #55, M-1: the automatic start (the target reached) asks the host's funds as
+ * the early start does. Coins drop after the open: the target is reached, no ready check
+ * is sent, the lobby stays Open and host_funds_short is up (11.4, with need and have);
+ * the coins come back and the next tip starts it, the item gone. */
+static void test_funds_auto_start(void)
+{
+    terms_t t;
+    char aid[GZ_LOCAL_ID_MAX + 8];
+    wview_t *w;
+    gz_bytes_t v;
+    w_world(3, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    make_terms(&t, 3, 3, 3803);
+    CHECK(host_open(&t, 0) == 200 && slot(0, &t));
+    if (!slot(0, &t)) { w_free(3); return; }
+    snprintf(aid, sizeof aid, "att_%s", lid(0, &t) + 4);
+    FUNDS[0] = 1;                                                  /* the coins dropped since the open */
+    for (int n = 1; n <= 3; n++) CHECK(member_join(n, &t) == 200);
+    w_run(4000, 100);
+    CHECK(host_ready(&t) == 3);                                    /* the target is reached */
+    CHECK(host_state(&t) == GZ_LOBBY_OPEN && h_records_of(&N[0], GZ_REC_FREEZE) == 0 && slot(0, &t)->funds_blocked);
+    w = view_of(0, GZ_VIEW_ATTENTION, aid);
+    CHECK(w && !w->gone && vf8(w, GZ_VAT_CODE) == GZ_ATT_HOST_FUNDS_SHORT && vf(w, GZ_VAT_NEED, &v) && v.len == 8 &&
+          vf(w, GZ_VAT_HAVE, &v) && v.len == 8);
+    FUNDS[0] = 2;                                                  /* nor when the wallet cannot tell */
+    {
+        gz_event_t ev;
+        memset(&ev, 0, sizeof ev);
+        ev.kind = GZ_EVENT_CHAIN;
+        ev.u.chain.kind = GZ_CHAIN_NEW_TIP;
+        ev.u.chain.height = 1001;
+        CHECK(w_event(0, &ev) == GZ_OK);
+        w_run(500, 100);
+        CHECK(host_state(&t) == GZ_LOBBY_OPEN && slot(0, &t)->funds_blocked);
+        FUNDS[0] = 0;                                              /* the coins are back: the next tip starts it */
+        ev.u.chain.height = 1002;
+        CHECK(w_event(0, &ev) == GZ_OK);
+    }
+    w_run(1000, 100);
+    CHECK(host_state(&t) == GZ_LOBBY_READY_CHECK && !slot(0, &t)->funds_blocked);
+    w = view_of(0, GZ_VIEW_ATTENTION, aid);
+    CHECK(w && w->gone);
+    no_errors(3);
+    w_free(3);
+}
+
+
+/* The real engine's begin at the host refuses with no chain tip (review of
+ * #89, L1; kills sg-begin-no-tip). The host runs the signing engine itself
+ * (outcome 0: no stand-in); the members need none, since the host stops
+ * before any proposal. Nothing in this world gives the host a tip. */
+static void test_begin_needs_tip(void)
+{
+    terms_t t;
+    w_reset();
+    w_node_engine(0, 0, GZ_MEMBER_SIGNING_AUTO, 0);
+    for (int n = 1; n <= 3; n++) w_node(n, n, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    for (int n = 0; n <= 3; n++) CHECK(w_start(n) == GZ_OK);
+    CHECK(N[0].n->sign_on && N[0].n->tip == 0);
+    make_terms(&t, 3, 3, 11);   /* three members fill it (target and minimum count members); the deadline within the run */
+    CHECK(host_open(&t, 0) == 200);
+    for (int n = 1; n <= 3; n++) CHECK(member_join(n, &t) == 200);
+    w_run(4000, 100);
+    CHECK(host_ready(&t) == 3);
+    w_run(60000, 500);   /* to the deadline: the ready window, the start, the hand-off to the engine */
+    CHECK(said(0, 0, "sign-begin-refused-no-tip") >= 1);
+    if (!said(0, 0, "sign-begin-refused-no-tip")) {   /* what the host said instead, to see why */
+        printf("  host state %d; its sign- lines:\n", host_state(&t));
+        for (size_t i = 0; i < N[0].n_log; i++)
+            if (N[0].log[i].a.kind == GZ_ACTION_NOTIFY && strstr(N[0].log[i].text, "sign")) printf("    %s\n", N[0].log[i].text);
+    }
+    w_free(3);
+}
+
+/* A key port that hands out a host key to anyone who asks: a member's node
+ * must still never take one (test_keys_own_role_only). */
+static int w_any_host_secret(void *ctx, uint8_t sec[32])
+{
+    (void)ctx;
+    memset(sec, 0x42, 32);
+    return 1;
+}
+
+/* gz_sg_keys answers only for a scope of this node's own role (review of #89,
+ * L1; kills sg-keys-any-role). Load never keys a lobby of the other role (a
+ * slot_opened of the other role is left out and wiped before its slot_closed
+ * could key it), so the check is a second guard: the test forges the keyed
+ * entry of an ended lobby with the other role directly. */
+static void test_keys_own_role_only(void)
+{
+    terms_t t;
+    secp256k1_keypair f, kc;
+    np_keyed_t *e;
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node_engine(1, 1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    for (int n = 0; n <= 1; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 3, 3, 5200);
+    e = &N[1].n->np.keyed[0];
+    memset(e, 0, sizeof *e);
+    e->used = 1;
+    e->seq = ++N[1].n->np.keyed_seq;
+    memcpy(e->scope, t.scope, 32);
+    e->epoch = 0;
+    e->index = 1;
+    e->host = 0;   /* the member's own role: the keys are given (the control) */
+    CHECK(gz_sg_keys(N[1].n, t.scope, NULL, NULL, &kc) == 1);
+    /* a host's ended lobby on a member: none, even though this port would hand
+     * out a host key (without the role check, gz_sg_keys would take it) */
+    N[1].n->cfg.keys.host_secret = w_any_host_secret;
+    e->host = 1;
+    CHECK(gz_sg_keys(N[1].n, t.scope, NULL, NULL, &kc) == 0);
+    CHECK(gz_sg_keys(N[1].n, t.scope, NULL, &f, &kc) == 0);
+    N[1].n->cfg.keys.host_secret = NULL;
+    memset(e, 0, sizeof *e);
+    w_free(1);
+}
 int main(int argc, char **argv)
 {
     unsigned long events = argc > 1 ? strtoul(argv[1], NULL, 10) : 20000;
     uint64_t seed = argc > 2 ? strtoull(argv[2], NULL, 10) : 1;
     setvbuf(stdout, NULL, _IONBF, 0);
+    test_discovery();
+    test_refusal_until_next_attempt();
+    test_join_unlocked();
+    test_gate_bound_to_seen();
+    test_ready_replay_without_passphrase();
+    test_discovery_repeat();
+    test_index_unique();
+    test_gate_closes_with_seat();
+    test_funds_check();
+    test_funds_no_wallet_start();
+    test_funds_auto_start();
     test_two_lobbies();
     test_cancel_and_tombstone();
     test_refusals();
     test_gates();
     test_signing_set();
     test_at_join_key_hook();
+    test_join_ready_key_hook();
     test_tree_cap();
     test_may_ack_depth();
     test_route_held();
@@ -2963,15 +4563,28 @@ int main(int argc, char **argv)
     test_api_pause_and_signing();
     test_pause_rows();
     test_api_request_keep();
+    test_api_request_keep_more();
+    test_attention_long_ids();
     test_api_replay_detail();
     test_api_signing_authority();
+    test_api_conditions();
+    test_api_start();
+    test_api_start_guard();
+    test_api_join_looser();
+    test_harness_flush();
+    test_cond_seen_load();
     test_api_records();
     test_api_ids_kept();
     test_seat_capacity();
     test_left_out();
     test_node_record_fields();
+    test_index_ceiling();
+    test_sign_needs_secp();
     test_timer_of_ended_lobby();
     test_gate_refused_ready();
+    test_gate_bound_to_terms();
+    test_begin_needs_tip();
+    test_keys_own_role_only();
     test_hostile(events, seed);
     return check_done();
 }

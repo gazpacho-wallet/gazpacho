@@ -10,7 +10,7 @@
 # The release binary's symbols are checked (program_release_build, T12).
 
 set(GZP_SOURCES options.c datadir.c store_journal.c store_unlock.c keys.c net.c pchain.c notify.c executor.c testping.c
-                view.c api.c wport.c sweep.c)
+                view.c api.c api_lobby.c api_calls.c wport.c sweep.c)
 
 foreach(variant release test)
   if(variant STREQUAL "release")
@@ -98,7 +98,7 @@ if(GZ_MEMCHECK)
     # triages every report by function and line in every build (integration
     # B10: a Release build had no lines, and nothing could be triaged).
     add_executable(ct_keys ${CMAKE_SOURCE_DIR}/tests/program/ct_keys.c ${CMAKE_CURRENT_SOURCE_DIR}/keys.c
-                   ${CMAKE_SOURCE_DIR}/wallet/src/address.c ${CMAKE_SOURCE_DIR}/wallet/src/bip32.c
+                   ${CMAKE_SOURCE_DIR}/wallet/src/address.c ${CMAKE_SOURCE_DIR}/tests/program/ct_bip32.c
                    ${CMAKE_SOURCE_DIR}/wallet/src/phrase.c ${CMAKE_SOURCE_DIR}/wallet/src/taproot.c)
     target_include_directories(ct_keys PRIVATE ${GZP_VALGRIND_INCLUDE} ${CMAKE_CURRENT_SOURCE_DIR}
                                ${CMAKE_SOURCE_DIR}/wallet/include ${CMAKE_SOURCE_DIR}/core/superscalar/src)
@@ -145,7 +145,7 @@ if(Python3_Interpreter_FOUND)
   # kind 32767 never delivered.
   add_test(NAME program_release_build
     COMMAND ${GZP_PY} ${GZP_T}/release_build.py $<TARGET_FILE:gazpacho> $<TARGET_FILE:gazpacho-test>
-            ${CMAKE_CURRENT_BINARY_DIR}/release_build)
+            ${CMAKE_CURRENT_BINARY_DIR}/release_build $<TARGET_FILE:test_signer_vectors>)
   # Storage and node failures, the in-process restart (review of PR 27: H1, M5).
   add_test(NAME program_storage_failure
     COMMAND ${GZP_PY} ${GZP_T}/storage_failure.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/storage_failure)
@@ -242,6 +242,11 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME program_p6a_views
     COMMAND ${GZP_PY} ${CMAKE_SOURCE_DIR}/tests/web/check_p6a_fixme.py ${CMAKE_SOURCE_DIR} --views ${CMAKE_CURRENT_BINARY_DIR}/lobby)
   set_tests_properties(program_p6a_views PROPERTIES FIXTURES_REQUIRED lobby_run)
+  # The person's conditions on a joined lobby and the host's early start
+  # (local-api.md 13.2, 15.2): a host and four members.
+  add_test(NAME program_conditions_start
+    COMMAND ${GZP_PY} ${GZP_T}/conditions_start.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/conditions_start)
+  set_tests_properties(program_conditions_start PROPERTIES TIMEOUT 300)
   # The signing engine in the composite, P4.3: a host and four members sign
   # a real tree from the terms (one member's chain view makes it refuse);
   # every process restarted.
@@ -267,6 +272,11 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME program_partials_hold
     COMMAND ${GZP_PY} ${GZP_T}/partials_hold.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/partials_hold)
   set_tests_properties(program_partials_hold PROPERTIES TIMEOUT 600)
+  # The host's funds check asks the host's own wallet (P4.6, #55's can_plan from the wallet port):
+  # an empty wallet is refused funds_short, a funded one opens; never no_wallet.
+  add_test(NAME program_host_funds
+    COMMAND ${GZP_PY} ${GZP_T}/host_funds.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/host_funds)
+  set_tests_properties(program_host_funds PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77)
   # F13 (H3): the key routing follows the signing setting in force, not --member-signing; real signing.
   add_test(NAME program_keys_setting
     COMMAND ${GZP_PY} ${GZP_T}/keys_setting.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/keys_setting)
@@ -285,6 +295,7 @@ if(Python3_Interpreter_FOUND)
   endif()
   # P8: the vectors header is what tools/keys_ref.py computes; T13 and T2
   # step 3, keys derived from the seed end to end (docs/notes/keys.md 10).
+  add_test(NAME program_keys_join_window COMMAND ${GZP_PY} ${GZP_T}/join_window.py ${CMAKE_SOURCE_DIR})
   add_test(NAME program_keys_vectors
     COMMAND ${GZP_PY} ${CMAKE_SOURCE_DIR}/tools/keys-vectors.py --check ${GZP_T}/keys_vectors.h)
   add_test(NAME program_derived_keys
@@ -314,7 +325,7 @@ if(Python3_Interpreter_FOUND)
   # the kernel gave them, so they need no lock.
   set_tests_properties(program_envelope program_links program_loop_liveness program_lobby program_queue_peers
                        program_refusals program_resend_on_connect program_restart_slots program_start_queue
-                       program_two_process program_api program_api_limits
+                       program_two_process program_api program_api_limits program_conditions_start
                        PROPERTIES RESOURCE_LOCK gzp_free_port)
   if(GZ_LIVE_TESTS AND TARGET gazpacho_chain_curl)
     # Read-only: the public signet servers' block 0 and tip, the wallet's

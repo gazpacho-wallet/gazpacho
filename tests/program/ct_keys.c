@@ -26,6 +26,23 @@ static int seed_fn(void *ctx, uint8_t out[64])
     return 1;
 }
 
+/* The canary: one memory index on the marked seed, on purpose, so that ct_keys.py
+ * sees memcheck report the seed as secret. Without it, a run with no report
+ * at all could also mean the seed was never marked. */
+static volatile uint8_t ct_table[256];
+
+__attribute__((noinline)) static int ct_canary(void)
+{
+    uint8_t s[64];
+    uint8_t v;
+    seed_fn(NULL, s);
+    v = ct_table[s[0]]; /* a memory index on the secret: memcheck reports it */
+    VALGRIND_MAKE_MEM_DEFINED(&v, sizeof v);
+    VALGRIND_MAKE_MEM_DEFINED(s, sizeof s);
+    memset(s, 0, sizeof s);
+    return v == 0;
+}
+
 int main(void)
 {
     secp256k1_context *secp = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
@@ -54,6 +71,7 @@ int main(void)
     VALGRIND_MAKE_MEM_DEFINED(&r, sizeof r);
     ok &= r;
     gzp_keys_free(&k);
+    ok &= ct_canary();
     secp256k1_context_destroy(secp);
     printf("ct_keys: %s\n", ok ? "ran" : "FAILED");
     return ok ? 0 : 1;

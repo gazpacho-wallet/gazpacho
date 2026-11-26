@@ -76,7 +76,23 @@ static int marks_missing(gzp_wport_t *w)
 static int out_of(gzp_wport_t *w, uint32_t change, uint32_t j, gzw_bip86_output *o)
 {
     gzw_reason why;
-    return gzw_bip86_output_from_master(w->secp, &w->master, w->wnet, 0, change, j, o, &why) == 1;
+    return gzw_bip86_output_from_xpub(w->secp, &w->account, w->wnet, 0, change, j, o, &why) == 1;
+}
+
+/* The master key, from the seed source, for one operation: the caller wipes it with gzw_wipe at
+ * once (signer.md 2.1; the boundary review of #66). 0 while the wallet is locked. */
+static int master_now(gzp_wport_t *w, gzw_xprv *m)
+{
+    uint8_t seed[64];
+    gzw_reason why;
+    int ok = w->unlock.seed && w->unlock.seed(w->unlock.ctx, seed) == 0 &&
+             gzw_bip32_master(w->secp, seed, sizeof seed, m, &why) == 1;
+    OPENSSL_cleanse(seed, sizeof seed);
+    if (!ok) {
+        gzw_wipe(m, sizeof *m);
+        gzp_log("wallet-master-refused (the seed source answered no: locked)");
+    }
+    return ok;
 }
 
 static gzt_funding *by_tx(gzp_wport_t *w, const uint8_t *tx, size_t len, int *k_out)
@@ -152,11 +168,18 @@ static int plan_locked(void *ctx, uint64_t amount, const uint8_t script[34], uin
         req.must_vout = must->vout;
     }
     gzp_os_random(aux, sizeof aux);
-    if (gzt_funding_build(w->secp, &w->master, &req, offer, n, aux, &w->plans[k]) != GZT_OK) {
+    {
+        gzw_xprv m;
+        int built = master_now(w, &m) && gzt_funding_build(w->secp, &m, &req, offer, n, aux, &w->plans[k]) == GZT_OK;
+        gzw_wipe(&m, sizeof m);
+        if (built) goto planned;
+    }
+    {
         gzp_log("wallet-plan-refused coins=%zu amount=%llu", n, (unsigned long long)amount);
         give_back(w, req.change_index);
         return 0;
     }
+planned:
     if (gzt_funding_unsigned(&w->plans[k], tx, cap, tx_len) != GZT_OK ||
         w->plans[k].info.selection.n_selected > max_prev) {
         gzt_funding_wipe(&w->plans[k]);
@@ -188,8 +211,13 @@ static int w_sign_plan(void *ctx, const uint8_t txid[32], uint8_t *out, size_t c
     uint8_t aux[32];
     gzp_os_random(aux, sizeof aux);
     for (int k = 0; k < GZP_WPORT_PLANS; k++)
-        if (w->used[k] && memcmp(w->plans[k].info.txid, txid, 32) == 0)
-            return gzt_funding_release(w->secp, &w->master, &w->plans[k], txid, aux, out, cap, out_len) == GZT_OK;
+        if (w->used[k] && memcmp(w->plans[k].info.txid, txid, 32) == 0) {
+            gzw_xprv m;
+            int ok = master_now(w, &m) &&
+                     gzt_funding_release(w->secp, &m, &w->plans[k], txid, aux, out, cap, out_len) == GZT_OK;
+            gzw_wipe(&m, sizeof m);
+            return ok;
+        }
     return 0;
 }
 
@@ -432,9 +460,13 @@ static int w_spend_back(void *ctx, const uint8_t txid[32], uint32_t index, uint6
     }
     pthread_mutex_unlock(&w->mu);
     gzp_os_random(aux, sizeof aux);
-    ok = out_of(w, 1, ci, &dest) &&
-         gzt_funding_spend_back(w->secp, &w->master, f, index, dest.script_pubkey, sizeof dest.script_pubkey, fee,
-                                aux, out, cap, out_len) == GZT_OK;
+    {
+        gzw_xprv m;
+        ok = out_of(w, 1, ci, &dest) && master_now(w, &m) &&
+             gzt_funding_spend_back(w->secp, &m, f, index, dest.script_pubkey, sizeof dest.script_pubkey, fee,
+                                    aux, out, cap, out_len) == GZT_OK;
+        gzw_wipe(&m, sizeof m);
+    }
     if (!ok) {   /* nothing signed: the index never left */
         pthread_mutex_lock(&w->mu);
         give_back(w, ci);
@@ -517,7 +549,6 @@ int gzp_wport_publish(gzp_wport_t *w, const gzt_coin *coins, const uint32_t *hei
 int gzp_wport_open(gzp_wport_t *w, const secp256k1_context *secp, const gzp_unlock_t *unlock, gzw_network wnet,
                    uint32_t burial)
 {
-    uint8_t seed[64];
     gzw_reason why;
     memset(w, 0, sizeof *w);
     w->secp = secp;
@@ -528,9 +559,13 @@ int gzp_wport_open(gzp_wport_t *w, const secp256k1_context *secp, const gzp_unlo
     case GZW_NET_TESTNET4: w->net = GZT_NET_TESTNET4; break;
     default: return -1;                  /* never mainnet */
     }
-    if (!unlock || !unlock->seed || unlock->seed(unlock->ctx, seed) != 0) return -1;
-    w->have_master = gzw_bip32_master(secp, seed, sizeof seed, &w->master, &why) == 1;
-    OPENSSL_cleanse(seed, sizeof seed);
+    if (!unlock || !unlock->seed) return -1;
+    w->unlock = *unlock;
+    {
+        gzw_xprv m;
+        w->have_master = master_now(w, &m) && gzw_bip86_account_xpub(secp, &m, wnet, 0, &w->account, &why) == 1;
+        gzw_wipe(&m, sizeof m);
+    }
     if (!w->have_master) return -1;
     pthread_mutex_init(&w->mu, NULL);
     w->next_change = 0;                  /* the lowest unused change index; the scan moves it past the used (N-2) */

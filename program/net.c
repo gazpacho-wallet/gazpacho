@@ -149,7 +149,7 @@ int gzp_net_key(const gzp_net_t *n, uint32_t epoch, uint32_t index, uint8_t sec[
     int ok;
     if (sec) OPENSSL_cleanse(sec, 32);
     if (pub) memset(pub, 0, 33);
-    if (n->single_key) {
+    if (n->single_key || index == GZP_NET_KEY_STATIC) {
         memcpy(s, n->cfg.static_key, 32);
     } else {
         /* The key port derives it (keys.md 3: the current epoch only). */
@@ -167,21 +167,15 @@ int gzp_net_key(const gzp_net_t *n, uint32_t epoch, uint32_t index, uint8_t sec[
     return ok;
 }
 
-int gzp_net_sign_host(const gzp_net_t *n, const uint8_t msg[32], uint8_t sig[64])
-{
-    secp256k1_keypair kp;
-    int ok = secp256k1_keypair_create(n->secp, &kp, n->cfg.static_key) &&
-             secp256k1_schnorrsig_sign32(n->secp, sig, msg, &kp, NULL);
-    OPENSSL_cleanse(&kp, sizeof kp);
-    return ok;
-}
-
 int gzp_net_sign(const gzp_net_t *n, uint32_t epoch, uint32_t index, const uint8_t msg[32], uint8_t sig[64])
 {
     uint8_t s[32];
     secp256k1_keypair kp;
-    int ok = gzp_net_key(n, epoch, index, s, NULL) && secp256k1_keypair_create(n->secp, &kp, s) &&
-             secp256k1_schnorrsig_sign32(n->secp, sig, msg, &kp, NULL);
+    uint8_t aux[32];
+    int ok;
+    gzp_os_random(aux, sizeof aux);   /* K20: fresh aux randomness in every signature */
+    ok = gzp_net_key(n, epoch, index, s, NULL) && secp256k1_keypair_create(n->secp, &kp, s) &&
+         secp256k1_schnorrsig_sign32(n->secp, sig, msg, &kp, aux);
     OPENSSL_cleanse(s, sizeof s);
     OPENSSL_cleanse(&kp, sizeof kp);
     return ok;
@@ -253,6 +247,8 @@ int gzp_net_connect(gzp_net_t *n, const uint8_t host_key[33], const uint8_t *add
     long port;
     int i, free_i = -1;
     gzp_target_t *t;
+    /* A lobby key only: an index of 2^31 or more (GZP_NET_KEY_STATIC above all) is no lobby's. */
+    if (key_index >= 0x80000000u) return connect_failed(n, host_key, "no-key");
     if (address_len == 0 || address_len >= sizeof buf) return connect_failed(n, host_key, "bad-address");
     memcpy(buf, address, address_len);
     buf[address_len] = 0;

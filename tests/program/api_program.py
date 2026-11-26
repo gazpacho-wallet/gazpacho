@@ -13,8 +13,11 @@ the interface does (Host, Origin, fetch metadata, the session header):
      honestly "unreachable" with --no-chain), finish-setup, then ready;
   3. the event stream, read through the program's one poll loop, carries the
      status change that finish-setup makes;
-  4. what waits for the core's view objects (P6a): lobby lists are empty, a
-     lobby is 404, an acting call is 501 not_in_this_release with needs;
+  4. the core's view and command results (W12): lobby lists empty, a lobby
+     404, the core's refusal of a member's call on a host (409 not_a_member)
+     as the call's error; then a member program (its own data folder, set up
+     the same way): a discovery query held and answered from the command
+     result, the core's 409 busy, and an unreachable host;
   5. a wrong passphrase: 401 with retry_after_s and wrong_in_row (open point 42);
   6. lock: the wallet reads locked without a session;
   7. the release program serves the API too, without the stand-in: sign-in is
@@ -56,7 +59,7 @@ import time
 BUILD = sys.argv[1] if len(sys.argv) > 1 else "build"
 PASS = "a long enough passphrase, test only"
 SEED_TAG = "gazpacho program_api test seed "
-SEED_N = 1   # chosen by --choose-seed (docstring)
+SEED_N = 3   # chosen by --choose-seed (docstring)
 fails = []
 DUMP = []       # --dump-vocab: every output line and API answer
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -109,6 +112,27 @@ def check(cond, what, extra=""):
             print("     " + str(extra)[:500])
 
 
+# the generator point: a valid key that no host here holds
+NOBODY_KEY = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+
+
+def set_up(prog):
+    """First run for a second program: the start token, create, finish-setup."""
+    if prog.wait_line(r"interface listening") is None:
+        return False
+    page = open(os.path.join(prog.data, "first-run.html")).read()
+    tok = re.search(r"#start=([A-Za-z0-9_-]{43})", page).group(1)
+    st, s = prog.call("POST", "/session/start", {"start_token": tok})
+    prog.session = s["session"] if st == 200 and s else None
+    st, c = prog.call("POST", "/wallet/create", {"confirm": "create_wallet", "passphrase": PASS, "confirm_passphrase": PASS})
+    prog.create_answer = len(prog.answers) - 1
+    prog.words = (c or {}).get("words", [])
+    if st != 200:
+        return False
+    st, f = prog.call("POST", "/wallet/finish-setup", {"preset": "everyday", "find": "browse"})
+    return st == 200 and f and f.get("state") == "ready"
+
+
 def free_port():
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -118,7 +142,7 @@ def free_port():
 
 
 class Prog:
-    def __init__(self, exe, extra=(), seed=None):
+    def __init__(self, exe, extra=(), seed=None, role="host", dump=True, connect=None):
         self.dir = tempfile.mkdtemp(prefix="gzapi-")
         self.data = os.path.join(self.dir, "d")
         if seed is not None:              # the stand-in seed file, as the program writes it (datadir.c)
@@ -128,8 +152,15 @@ class Prog:
             os.close(fd)
         self.port = free_port()
         self.listen = free_port()
-        args = [exe, "--data-dir", self.data, "--role", "host", "--listen", "127.0.0.1:%d" % self.listen, "--no-chain",
-                "--interface-port", str(self.port), "--name", "h1"] + list(extra)
+        self.dump = dump                  # its answers go into DUMP (the host's phrase checks)
+        self.answers = []                 # every answer, for its own secrets scan (review of #79, L3)
+        self.create_answer = None
+        if role == "host":
+            args = [exe, "--data-dir", self.data, "--role", "host", "--listen", "127.0.0.1:%d" % self.listen, "--no-chain",
+                    "--interface-port", str(self.port), "--name", "h1"] + list(extra)
+        else:                             # a member names a host to connect to: one nobody listens at
+            args = [exe, "--data-dir", self.data, "--role", "member", "--connect", connect or NOBODY_KEY + "@127.0.0.1:%d" % self.listen,
+                    "--no-chain", "--interface-port", str(self.port), "--name", "m1"] + list(extra)
         env = dict(os.environ, XDG_RUNTIME_DIR=self.dir)
         self.p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True)
         self.lines = []
@@ -168,7 +199,9 @@ class Prog:
         r = c.getresponse()
         raw = r.read()
         c.close()
-        DUMP.append(raw.decode("utf-8", "replace"))
+        if self.dump:
+            DUMP.append(raw.decode("utf-8", "replace"))
+        self.answers.append(raw.decode("utf-8", "replace"))
         try:
             j = json.loads(raw) if raw else None
         except ValueError:
@@ -185,6 +218,101 @@ class Prog:
                 self.p.wait()
         self.t.join(5)
         return self.p.returncode
+
+
+def member_queries(p, host):
+    """Section 4 on a member: a query held and answered, busy, unreachable."""
+    st, q = p.call("POST", "/discovery/query", {"host": host})
+    check(st == 202 and q and q.get("query_id", "").startswith("q_") and q.get("state") == "asking",
+          "a query: 202 from the core's command result, the query as the view holds it", (st, q))
+    st, e = p.call("POST", "/discovery/query", {"host": host})
+    check(st == 409 and e and e.get("code") == "busy", "a second query while one asks: the core's 409 busy", (st, e))
+    qid = (q or {}).get("query_id", "q_0")
+    end, g = time.time() + 20, None
+    while time.time() < end:
+        st, g = p.call("GET", "/discovery/queries/" + qid)
+        if g and g.get("state") != "asking":
+            break
+        time.sleep(0.5)
+    check(g and g.get("state") == "failed" and g.get("failed_because") == "unreachable" and g.get("lobbies") == [],
+          "nobody at that address: the query failed, unreachable", g)
+
+
+def gate_after_seat_ends(exe):
+    """14.3 rule 1 through the programs: a member's per-lobby gate is closed once its
+    seat ends, after a leave and after a refusal (review of #79; the core used to keep
+    it open, with its scoped secret, until the slot closed). A host and two members,
+    with --test-engines 0 (net.h, single_key)."""
+    te0 = ["--test-engines", "0"]
+    dl = int(time.time()) + 3600
+    h = Prog(exe, extra=te0, dump=False)
+    ms = []
+    try:
+        check(set_up(h), "gate: the host, set up", h.lines[-5:])
+        k = h.wait_line(r"host key=([0-9a-f]{66})")
+        addr = "%s@127.0.0.1:%d" % (k.group(1) if k else NOBODY_KEY, h.listen)
+        draft = {"name": "g", "target": 4, "minimum": 3, "listed": True, "deadline_at": dl}
+        st, pv = h.call("POST", "/host/preview", draft)
+        st, op = h.call("POST", "/host/lobbies", {"request_id": "GateSeatEndsOpen001", "draft": draft,
+                                                 "draft_digest": (pv or {}).get("draft_digest"),
+                                                 "confirm_funding_sat": (pv or {}).get("funding_at_target_sat"), "passphrase": PASS})
+        check(200 <= st < 300, "gate: the host opens a lobby", (st, op))
+        lids = []
+        for n in range(2):
+            m = Prog(exe, role="member", extra=te0, dump=False, connect=addr)
+            ms.append(m)
+            check(set_up(m), "gate: member %d, set up" % (n + 1), m.lines[-5:])
+            st, q = m.call("POST", "/discovery/query", {"host": addr})
+            g = None
+            for _ in range(30):
+                st, g = m.call("GET", "/discovery/queries/" + str((q or {}).get("query_id")))
+                if g and g.get("state") != "asking":
+                    break
+                time.sleep(0.5)
+            lid = ((g or {}).get("lobbies") or ["lob_none"])[0]
+            lids.append(lid)
+            st, lo = m.call("GET", "/lobbies/" + lid)
+            digest = ((lo or {}).get("terms") or {}).get("current", {}).get("digest")
+            st, j = m.call("POST", "/lobbies/%s/join" % lid, {"request_id": "GateSeatEndsJoin%03d" % n, "seen_current_digest": digest,
+                                                               "ready": True, "passphrase": PASS})
+            you = {}
+            for _ in range(40):
+                st, lo = m.call("GET", "/lobbies/" + lid)
+                you = (lo or {}).get("you") or {}
+                if you.get("seat") == "ready":
+                    break
+                time.sleep(0.25)
+            check(you.get("seat") == "ready" and (you.get("gate") or {}).get("state") == "open",
+                  "gate: member %d joined ready, its gate open" % (n + 1), you)
+
+        def closed_soon(m, lid):
+            you = {}
+            for _ in range(4):                    # within about a second: the step that ends the seat
+                time.sleep(0.25)
+                st, lo = m.call("GET", "/lobbies/" + lid)
+                you = (lo or {}).get("you") or {}
+                if you.get("seat") in ("left", "none", "refused") and (you.get("gate") is None or you["gate"].get("state") == "closed"):
+                    return True, you
+            return False, you
+
+        st, e = ms[0].call("POST", "/lobbies/%s/leave" % lids[0], {"request_id": "GateSeatEndsLeave01"})
+        ok, you = closed_soon(ms[0], lids[0])
+        check(200 <= st < 300 and ok, "gate: after a leave, you.gate is closed (14.3 rule 1)", (st, you))
+        st, c = ms[1].call("GET", "/conditions")
+        tight = {k2: v for k2, v in ((c or {}).get("conditions") or {}).items()}
+        tight["min_members"] = 4                  # past the lobby's minimum of 3: its own check refuses
+        st, r = ms[1].call("PUT", "/conditions", {"conditions": tight, "based_on_version": (c or {}).get("version"),
+                                                  "preset": (c or {}).get("preset"), "confirm_loosens": []})
+        ok, you = closed_soon(ms[1], lids[1])
+        check(st == 200 and ok, "gate: after a refusal, you.gate is closed (14.3 rule 1)", (st, r, you))
+    finally:
+        for m in ms:
+            m.stop()
+        h.stop()
+    for m in ms:
+        check(not any(PASS in l for l in m.lines), "gate: a member's passphrase is in no output line")
+        shutil.rmtree(m.dir, ignore_errors=True)
+    shutil.rmtree(h.dir, ignore_errors=True)
 
 
 def events(prog, until_topic, timeout=10):
@@ -261,14 +389,131 @@ def main():
         st, s = p.call("GET", "/status")
         check(st == 200 and s.get("wallet") == "ready", "status: ready", s.get("wallet"))
 
-        # 4. what waits for the core's view objects
+        # 4. the core's view and its command results (W12): no lobby yet, a lobby
+        # the view does not hold is 404; a refusal the core gives arrives as the
+        # call's error (a query is a member's call: on this host, 409
+        # not_a_member). On a member program: a held call answered from the
+        # command result (202, the object it made, read back from the view), the
+        # core's 409 busy, and a host that is not there: the query fails, unreachable
         st, l = p.call("GET", "/lobbies?show=all")
-        check(st == 200 and l and l.get("items") == [], "lobbies: an empty list until the core's views", l)
+        check(st == 200 and l and l.get("items") == [], "lobbies: an empty list before any query", l)
         st, l = p.call("GET", "/lobbies/lob_nothing")
         check(st == 404, "a lobby the view does not hold: 404", l)
-        st, e = p.call("POST", "/discovery/query", {"host": "02" + "11" * 32 + "@127.0.0.1:9736"})
-        check(st == 501 and e and e.get("code") == "not_in_this_release" and e.get("params", {}).get("needs"),
-              "an acting call waits honestly: 501 with needs", e)
+        st, e = p.call("POST", "/discovery/query", {"host": "not a host"})
+        check(st == 400 and e and e.get("code") == "bad_host_address", "a host address that is not one: 400", e)
+        # a deadline is the person's and in the future (15.1): none, or one past, is a problem of
+        # the draft and it cannot be opened (T1's own deadline is a fixed date, long past)
+        DL = int(time.time()) + 3600
+        st, pv = p.call("POST", "/host/preview", {"name": "x", "target": 3, "minimum": 3})
+        check(st == 200 and pv and pv.get("can_open") is False and pv.get("cannot_open_because") == ["problems"] and
+              pv.get("problems") == [{"field": "/deadline_at", "code": "deadline_missing"}],
+              "a draft with no deadline: deadline_missing", (st, pv))
+        st, pv = p.call("POST", "/host/preview", {"name": "x", "target": 3, "minimum": 3, "deadline_at": int(time.time()) - 60})
+        check(st == 200 and pv and pv.get("can_open") is False and
+              pv.get("problems") == [{"field": "/deadline_at", "code": "deadline_past"}],
+              "a draft whose deadline has passed: deadline_past", (st, pv))
+        st, e = p.call("POST", "/host/lobbies", {"request_id": "OpenDeadlinePast0001",
+                                                "draft": {"name": "x", "target": 3, "minimum": 3, "deadline_at": int(time.time()) - 60},
+                                                "draft_digest": "0" * 64, "confirm_funding_sat": 0, "passphrase": PASS})
+        check(st == 409 and e and e.get("code") == "deadline_past", "opening it is refused: 409 deadline_past", (st, e))
+        # a draft the terms refuse (terms.md type 12: the minimum is 3 to target) cannot be
+        # opened, and says why; the same draft with a minimum of 3 can
+        st, pv = p.call("POST", "/host/preview", {"name": "x", "target": 3, "minimum": 2, "deadline_at": DL})
+        check(st == 200 and pv and pv.get("can_open") is False and pv.get("cannot_open_because") == ["bad_terms"] and
+              "as_members_see_it" in pv and pv["as_members_see_it"] is None,
+              "a draft with minimum 2: can_open false, bad_terms, no terms to show", (st, pv))
+        st, pv = p.call("POST", "/host/preview", {"name": "x", "target": 3, "minimum": 3, "deadline_at": DL})
+        seen = (pv or {}).get("as_members_see_it") or {}
+        check(st == 200 and pv and pv.get("can_open") is True and pv.get("draft_digest"),
+              "the same draft with minimum 3: can_open", (st, pv))
+        # 15.1: the preview shows the terms as members will see them, not signed yet (the
+        # interface renders this object; without it the page stopped before the reasons)
+        check(seen.get("outer", {}).get("minimum") == 3 and seen.get("outer", {}).get("target") == 3 and
+              seen.get("signatures_checked") is False and seen.get("fingerprint") is None and
+              "joining_fee_sat" in seen.get("ranges", {}),
+              "the preview's as_members_see_it: the draft's terms, unsigned", seen)
+        # opening it answers the hosted lobby as the view holds it (15.2), though the core
+        # gives its result before the view object: the answer waits for that object
+        draft = {"name": "x", "target": 3, "minimum": 3, "deadline_at": DL}
+        st, op = p.call("POST", "/host/lobbies", {"request_id": "OpenFromProgramApi01", "draft": draft,
+                                                 "draft_digest": (pv or {}).get("draft_digest"),
+                                                 "confirm_funding_sat": (pv or {}).get("funding_at_target_sat"),
+                                                 "passphrase": PASS})
+        check(200 <= st < 300 and op and str(op.get("id", "")).startswith("lob_") and op.get("stage") == "open",
+              "open: the hosted lobby itself, with its id and stage", (st, op))
+        st, hl = p.call("GET", "/host/lobbies/" + str((op or {}).get("id")))
+        check(st == 200 and hl and hl.get("id") == (op or {}).get("id"), "the opened lobby reads back", (st, hl))
+        host = NOBODY_KEY + "@127.0.0.1:%d" % free_port()
+        st, e = p.call("POST", "/discovery/query", {"host": host})
+        check(st == 409 and e and e.get("code") == "not_a_member",
+              "a query on a host: the core's refusal (409 not_a_member) as the call's error", (st, e))
+        # the member has the same fixed phrase (its own data folder), so the
+        # same whole-word scan holds for it: its output and every answer but
+        # its create's carry no word of the 24 and never the passphrase
+        m = Prog(exe_t, role="member", dump=False, seed=None if fixed is None else seed_of(SEED_N))
+        try:
+            check(set_up(m), "a member program, set up", m.lines[-5:])
+            member_queries(m, host)
+            # PUT /conditions names the version it changes (7.4; review of #79, L4)
+            st, e = m.call("PUT", "/conditions", {"conditions": {"min_members": 2}})
+            check(st == 400 and e and e.get("code") == "missing_field" and e.get("field") == "/based_on_version",
+                  "conditions without based_on_version: 400, never the current version", (st, e))
+        finally:
+            m.stop()
+        mtexts = ["\n".join(m.lines)] + [a for i, a in enumerate(m.answers) if i != m.create_answer]
+        if DUMP_FILE:                         # the member's words count in the vocabulary too
+            DUMP.extend(mtexts)
+        check(not any(PASS in t for t in mtexts), "the member: the passphrase is in no output line and no answer")
+        if fixed is not None:
+            check(getattr(m, "words", None) == fixed, "the member's words are the fixed phrase's")
+            mflat = [" " + re.sub(r"[^a-z]+", " ", t.lower()) + " " for t in mtexts]
+            found = sorted({w for t in mflat for w in set(fixed) if " %s " % w in t})
+            check(not found, "the member: no word of the 24 in its output or any answer but create's", found)
+        shutil.rmtree(m.dir, ignore_errors=True)
+
+        # view_pending (7.4): a third program whose hosted-lobby views never reach the API
+        # (--test-drop-view 3). Its open is taken by the core, but the object never comes:
+        # 503 view_pending with the request id, never a 2xx without the object.
+        v = Prog(exe_t, extra=["--test-drop-view", "3"], dump=False)
+        try:
+            check(set_up(v), "a host whose hosted-lobby views are dropped, set up", v.lines[-5:])
+            st, pv3 = v.call("POST", "/host/preview", {"name": "x", "target": 3, "minimum": 3, "deadline_at": DL})
+            body = {"request_id": "OpenViewNeverComes01", "draft": {"name": "x", "target": 3, "minimum": 3, "deadline_at": DL},
+                    "draft_digest": (pv3 or {}).get("draft_digest"),
+                    "confirm_funding_sat": (pv3 or {}).get("funding_at_target_sat"), "passphrase": PASS}
+            t0 = time.time()
+            # a retry while the first call waits for its view (review B of #55, L-1): told to
+            # try again at once, never given the first's answer nor held for good
+            got = {}
+
+            def first():
+                got["a"] = v.call("POST", "/host/lobbies", body)
+            th = threading.Thread(target=first)
+            th.start()
+            time.sleep(0.6)
+            st2, e2 = v.call("POST", "/host/lobbies", body)
+            check(st2 == 409 and e2 and e2.get("code") == "request_in_progress" and
+                  (e2.get("params") or {}).get("request_id") == "OpenViewNeverComes01" and time.time() - t0 < 1.5,
+                  "a retry while it waits: 409 request_in_progress at once", (st2, e2))
+            th.join(10)
+            st, e = got.get("a", (0, None))
+            check(st == 503 and e and e.get("code") == "view_pending" and
+                  (e.get("params") or {}).get("request_id") == "OpenViewNeverComes01" and time.time() - t0 >= 1.5,
+                  "the object never reaches the view: 503 view_pending, with the request id", (st, e))
+            check(v.wait_line(r"command-result id=OpenViewNeverComes01 status=20[01]") is not None,
+                  "the core took the open (its result was 2xx)", v.lines[-8:])
+            # many such waits leave no held call behind: the table is never full (no 429)
+            codes = []
+            for k in range(3):
+                st3, e3 = v.call("POST", "/host/lobbies", body)
+                codes.append((st3, (e3 or {}).get("code")))
+            check(all(c == (503, "view_pending") for c in codes), "a replay that waits again: view_pending each time, never 429", codes)
+        finally:
+            v.stop()
+        check(not any(PASS in l for l in v.lines), "the third program: the passphrase is in no output line")
+        shutil.rmtree(v.dir, ignore_errors=True)
+
+        gate_after_seat_ends(exe_t)
 
         # 5. a wrong passphrase: when to try again, and how many in a row
         time.sleep(1.2)
@@ -366,7 +611,10 @@ def main():
     DUMP.extend(q.lines)
 
     if DUMP_FILE:
-        vocab = set(re.findall(r"[a-z]+", "\n".join(DUMP).lower())) - set(words)
+        # Every word of every answer and line but the create answer's: the run's own
+        # random phrase is not taken away, so a fixed word of the program (a key such
+        # as switches.chat) counts even when the run's phrase happens to hold it.
+        vocab = set(re.findall(r"[a-z]+", "\n".join(t for i, t in enumerate(DUMP) if i != create_answer).lower()))
         with open(DUMP_FILE, "w", encoding="utf-8") as fh:
             fh.write("\n".join(sorted(vocab)) + "\n")
         print("wrote %d words to %s" % (len(vocab), DUMP_FILE))

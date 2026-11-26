@@ -13,6 +13,7 @@ gz_rec_valid
 gz_tree_c11
 gz_tree_c4d_dead
 gz_tree_h1
+gz_tree_params
 gz_tx_input
 gz_tx_output
 gz_tx_parse

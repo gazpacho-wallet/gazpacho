@@ -85,7 +85,7 @@ The review of PR 49 (2026-11-17, "accept after fixes"; not in the repository) fo
 | **H2** High. The modes contradicted `composite-node.md` 12.2 and PR 44 on six points | 14.3 rewritten on 12.2. It describes the node-wide `member_signing` (AUTO, WHEN_UNLOCKED, AT_JOIN) and the per-lobby gate, which is opened by the person's ready with the passphrase and bound to the values digest readied for. The factory key is derived only then and wiped when that check's last attempt ends. A closed gate sends `unready` reason 3 and the host shows the seat `locked`. A check already answered runs to its end, and a lock is held from the answer. The table maps A to AUTO and C to AT_JOIN. B has no counterpart, and the core change it would need is stated. Withdrawn: draft 5's `sign_mode`, `PUT …/sign-mode`, `POST …/unlock`, `host_sign_mode`, `sign_auth`, `waiting_for_passphrase`, `doing.code = passphrase_needed` and D21's 10 minutes | 4.7, 7.5, 11.2, 11.4, 13.1, 14.1, 14.2, 14.3, 15.1, 15.2, 15.3, 22, 23.1, 24 |
 | **M1** The words the person reads overstated the modes | 14.3 interface rule 4 gives the words for each setting, saying what `at_join` protects (the factory key) and what it does not (the seed while unlocked), and section 22 has the row | 14.3, 22 |
 | **M2** Slice 1 accountability could read as proof | In Slice 1, `counts` is `null` and `contradictions` is always `[]`. No count, total or "nobody" line is shown unless `signed` is `true`, and the member's own removal is worded as what the host said | 14.6, 22, 23.1 item 34 |
-| **M3** Several lobbies: three ambiguities | When a seat stops counting toward `max_joined` (and toward `status.lobbies`). `refused` is shown only until the seat readies again or ends. Several lobbies can be readied with one passphrase (`POST /api/v1/lobbies/ready`) | 14.2, 14.4, 15.3 |
+| **M3** Several lobbies: three ambiguities | When a seat stops counting toward `max_joined` (and toward `status.lobbies`). A seat stays shown as `refused` until the lobby's next attempt (its next ready check) or until the lobby ends; a member that rejoins comes back as a new seat with a new key, beside the refused one (decision K21, 15.3). Several lobbies can be readied with one passphrase (`POST /api/v1/lobbies/ready`) | 14.2, 14.4, 15.3 |
 | **M4** `unlock` and request ids | `unlock` is withdrawn (H2). A replay of any passphrase-bearing call is looked up before the body is checked, may omit the passphrase, and answers the object's current state | 7.4 |
 | **M5** A tab following relays could go silent | A tab whose take-over keeps getting `429` with nothing relayed shows "not following", and reads `GET /status` every 5 s while it has a lobby | 10.3, 22, 23.2 item 32, 23.6 T3 |
 | **M6** The modes' release | Slice 1 offers the gates, with `at_join` the default and `auto` behind a fresh sign-in. The full A/B/C choice and B are 1.0.0. Pending the owner, with the owner's words quoted | 14.3, 24.1 D24, 24.2 item 36 |
@@ -654,7 +654,7 @@ Draft 2 had one kind: a 5-minute window, opened by any passphrase entry includin
 | `POST /api/v1/host/lobbies` (open a hosted lobby) | S1 | A | `confirm_funding_sat`: the preview's `funding_at_target_sat`; and `draft_digest` | Sets aside the funding and is the consent to spend it when the start rule is met, the largest spend the program makes |
 | `POST /api/v1/wallet/phrase/reveal`, `POST /api/v1/wallet/phrase/check` | S1 | A | `confirm: "show_words"` (reveal); `check_id` (check) | They open the words, which are sealed under a key from the passphrase (storage 9.1) |
 | `POST /api/v1/wallet/create`, `POST /api/v1/wallet/restore` | S1 | Setup session (4.3) | `confirm: "create_wallet"`; the passphrase twice | They set the passphrase |
-| `POST /api/v1/host/lobbies/{id}/start` | S1 | B | `confirm_funding_max_sat`: the lobby's `set_aside_sat` | An early start of a spend already consented to at opening; the automatic start needs nothing (15.2) |
+| `POST /api/v1/host/lobbies/{id}/start` | S1 | B | `confirm_funding_max_sat`: the lobby's `set_aside_sat` (the factory output; shown "plus the network fee", which is paid on top) | An early start of a spend already consented to at opening; the automatic start needs nothing (15.2) |
 | `PUT /api/v1/pause` with `{ "on": false }` (resume) | S1 | B | `confirm: "resume"` | Turns joining and signing back on. Pausing needs neither |
 | `PUT /api/v1/conditions` when it loosens any value | S1 | B | `confirm_loosens`: the list of loosened fields the preview returned (13.2) | Widens what the app signs without asking |
 | `POST /api/v1/session/revoke-all` | S1 | B | `confirm: "revoke_all"` | Signs everyone out |
@@ -932,12 +932,15 @@ The example is signet's (`spec/exit.md` 4.3: B = 3, A = 6, M = 14): H_leaf = 334
 - **The same id with a different method, path or digest** answers `409`, code `request_id_reused`, with `params.first` naming the first call's method and path pattern, and does nothing. So a client bug that reuses an id for a second lobby can never be answered with the first lobby's result.
 - **Saved across restarts.** For every outward call, the record of the id (7.5) is saved **in the same journal batch as the first save the action makes**, so it is durable before anything is sent (`DESIGN.md` section 4). A retry after a crash and restart then finds the id and answers from the saved status and the object's current state, or, if the outcome is still pending, with `202` and the current state of the object, `"replayed": true`. A call that failed before any save leaves no id; retrying it acts as a first call.
 - **How long ids are kept:** until the object they act on has ended (lobby ended, payment settled or failed, factory ended) and 30 days have passed (**proposed**). After that the same id is a new call. Ids are small; compaction may drop them only under this rule.
+  - **Deviation in Slice 1** (review of PR 75, M1). Ids of calls that name no object (pause, the signing setting, the node gate) are kept in a ring of the newest 32, not for 30 days. A replay of one that has left the ring acts as a new call, so each such call carries a version: `PUT /api/v1/pause` and `PUT /api/v1/signing` take `based_on_version`, and a stale resume or signing change answers `409 changed_elsewhere`. A pause never needs one: it only tightens, and a stale one is applied. The node gate's unlock (1.0.0) must get the same before it ships. Each lobby's ids are kept under the rule above, within a share of 64 per lobby (and 4 more for `leave` and a host's `cancel`); a call over its lobby's share answers `503 node_busy`.
 
 **Review and preview ids** (1.0.0: `review_id`, `preview_id`): made by a preview call, valid for 10 minutes (**proposed**), single-use, bound to the exact values the preview showed. Using one saves it as spent in the same batch as the action (7.5); a spent or expired id answers `409 review_expired` or `preview_expired`. The echo fields of 4.8 are compared with the values bound to the id.
 
 **`based_on_version`.** A call that changes a stored object takes `based_on_version` (the object's `version` from the last read). If the object changed since, `409`, code `changed_elsewhere`. This protects against two browser tabs. Versions are saved with the object (7.5), so they survive a restart.
 
 **Answers.** An action answers when the core has taken it and every save it asked for is confirmed (`DESIGN.md` section 4: save before send). It answers `202 Accepted` with the object's state when the outcome depends on other parties (`joining`, `starting`), and `200` when the outcome is already known. The final outcome arrives through the event stream.
+
+**`view_pending`** (W12, review of #79). The body of an action's answer is the object it acted on, read from the program's view of the core. The core gives its result before that object reaches the view, in the same batch, so the program waits for it. If it has not come within 2 seconds, the answer is `503`, code `view_pending`, `params.request_id` the call's id: the action **was taken**, and a retry with the same `request_id` (and body) is answered from the replay table with the object as the view then holds it (`"replayed": true`). The program never answers `2xx` without the object.
 
 ### 7.5 What the program saves for this API
 
@@ -949,13 +952,13 @@ The API needs state that is not protocol bytes. Draft 1 left it without a home (
 | Words checked | `0x000d0004` `words_checked` |
 | Words-check attempts | `0x000d0006` `words_check_attempts` |
 | Conditions | `0x000d0008` `conditions` |
-| Conditions copied at joining | `0x000d000a` `conditions_copy` |
+| Conditions copied at joining (reserved, not written in S1) | `0x000d000a` `conditions_copy` |
 | Pause | `0x000d000c` `pause` |
 | Local ids | `0x000d000e` `local_ids` |
 | Known hosts | `0x000d0010` `known_host` |
 | Activity entries | `0x000d0012` `activity_entry` |
 | Request ids | `0x000d0014` `request_id` |
-| Set-aside funds | `0x000d0016` `set_aside` |
+| Set-aside funds (reserved, not written in S1) | `0x000d0016` `set_aside` |
 | Sign-out setting (1.0.0) | `0x000d0018` `sign_out_setting` |
 | Settings (1.0.0) | `0x000d001a` `settings` |
 | Review and preview ids spent (1.0.0) | `0x000d001c` `review_id_spent` |
@@ -970,13 +973,13 @@ The API needs state that is not protocol bytes. Draft 1 left it without a home (
 | **Words checked** | `checked_at`, or none | Before `phrase/check` answers `ok: true` | S1 |
 | **Words-check attempts** | The time of each check made in the last 24 hours (12.3) | Before `check` compares the words, once the passphrase has opened them, so a restart never resets the limit | S1 |
 | **Conditions** | The member's full conditions, `preset`, `version` | Before `PUT /conditions` answers; in the same batch as any `leave` it causes | S1 |
-| **Conditions copied at joining** | For each joined lobby: the conditions, their `version` and `compare_with`, as they were at joining | **In the same batch as the lobby's `joined` record** (`journal.md` section 9). The fit check at the ready check and at signing uses this copy, never today's conditions (13.2; test 23.1 item 2) | S1 |
+| **Conditions copied at joining** | For each joined lobby: the conditions, their `version` and `compare_with`, as they were at joining. **Reserved, not written in S1**: the copy is `slot_opened` field 20 (and 24, the version), in the slot's first batch, before `joined` | **In the same batch as the lobby's `joined` record** (`journal.md` section 9). The fit check at the ready check and at signing uses this copy, never today's conditions (13.2; test 23.1 item 2) | S1 |
 | **Pause** | `on` or `off`, `since_at`, and the lobbies a pause is held for (`held_for_signing`; several since draft 5) | Before `PUT /pause` answers, and before any `leave` or `round_abort` the pause sends. A locked program cannot read it, and joins and signs nothing anyway (4.7); **at unlock**, a saved `on` is applied **before the node connects to any host** (4.7, step 7), so a restart never resumes joining or signing (11.3) | S1 |
 | **Local ids** | For each lobby joined or hosted and each factory: local id, fingerprint | With the lobby's first record (`terms_received` or `lobby_opened`), and with the factory's first round record | S1 |
 | **Known hosts** | Key, address, source (`built_in`, `added`, `invitation`), `added_at` | Before `discovery/query` answers, when the query adds a host | S1 |
 | **Activity entries** | Id, time, kind, who decided, rule, params, and the **saved copy** (terms object, fit check, conditions as copied), never changed afterwards (section 19) | In the same batch as the record of the event it describes, where there is one (for a refusal, with the round's `round_ended` or the lobby's `leave`); otherwise alone, before the event is shown | S1 |
 | **Request ids** | `request_id`, method, path, body digest, answer status, the local id of the object it acted on (for `POST /api/v1/lobbies/ready`, of every lobby listed, 14.2), `created_at` | In the same batch as the action's first save (7.4) | S1 |
-| **Set-aside funds** | For each hosted lobby: the amount set aside and the echoed `confirm_funding_sat` | Before `POST /host/lobbies` answers; replaced by `funding_plan` when the attempt starts | S1 |
+| **Set-aside funds** | For each hosted lobby: the amount set aside and the echoed `confirm_funding_sat`. **Reserved, not written in S1**: the amount follows from the terms in `lobby_opened` (the funding engine's `gz_fund_set_aside_sat`); a release that changes how it is computed saves it here first | Before `POST /host/lobbies` answers; replaced by `funding_plan` when the attempt starts | 1.0.0 |
 | **Signing setting** | `member_signing` and `host_funding` (14.3), with their `version`. Never a gate or a scoped secret: those live in memory only and close at every start (composite 12.2) | Before `PUT /api/v1/signing` answers | S1 |
 | **Sign-out setting** | `sign_out_after_idle_s` (idle signs the browser out and never locks, 4.7; draft 4 called it `lock_after_idle_s`) | Before the settings call answers (1.0.0; Slice 1 uses the fixed default and saves nothing) | 1.0.0 |
 | **Settings** | Every field of section 20 that is not computed | Before the `PATCH` answers | 1.0.0 |
@@ -1356,7 +1359,7 @@ The example shows a 1.0.0 member with a live channel. **In Slice 1**, which has 
 
 ### 11.3 Pause
 
-`PUT /api/v1/pause` (**S1**), `{ "on": true }`, or `{ "on": false, "confirm": "resume" }`. Pausing needs no fresh sign-in; resuming needs one (4.8). A locked wallet already joins and signs nothing (4.7).
+`PUT /api/v1/pause` (**S1**), `{ "on": true }`, or `{ "on": false, "confirm": "resume", "based_on_version": 3 }`. Pausing needs no fresh sign-in; resuming needs one (4.8). A locked wallet already joins and signs nothing (4.7). **The pause has a version** (`pause.version` in 11.1, raised by every pause and resume): a resume MUST carry the `based_on_version` it was made against, and one that names another version answers `409 changed_elsewhere`, so a stale resume, or one replayed after its request id is no longer kept (7.4), never turns a later pause off. A pause on is never refused for its version: it only tightens, and is applied.
 
 **What pausing does, by where this member stands in each lobby** (review F24, G9). "Sent nothing in a round" means no nonce and no partial signature for any round of that lobby.
 
@@ -1714,7 +1717,7 @@ Two sides of one comparison (options map, scopes 1 and 2). They are never editab
 
 - **Presets** (concept H: `cautious`, `everyday`, `wide`) are starting sets for the member's conditions. "Profile" means only the host's lobby type (`safety`, `standard`, `starter`, `circle`). Changing any number makes `preset` `custom`. The numbers behind each preset are **(open; critique question 13)**; the program is their one source.
 - `compare_with`: `whole_range` (default, decision 1) or `current_value` (the looser choice: ready while the current value fits; un-ready when it moves outside).
-- `editable` is `false` only during the seconds of signing (`signing_now`).
+- `editable` is `true` in S1. A change is refused with `signing_now` only when it would leave a lobby whose round is on (its start held, or its partial signatures out), and the answer names those lobbies; every other change, also while some lobby signs, is saved at once (review of #77). So the interface never greys the form out; it shows the refusal and the lobbies when one comes.
 - Fields marked 1.1.0 (`max_receiving_room_fee_ppm`) or open (`max_move_fee_sat`, `seat_cost`, `host_proof_required`) are present and `null` or default. S1 compares `profiles`, `min_members`, `min_channel_sat`, `max_joining_fee_sat`, `max_fee_base_msat`, `max_fee_ppm`, `min_life_blocks`, `max_life_blocks`, `max_exit_blocks` and `min_confirmations`: the terms Slice 1's record carries (`terms.md` section 3).
 - `people_blocked`, `hosts_trusted`, `hosts_avoided`, `appear_as`: 1.0.0. `appear_as`: `temporary_name`, `nostr_key` (later reserved), `free_text` (later reserved).
 - The routing limit is **not** here; it is in Settings, Wallet (critique question 12).
@@ -2153,7 +2156,7 @@ Answer:
 
 | Call | Release | Request | Answer | Errors |
 |---|---|---|---|---|
-| `POST /api/v1/host/lobbies` | S1 | `{ "request_id", "draft": {…}, "draft_digest": "…", "confirm_funding_sat": 37500000, "passphrase": "…" }`. **The passphrase in the request** (4.8, kind A) | `201`, the host's lobby object (15.3). The program signs the outer rules and current values version 1, saves them (`lobby_opened`, with the set-aside amount, 7.5) and starts answering `hello`. Opening sets aside the funding at the target, and is the host's consent to spend up to that amount when the start rule is met | `draft_changed` (the draft does not match the digest that was previewed), `confirm_mismatch` (`confirm_funding_sat` is not the preview's `funding_at_target_sat`), `wrong_passphrase`, `rate_limited`, every `cannot_open_because` value |
+| `POST /api/v1/host/lobbies` | S1 | `{ "request_id", "draft": {…}, "draft_digest": "…", "confirm_funding_sat": 37500000, "passphrase": "…" }`. **The passphrase in the request** (4.8, kind A) | `201`, the host's lobby object (15.3). The program signs the outer rules and current values version 1, saves them (`lobby_opened`, with the set-aside amount, 7.5) and starts answering `hello`. Opening sets aside the most the funding can pay to the factory: its amount at the member count, from the minimum to the target, that needs the most (the target for every shape so far, so the preview's `funding_at_target_sat`), plus the network fee, which is paid on top. It is the host's consent to spend up to that amount when the start rule is met | `draft_changed` (the draft does not match the digest that was previewed), `confirm_mismatch` (`confirm_funding_sat` is not the preview's `funding_at_target_sat`), `wrong_passphrase`, `rate_limited`, every `cannot_open_because` value |
 | `GET /api/v1/host/lobbies` | S1 | `?state=open\|funding\|running\|ended&cursor` | Page of host lobby rows | |
 | `GET /api/v1/host/lobbies/{id}` | S1 | | 15.3 | `not_found`, `not_host` |
 | `POST /api/v1/host/lobbies/{id}/start` | S1 | `{ "request_id", "confirm_funding_max_sat": 37500000 }`. **Fresh sign-in** (4.8). An **early** start only (below) | `202`, `stage: "ready_check"` | `below_minimum` (`params.ready`, `params.minimum`), `not_open`, `funds_short`, `coins_unknown`, `chain_in_doubt`, `paused`, `confirm_mismatch`, `fresh_sign_in_needed` |

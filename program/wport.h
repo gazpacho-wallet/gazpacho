@@ -77,8 +77,12 @@ typedef struct {
 
 typedef struct {
     const secp256k1_context *secp;
-    gzw_xprv master;
-    int have_master;
+    /* No private key is kept (signer.md 2.1, keys.md 8): the account's public key gives the
+     * addresses, and the seed source is asked again for each plan, signature and spend-back,
+     * whose master key is wiped at once. While the wallet is locked the source refuses. */
+    gzw_xpub account;             /* m/86'/coin'/0' */
+    gzp_unlock_t unlock;          /* the seed source (unlock.h), a copy of the program's table */
+    int have_master;              /* open: the account key was read */
     gzw_network wnet;
     gzt_network net;
     gzt_coin coins[GZP_WPORT_COINS];

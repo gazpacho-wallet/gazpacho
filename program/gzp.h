@@ -76,6 +76,7 @@ typedef struct {
     int test_chain_backlog;        /* the chain backlog, if not 0 (full-backlog tests) */
     int test_chain_small;          /* small chain worker queues (BUSY tests) */
     int test_node_error_always;    /* ... in every incarnation (restart policy tests) */
+    int test_node_error_on_command;/* a node error after the first incarnation handles this command code */
     int test_stop_at_restart;      /* SIGTERM to itself as an incarnation ends (a stop during a restart) */
     int test_engines;              /* test engines in the node, 0 to 2 (default 1) */
     int test_dump_journal;         /* print the journal and stop */
@@ -90,6 +91,7 @@ typedef struct {
     int test_crash_after_save;     /* exit once the K-th batch is durable, before the rest of its list */
     int test_crash_before_confirm; /* exit just before the K-th confirmation reaches the runner */
     int test_exit_after_send;      /* exit once the first test ping has been handed to the transport */
+    int test_drop_view;            /* view objects of this kind never reach the API (0: none) */
     int test_max_conns;            /* the transport's max_conns (0: the default, GZ_NODE_MAX_CONNS) */
     const char *test_passphrase_file; /* unlock (or set up) from this file: the passphrase's bytes */
     int test_kdf_floor;            /* set-up at the storage library's test floor (1 pass, 8 KiB) */
@@ -105,6 +107,7 @@ typedef struct {
     int test_reveal_check;         /* after the unlock: reveal and words check, statuses only */              /* SIGKILL before the K-th storage write, sync or rename (store.h) */
     unsigned test_crash_after_record; /* exit once a batch holding a record of this type is durable */
     int test_sign_outcome;         /* the signing stand-in's outcome: 1 funding, 2 retry, 3 failed, 4 unfinished */
+    int test_funds;                /* can_plan overridden: 0 the host's own wallet answers, 1 short, 2 cannot tell */
     int test_sign_delay_ms;        /* ... reported this long after the hand-off */
     int test_sign_tick_ms;         /* the signing engine's tick (0: its own, 1 s) */
     int tip;                       /* --tip: the tip to start from until the chain reports one (0: none) */

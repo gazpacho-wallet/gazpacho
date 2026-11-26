@@ -118,10 +118,9 @@ static uint8_t member_doing(const gz_node_t *c, const slot_t *s)
 
 /* The failing term's two values: the member's limit and the offer (the
  * current value when the term does not fit now, else the range's top). */
-static void fit_values(const gz_lobby_member_t *m, uint8_t term, int cls, uint64_t *yours, uint64_t *offered)
+static void fit_of(const gz_terms_limits_t *l, const gz_terms_outer_t *o, const gz_terms_current_t *cv, uint8_t term,
+                   int cls, uint64_t *yours, uint64_t *offered)
 {
-    const gz_terms_limits_t *l = &m->cond.limits;
-    const gz_terms_outer_t *o = &m->terms;
     *yours = *offered = 0;
     switch (term) {
     case 0: return;
@@ -138,12 +137,17 @@ static void fit_values(const gz_lobby_member_t *m, uint8_t term, int cls, uint64
     for (uint8_t j = 0; j < l->n_max && j < GZ_TERMS_MAX_ADJ; j++)
         if (l->max[j].type == term) *yours = l->max[j].max;
     if (cls == GZ_FIT_NO) {
-        for (uint8_t j = 0; j < m->values.n_values && j < GZ_TERMS_MAX_ADJ; j++)
-            if (m->values.val[j].type == term) *offered = m->values.val[j].value;
+        for (uint8_t j = 0; j < cv->n_values && j < GZ_TERMS_MAX_ADJ; j++)
+            if (cv->val[j].type == term) *offered = cv->val[j].value;
     } else {
         for (uint8_t j = 0; j < o->n_adj && j < GZ_TERMS_MAX_ADJ; j++)
             if (o->adj[j].type == term) *offered = o->adj[j].max;
     }
+}
+
+static void fit_values(const gz_lobby_member_t *m, uint8_t term, int cls, uint64_t *yours, uint64_t *offered)
+{
+    fit_of(&m->cond.limits, &m->terms, &m->values, term, cls, yours, offered);
 }
 
 static uint8_t gate_kind(const gz_node_t *c)
@@ -204,8 +208,10 @@ static size_t member_view(gz_node_t *c, slot_t *s)
         g[0] = gate_kind(c);
         g[1] = (uint8_t)gate;
         gz_put_u64(g + 2, s->view.gate_ms);
-        if (g[0] == GZ_GATE_PER_LOBBY && gate && m->ready && m->have_terms && m->ready_version == m->values.version) {
-            memcpy(g + 10, m->current_digest, 32);
+        /* opened_for_digest: what the gate is bound to, the values the person
+         * readied for, never the lobby's current values (14.3; review of #79, M1). */
+        if (g[0] == GZ_GATE_PER_LOBBY && gate && s->gate_have) {
+            memcpy(g + 10, s->gate_digest, 32);
             n = 42;
         }
         put(&w, GZ_VLB_GATE, g, n);
@@ -328,7 +334,78 @@ static size_t host_view(gz_node_t *c, slot_t *s)
         memcpy(z + 4, h->current_digest, 32);
         put(&w, GZ_VHL_FROZEN, z, 36);
     }
+    if (gz_ls_set_aside(s)) put64(&w, GZ_VHL_SET_ASIDE, gz_ls_set_aside(s));
     return w.bad ? 0 : w.at;
+}
+
+/* ---- a query to a host, and the lobbies it saw (kind 10, kind 2) --------- */
+
+/* A lobby the query saw (discovery.c), as kind 2 with no seat: its local id
+ * for the run, the host and address asked, the signed terms, its fit
+ * against the member's conditions. None while a slot holds the scope: the
+ * slot's own object is the lobby then. */
+gz_status_t gz_view_seen(gz_node_t *c, int k, gz_action_list_t *out)
+{
+    dq_offer_t *f = &c->dq.offers[k];
+    vw_t w = {c->view.body, sizeof c->view.body, 0, 0};
+    const char *id = gz_api_local_id(c, f->scope);
+    const gz_lobby_conditions_t *cond = gz_api_conditions(c);
+    uint8_t fb[18], term = 0;
+    uint64_t yours, offered;
+    int cls;
+    if (!id || gz_route_slot_by_scope(c, f->scope) >= 0) return GZ_OK;
+    put(&w, GZ_VLB_FINGERPRINT, f->scope, 32);
+    put(&w, GZ_VLB_HOST_KEY, c->dq.host.key, 33);
+    put(&w, GZ_VLB_HOST_ADDRESS, c->dq.address, c->dq.address_len);
+    put8(&w, GZ_VLB_STAGE, GZ_LOBBY_OPEN);  /* a host lists a lobby while it takes joins (messages.md 6.1) */
+    put8(&w, GZ_VLB_SEAT, GZ_VSEAT_NONE);
+    put(&w, GZ_VLB_OUTER, f->outer, f->outer_len);
+    put(&w, GZ_VLB_OUTER_SIG, f->outer_sig, 64);
+    put(&w, GZ_VLB_CURRENT, f->current, f->current_len);
+    put(&w, GZ_VLB_CURRENT_SIG, f->current_sig, 64);
+    cls = gz_lobby_classify(&f->terms, &f->values, cond, &term);
+    fit_of(&cond->limits, &f->terms, &f->values, term, cls, &yours, &offered);
+    fb[0] = cls == GZ_FIT_YES ? GZ_VFIT_FITS : cls == GZ_FIT_NOW ? GZ_VFIT_FITS_NOW_ONLY : GZ_VFIT_DOES_NOT_FIT;
+    fb[1] = term;
+    gz_put_u64(fb + 2, yours);
+    gz_put_u64(fb + 10, offered);
+    put(&w, GZ_VLB_FIT, fb, 18);
+    put8(&w, GZ_VLB_DOING, GZ_DOING_NONE);
+    put64(&w, GZ_VLB_SEEN, c->ports.clock.now_ms(c->ports.clock.ctx));
+    if (w.bad) return gz_c_bug(c, ENG_NODE);
+    return emit(c, GZ_VIEW_LOBBY, id, c->view.body, w.at, 0, &f->hash, 1, out);
+}
+
+/* An object that has ended (a query's, at the next query: discovery.c). */
+gz_status_t gz_view_gone(gz_node_t *c, uint8_t kind, const char *id, uint64_t *last, gz_action_list_t *out)
+{
+    return emit(c, kind, id, NULL, 0, 1, last, 0, out);
+}
+
+/* The query (kind 10, id "q_N"). */
+gz_status_t gz_view_query(gz_node_t *c, gz_action_list_t *out)
+{
+    const dq_t *q = &c->dq;
+    vw_t w = {c->view.body, sizeof c->view.body, 0, 0};
+    size_t pl = 0;
+    if (!q->state) return GZ_OK;
+    put8(&w, GZ_VDQ_STATE, (uint8_t)q->state);
+    put(&w, GZ_VDQ_HOST_KEY, q->host.key, 33);
+    put(&w, GZ_VDQ_ADDRESS, q->address, q->address_len);
+    put64(&w, GZ_VDQ_ASKED, q->asked_ms);
+    if (q->ended_ms) put64(&w, GZ_VDQ_ENDED, q->ended_ms);
+    if (q->why) put(&w, GZ_VDQ_FAILED, q->why, slen(q->why));
+    for (int k = 0; k < q->n; k++) {
+        const char *id = gz_api_local_id(c, q->offers[k].scope);
+        size_t n = id ? slen(id) : 0;
+        if (!n) continue;
+        if (pl) c->view.list[pl++] = ',';
+        memcpy(c->view.list + pl, id, n);
+        pl += n;
+    }
+    if (pl) put(&w, GZ_VDQ_LOBBIES, c->view.list, pl);
+    if (w.bad) return gz_c_bug(c, ENG_NODE);
+    return emit(c, GZ_VIEW_DISCOVERY, q->id, c->view.body, w.at, 0, &c->dq.hash, 0, out);
 }
 
 /* ---- attention (kind 7) --------------------------------------------------- */
@@ -361,12 +438,15 @@ static gz_status_t attention(gz_node_t *c, slot_t *s, int force, gz_action_list_
     } else {
         for (int q = 0; q < s->lobby.h.n_seats; q++) count += s->lobby.h.seats[q].refused != 0;
         if (count) code = GZ_ATT_MEMBER_REFUSED;
+        if (s->funds_blocked && s->lobby.h.state == GZ_LOBBY_OPEN) code = GZ_ATT_HOST_FUNDS_SHORT;   /* the more pressing */
     }
     if (!s->view.local_id[0]) return GZ_OK;
     if (!force && code == s->view.att_code && count == s->view.att_count) return GZ_OK;
     if (!code && !s->view.att_code) return GZ_OK;
+    /* "att_" and the local id after its "lob_": at most 64 characters, one
+     * item per lobby (review A of PR 55, N2: never cut, so never shared). */
     id[k++] = 'a'; id[k++] = 't'; id[k++] = 't'; id[k++] = '_';
-    for (size_t j = 0; s->view.local_id[j] && k < GZ_LOCAL_ID_MAX; j++) id[k++] = s->view.local_id[j];
+    for (size_t j = memcmp(s->view.local_id, "lob_", 4) == 0 ? 4 : 0; s->view.local_id[j]; j++) id[k++] = s->view.local_id[j];
     id[k] = 0;
     s->view.att_code = code;
     s->view.att_count = count;
@@ -375,6 +455,10 @@ static gz_status_t attention(gz_node_t *c, slot_t *s, int force, gz_action_list_
         put(&w, GZ_VAT_LOBBY, s->view.local_id, slen(s->view.local_id));
         put64(&w, GZ_VAT_SINCE, wall(c));
         if (count) put16(&w, GZ_VAT_COUNT, count);
+        if (code == GZ_ATT_HOST_FUNDS_SHORT) {
+            put64(&w, GZ_VAT_NEED, s->funds_need);
+            put64(&w, GZ_VAT_HAVE, s->funds_have);
+        }
         if (w.bad) return gz_c_bug(c, ENG_NODE);
     }
     return emit(c, GZ_VIEW_ATTENTION, id, c->view.body, w.at, !code, &last, 1, out);
@@ -387,7 +471,10 @@ static uint8_t slot_role(const slot_t *s) { return s->host ? GZ_ROLE_HOSTED : GZ
 static size_t status_view(gz_node_t *c)
 {
     vw_t w = {c->view.body, sizeof c->view.body, 0, 0};
-    uint8_t p[9], sg[7], d[11 + GZ_LOCAL_ID_MAX], *e = c->view.seats;
+    uint8_t p[13], sg[7], d[11 + GZ_LOCAL_ID_MAX], *e = c->view.seats;
+    /* at the function's scope: a block's array this large makes an ASan build
+     * call __asan_(un)poison_stack_memory, outside calls the isolation check refuses */
+    uint8_t cv[4 + COND_MAX];
     size_t n = 0, pl = 0;
     int best = -1, left_out = 0;
     uint8_t best_doing = 0;
@@ -412,7 +499,8 @@ static size_t status_view(gz_node_t *c)
     put8(&w, GZ_VST_ROLE, (uint8_t)(c->cfg.host != 0));
     p[0] = (uint8_t)c->api.pause;
     gz_put_u64(p + 1, c->api.pause_since);
-    put(&w, GZ_VST_PAUSE, p, 9);
+    gz_put_u32(p + 9, c->api.pause_version);
+    put(&w, GZ_VST_PAUSE, p, 13);
     for (int k = 0; k < c->api.n_held; k++) {
         int i = gz_route_slot_by_scope(c, c->api.held[k]);
         const char *id = i >= 0 ? c->slots[i].view.local_id : gz_api_local_id(c, c->api.held[k]);
@@ -443,6 +531,12 @@ static size_t status_view(gz_node_t *c)
     }
     if (n) put(&w, GZ_VST_LOBBIES, e, n);
     if (left_out) put16(&w, GZ_VST_LEFT_OUT, (uint16_t)left_out);
+    if (c->api.have_cond) {
+        gz_put_u32(cv, c->api.cond_version);
+        memcpy(cv + 4, c->api.cond_bytes, c->api.cond_len);
+        put(&w, GZ_VST_CONDITIONS, cv, 4 + c->api.cond_len);
+        if (c->api.preset[0]) put(&w, GZ_VST_PRESET, c->api.preset, slen(c->api.preset));
+    }
     return w.bad ? 0 : w.at;
 }
 

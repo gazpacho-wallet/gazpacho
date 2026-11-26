@@ -882,10 +882,16 @@ static int make_nonce(gz_sign_t *e, gz_sign_round_t *r, int i)
     w.n = 0;
     put(&w, r->id, 32); put8(&w, it->tier); put32(&w, (uint32_t)i);
     tagged("gazpacho/nonce-extra", pre, w.n, NULL, 0, extra);
-    ok = secp256k1_keypair_sec(e->cfg.ctx, e->work_sk, &e->work_fkp) &&
-         secp256k1_musig_nonce_gen(e->cfg.ctx, &r->secnonce[i], &pub, sid, e->work_sk, &e->work_fpk, r->digest[i],
-                                   &r->cache[i], extra);
+    /* Each result is declassified before anything branches on it: an `&&`
+     * between the two calls is a branch on the first one's secret-dependent
+     * result, which only an optimised build folds away (the Debug ctime job). */
+    ok = secp256k1_keypair_sec(e->cfg.ctx, e->work_sk, &e->work_fkp);
     GZ_SIGN_DECLASSIFY(&ok, sizeof ok);                    /* success depends only on the key's validity */
+    if (ok) {
+        ok = secp256k1_musig_nonce_gen(e->cfg.ctx, &r->secnonce[i], &pub, sid, e->work_sk, &e->work_fpk,
+                                       r->digest[i], &r->cache[i], extra);
+        GZ_SIGN_DECLASSIFY(&ok, sizeof ok);                /* likewise */
+    }
     ok = ok && secp256k1_musig_pubnonce_serialize(e->cfg.ctx, r->nonce[i][s], &pub);
     wipe(rnd, sizeof e->work_rnd); wipe(sid, sizeof e->work_sid); wipe(pre, sizeof e->work_pre);   /* RULE:WIPE_NONCE_INPUTS */
     wipe(e->work_sk, sizeof e->work_sk);
@@ -2657,7 +2663,8 @@ static int unfinished_due(gz_sign_t *e, uint32_t ticks, const uint8_t round_id[3
 }
 
 /* C11's funding deadline for a member (review B of PR 81, B-1): a Complete round, in memory or not, whose
- * funding has not been resolved by the time a tip reaches its ack tip plus funding_deadline_blocks is
+ * funding has not been resolved once a tip is past its ack tip plus funding_deadline_blocks (C11: the
+ * deadline block itself may still bury it; B-6) is
  * Abandoned and saved so; a funding seen buried later still makes it Live (gz_sign_resolve). A few in a
  * step, so that their records fit one step's actions. */
 static void funding_deadline(gz_sign_t *e, uint32_t tip, emit_t *em)
@@ -2667,7 +2674,7 @@ static void funding_deadline(gz_sign_t *e, uint32_t tip, emit_t *em)
     for (int i = 0; i < GZ_SIGN_MAX_ROUNDS && ended < GZ_SIGN_MAX_ROUNDS && em->st == GZ_OK; i++) {
         gz_sign_round_t *r = &e->rounds[i];
         if (r->state != GZ_SIGN_ROUND_COMPLETE || !r->ack_tip ||
-            (uint64_t)tip < (uint64_t)r->ack_tip + e->cfg.funding_deadline_blocks) continue;
+            (uint64_t)tip <= (uint64_t)r->ack_tip + e->cfg.funding_deadline_blocks) continue;   /* RULE:FUNDING_DEADLINE_PAST */
         wipe_secrets(r);
         save_ended(e, r, GZ_SIGN_END_ABANDONED, 0, em);
         r->state = GZ_SIGN_ROUND_ABANDONED;                                          /* RULE:FUNDING_DEADLINE_HELD */
@@ -2676,7 +2683,7 @@ static void funding_deadline(gz_sign_t *e, uint32_t tip, emit_t *em)
     for (size_t i = 0; i < e->n_exposures && ended < GZ_SIGN_MAX_ROUNDS && em->st == GZ_OK; i++) {
         gz_sign_exposed_t *x = &e->exposed[i];
         if (x->state != GZ_SIGN_ROUND_COMPLETE || !x->ack_tip ||
-            (uint64_t)tip < (uint64_t)x->ack_tip + e->cfg.funding_deadline_blocks) continue;
+            (uint64_t)tip <= (uint64_t)x->ack_tip + e->cfg.funding_deadline_blocks) continue;   /* RULE:FUNDING_DEADLINE_PAST_EVICTED */
         save_ended_of(e, x->round_id, 0, x->why, NULL, 0, GZ_SIGN_END_ABANDONED, 0, em);
         x->state = GZ_SIGN_ROUND_ABANDONED;                                          /* RULE:FUNDING_DEADLINE_EVICTED */
         ended++;

@@ -20,7 +20,7 @@
 /* ---- kind 1, status: one object, id "status" (local-api.md 11.1) --------- */
 #define GZ_VIEW_STATUS_ID          "status"
 #define GZ_VST_ROLE                6   /* u8: 0 member, 1 host (the data folder's) */
-#define GZ_VST_PAUSE               8   /* u8 state (GZ_PAUSE_*), u64 since ms (0: none) */
+#define GZ_VST_PAUSE               8   /* u8 state (GZ_PAUSE_*), u64 since ms (0: none), u32 version */
 #define GZ_VST_PAUSE_LOBBIES       10  /* the held lobbies' local ids, ASCII, comma-separated */
 #define GZ_VST_SIGNING             12  /* u8 member_signing in force, u8 pending (0xff: none),
                                           u32 version of the saved setting (0: never saved),
@@ -31,6 +31,9 @@
 #define GZ_VST_LOBBIES             18  /* entries, each: u8 role, u8 stage, u8 doing, u64 since ms,
                                           u8 id length, the local id */
 #define GZ_VST_LEFT_OUT            20  /* u16: lobbies left out at this start (no keys) */
+#define GZ_VST_CONDITIONS          22  /* u32 version of the saved conditions (0: never saved), then
+                                          the conditions as GZ_CMD_API_SET_CONDITIONS carries them */
+#define GZ_VST_PRESET              24  /* ASCII: the saved preset; absent: custom or never saved */
 
 #define GZ_PAUSE_OFF               0
 #define GZ_PAUSE_ON                1
@@ -136,6 +139,8 @@
 #define GZ_VHL_SINCE               32  /* u64 ms */
 #define GZ_VHL_PAUSED              34  /* u8 1: the pause holds the start rule */
 #define GZ_VHL_FROZEN              36  /* u32 version, 32 digest */
+#define GZ_VHL_SET_ASIDE           38  /* u64: set_aside_sat, what an early start echoes
+                                          (gz_fund_set_aside_sat; absent: none can be confirmed) */
 
 #define GZ_VHL_SEAT_LEN            52
 #define GZ_VHL_F_LOCKED            0x01
@@ -148,6 +153,18 @@
 #define GZ_STAGE_READY_CHECK       2
 #define GZ_STAGE_SIGNING           3
 
+/* ---- kind 10, discovery: a query to a host, id "q_N" (local-api.md 14.2) ----
+ * The lobbies it found are kind 2 objects with no seat (GZ_VSEAT_NONE), each
+ * with a local id for the run (7.3) that its slot keeps if the person joins. */
+#define GZ_VDQ_STATE               6   /* u8: 1 asking, 2 answered, 3 failed */
+#define GZ_VDQ_HOST_KEY            8   /* 33 */
+#define GZ_VDQ_ADDRESS             10  /* ASCII */
+#define GZ_VDQ_ASKED               12  /* u64 ms */
+#define GZ_VDQ_ENDED               14  /* u64 ms: answered or failed */
+#define GZ_VDQ_FAILED              16  /* ASCII: no_answer, unreachable */
+#define GZ_VDQ_LOBBIES             18  /* the lobbies' local ids, ASCII, comma-separated */
+#define GZ_VLB_SEEN                44  /* u64 ms: a lobby seen in a query (no slot), the query's last answer */
+
 /* ---- kind 7, attention: one item, id "att_" ... (11.4) -------------------- */
 #define GZ_VAT_CODE                6   /* u8: GZ_ATT_* */
 #define GZ_VAT_LOBBY               8   /* the lobby's local id */
@@ -159,26 +176,57 @@
 #define GZ_ATT_UNLOCK_TO_TAKE_PART 1
 #define GZ_ATT_LOBBY_LEFT_OUT      2
 #define GZ_ATT_MEMBER_REFUSED      3
+#define GZ_ATT_HOST_FUNDS_SHORT    4   /* 11.4: the automatic start waits for the host's funds */
+#define GZ_VAT_NEED                16  /* u64: host_funds_short, what the funding needs */
+#define GZ_VAT_HAVE                18  /* u64: ... what the wallet holds for it */
 
 /* ---- the local-API engine (area 0x000d) --------------------------------- */
 /* Commands (command.h; arguments from type 10). */
-#define GZ_CMD_API_PAUSE           0x0d01  /* 12 on (u8 1 on, 0 off) */
+#define GZ_CMD_API_PAUSE           0x0d01  /* 12 on (u8 1 on, 0 off), 14 based_on_version (u32; required
+                                              to resume: another answers 409 changed_elsewhere) */
 #define GZ_CMD_API_SET_SIGNING     0x0d02  /* 12 member_signing (u8), 14 based_on_version (u32),
                                               16 confirm_member_signing (u8; required, equal to 12, for auto).
                                               The one command that sets the signing mode (W11) */
+#define GZ_CMD_API_SET_CONDITIONS  0x0d03  /* 12 the conditions (LOBBY_JOIN's encoding, node.h; empty: no
+                                              limits), 14 based_on_version (u32), 16 confirm_loosens (the
+                                              GZ_COND_L_* codes the change loosens, u8 each, increasing;
+                                              required, exactly, when it loosens any), 18 preset (ASCII,
+                                              1 to 16 of a-z and _; absent: custom). PUT /api/v1/conditions */
+
+/* What a conditions change loosens (local-api.md 13.2 `loosens`): the
+ * terms.md type of the term it compares, or one of these two. */
+#define GZ_COND_L_COMPARE          1   /* compare_with: whole_range to current_value */
+#define GZ_COND_L_HINT             2   /* the ready hint (min_members of `ready`) lowered */
+/* and GZ_TT_PROFILE (8), GZ_TT_MINIMUM (12), GZ_TT_LIFETIME (26, either bound),
+ * GZ_TT_CHANNEL (30), GZ_TT_FEERATE (32), an adjustable type (64 and up). */
 
 /* Records (journal.md 9.1; local-api.md 7.5). */
-#define GZ_RECORD_PAUSE            0x000d000cu /* 2 state (u8), 4 since ms (u64), 6 held scopes (n x 32) */
+#define GZ_RECORD_PAUSE            0x000d000cu /* 2 state (u8), 4 since ms (u64), 6 held scopes (n x 32),
+                                                  8 version (u32) */
 #define GZ_RECORD_LOCAL_IDS        0x000d000eu /* 2 scope (32), 4 local id (ASCII) */
 #define GZ_RECORD_REQUEST_ID       0x000d0014u /* 2 request_id, 4 method, 6 path, 8 digest (32),
                                                   10 status (u16), 12 the acted-on lobby's local id,
                                                   14 created ms (u64), 15 the answer's error code */
 #define GZ_RECORD_SIGNING_SETTING  0x000d0024u /* 2 member_signing (u8), 4 host_funding (u8), 6 version (u32) */
+#define GZ_RECORD_CONDITIONS       0x000d0008u /* 2 the conditions (GZ_CMD_API_SET_CONDITIONS's 12; may be
+                                                  empty), 4 version (u32), 6 preset (ASCII; absent: custom),
+                                                  8 the version of the last save that tightened anything
+                                                  (u32, at most 4; absent: 4) */
 
 #define GZ_LOCAL_ID_MAX            64
-/* Request ids kept (7.4: until the object ended and 30 days passed): 64
- * calls for each of GZ_NODE_MAX_SLOTS lobbies. A new request that finds
- * every one still kept answers 503 node_busy. */
-#define GZ_API_MAX_REQUESTS        512
+/* Request ids kept (7.4: until the object ended and 30 days passed).
+ * - A lobby's: each lobby keeps at most GZ_API_LOBBY_SHARE, and a call that
+ *   protects funds (leave) has GZ_API_LOBBY_RESERVE more. A call over its
+ *   lobby's share answers 503 node_busy and does nothing; no other lobby's
+ *   calls are touched. The table holds every slot's share and reserve, so a
+ *   live lobby's id is never dropped; an ended lobby's go oldest first when
+ *   room is needed, after those past their 30 days.
+ * - With no object (pause, the signing setting): the newest GZ_API_RING, in
+ *   a ring. A replay of an older one acts again, and is answered by the
+ *   current state: the pause already in that state, or based_on_version. */
+#define GZ_API_LOBBY_SHARE         64
+#define GZ_API_LOBBY_RESERVE       4
+#define GZ_API_MAX_REQUESTS        544 /* GZ_NODE_MAX_SLOTS x (share + reserve) */
+#define GZ_API_RING                32
 
 #endif

@@ -15,13 +15,14 @@ set(GZ_NODE_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/test_engine.c
   ${CMAKE_CURRENT_SOURCE_DIR}/test_slot.c
   ${CMAKE_CURRENT_SOURCE_DIR}/lobbyslot.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/discovery.c
   ${CMAKE_CURRENT_SOURCE_DIR}/signslot.c
   ${CMAKE_CURRENT_SOURCE_DIR}/fundslot.c
   ${CMAKE_CURRENT_SOURCE_DIR}/view.c ${CMAKE_CURRENT_SOURCE_DIR}/api.c
   PARENT_SCOPE)
 set(GZ_NODE_SOURCES_HERE
   composite.c handoff.c route.c timers.c watches.c nodepart.c test_engine.c test_slot.c lobbyslot.c signslot.c fundslot.c view.c
-  api.c)
+  api.c discovery.c)
 
 foreach(variant release test)
   if(variant STREQUAL "release")
@@ -53,6 +54,8 @@ foreach(variant release test)
               ${CMAKE_SOURCE_DIR}/core/tree/sha256.c ${CMAKE_SOURCE_DIR}/core/tree/terms.c
               ${CMAKE_SOURCE_DIR}/core/tree/shape.c ${CMAKE_SOURCE_DIR}/core/tree/model.c
               ${CMAKE_SOURCE_DIR}/core/tree/checks.c ${CMAKE_SOURCE_DIR}/core/tree/exit.c
+              ${CMAKE_SOURCE_DIR}/core/funding/setaside.c ${CMAKE_SOURCE_DIR}/core/funding/txsize.c
+              ${CMAKE_SOURCE_DIR}/core/funding/funding.c
               ${CMAKE_SOURCE_DIR}/core/signing/signing.c ${CMAKE_SOURCE_DIR}/core/signing/sign_tx.c
               ${CMAKE_SOURCE_DIR}/core/signing/round_msg.c
               ${CMAKE_SOURCE_DIR}/core/funding/funding.c ${CMAKE_SOURCE_DIR}/core/funding/txsize.c)
@@ -61,6 +64,7 @@ foreach(variant release test)
                                             ${CMAKE_SOURCE_DIR}/core/gazpacho/include
                                             ${CMAKE_SOURCE_DIR}/core/lobby/include
                                             ${CMAKE_SOURCE_DIR}/core/tree/include
+                                            ${CMAKE_SOURCE_DIR}/core/funding/include
                                             ${CMAKE_SOURCE_DIR}/core/signing/include
                                             ${CMAKE_SOURCE_DIR}/core/funding/include
                                             ${secp256k1-zkp_SOURCE_DIR}/include)

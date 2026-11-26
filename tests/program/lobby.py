@@ -493,7 +493,8 @@ def gates(exe, work):
         m2.send(cmd(UNLOCK))
         check(h.wait_for(r"scope=%s role=host state=1 joined=3 ready=2\b" % a.tag, timeout=10, start=mk) is not None,
               "7: unlocked, it readies again")
-        # AT_JOIN: ready with the passphrase, in lobby A only.
+        # AT_JOIN: ready with the passphrase, in lobby A only, for the values it holds (16, the
+        # seen_current_digest the gate is bound to; review of #79, M1).
         m1.send(cmd(READY, (12, a.scope), (14, b"\x01"), (16, th("gazpacho/terms/current", a.current))))
         check(state(h, a, "host", 4) and state(m1, a, "member", 4), "7: ready with the passphrase in one lobby: its check runs, to Funding")
         check(m1.wait_for(r"key-forget scope=%s" % a.tag, timeout=10) is not None,
