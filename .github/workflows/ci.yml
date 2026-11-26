@@ -709,7 +709,7 @@ jobs:
 
   # The stable name for the six node mutant shards: like "valgrind", it passes only if every one
   # of its jobs passed, and is skipped with them outside the heavy tier.
-  # Not required; whether it becomes required is the owner's decision.
+  # A required check on main (owner's decision after #96).
   node-mutants:
     name: node mutants
     needs: node-mutants-shard
@@ -730,7 +730,7 @@ jobs:
 
   # The stable name for the signer mutants: like "valgrind", it passes only if every one
   # of its jobs passed, and is skipped with them outside the heavy tier.
-  # Not required; whether it becomes required is the owner's decision.
+  # A required check on main (owner's decision after #96).
   signer-mutants:
     name: signer mutants
     needs: signer-mutants-run
