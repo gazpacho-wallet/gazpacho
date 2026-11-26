@@ -375,6 +375,21 @@ static void test_rebuilding(void)
     free(s);
 }
 
+/* The messages the interface can show for the password codes say "password",
+ * never "passphrase", which in Bitcoin means the BIP39 seed extension (owner,
+ * 2026-11-25). The codes themselves are protocol and keep their names. */
+static void test_password_messages(void)
+{
+    static const char *const codes[] = {"wrong_passphrase", "passphrase_not_checked", "weak_passphrase",
+                                        "passphrases_differ", "fresh_sign_in_needed"};
+    size_t i;
+    for (i = 0; i < sizeof codes / sizeof codes[0]; i++) {
+        const char *m = gz_error_message(codes[i]);
+        CHECK(m != NULL && strstr(m, "password") != NULL);
+        CHECK(m != NULL && strstr(m, "assphrase") == NULL);
+    }
+}
+
 int main(void)
 {
     test_rebuilding();
@@ -383,5 +398,6 @@ int main(void)
     test_attention();
     test_headlines();
     test_locked_shape();
+    test_password_messages();
     return check_done();
 }

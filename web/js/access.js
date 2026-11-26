@@ -11,7 +11,7 @@
   "use strict";
   var gz = window.gz, u = gz.util, h = u.h, W = gz.words, ui = gz.ui, api = gz.api;
   var CEILING_MS = 600000;
-  var MANAGER = "A password manager may keep this passphrase. Set it to match this exact address, port included: one that matches by name alone could offer it to a page on another port of this computer.";
+  var MANAGER = "A password manager should match this exact address, port included, so it never fills this in on another port.";
   var ASKED = "Gazpacho asks for your 24 words only when you restore a wallet, or right after showing them to you. It never asks for them anywhere else.";
 
   /* ---- the 24 words, shown ---- */
@@ -23,7 +23,7 @@
     var toggle = ui.button("Show the words", function () { if (words.length) { shown = !shown; draw(); } });
     var note = h("p", { class: "small mute", role: "status" });
     var shown = false, gone = false;
-    var timer = setTimeout(function () { clear(); note.textContent = "The words were cleared from this page after 10 minutes. To see them again, use Settings, Wallet, with your passphrase."; }, CEILING_MS);
+    var timer = setTimeout(function () { clear(); note.textContent = "The words were cleared from this page after 10 minutes. To see them again, use Settings, Wallet, with your password."; }, CEILING_MS);
     function draw() {
       u.clear(list);
       if (shown) words.forEach(function (w) { list.appendChild(h("li", {}, w)); });
@@ -123,10 +123,11 @@
       h("p", {}, "Someone may have used this program's start link before you. If you did not just set up Gazpacho in another tab or window, do not use this wallet and do not send coins to it. Stop Gazpacho and delete its data folder, then start again.")));
   }
 
-  /* ---- sign-in: the wallet passphrase ---- */
+  /* ---- sign-in: the password. Kept minimal, as desktop wallets do: the
+     words are spoken of only on the forgot page, which has no word fields. ---- */
   function signIn(reason) {
     var s = api.session || {}, locked = s.wallet === "locked" || s.wallet === "files_behind";
-    var f = ui.passField("Wallet passphrase", false), msg = h("div", {}), head = h("p", { id: "locked-headline" });
+    var f = ui.passField("Password", false, MANAGER), msg = h("div", {}), head = h("p", { id: "locked-headline" });
     var go = h("button", { type: "submit", class: "btn primary", id: "signin-go" }, locked ? "Unlock" : "Sign in");
     var form = h("form", { novalidate: true }, f.wrap, msg, ui.actions(go));
     var why = { signed_out: "You were signed out.", ended: "This session ended.", you: "You signed out.", locked: "The wallet was locked.",
@@ -136,7 +137,7 @@
       ev.preventDefault();
       f.input.value = "";
       u.clear(msg);
-      if (!pass) { u.add(msg, ui.notice("warn", "Type your passphrase first.")); return; }
+      if (!pass) { u.add(msg, ui.notice("warn", "Enter your password.")); return; }
       go.disabled = true;
       u.add(msg, h("p", { role: "status" }, "Checking…"));
       api.signIn(pass).then(function () {
@@ -163,10 +164,19 @@
       h("h1", {}, locked ? "Unlock Gazpacho" : "Sign in"),
       reason && why[reason] ? ui.notice(reason === "check_failed" ? "bad" : "", why[reason]) : null,
       head, form,
-      h("p", { class: "small mute" }, "Nobody can recover this passphrase for you. If you have lost it, your 24 words still bring the wallet back."),
-      h("p", { class: "small mute" }, MANAGER),
-      h("p", { class: "small mute" }, ASKED)));
+      h("p", { class: "small" }, h("a", { href: "#", id: "forgot", onclick: function (ev) { ev.preventDefault(); f.input.value = ""; forgot(reason); } }, "Forgot your password?"))));
     f.input.focus();
+  }
+
+  /* What to do without the password: words, but no field for them here (5.7:
+     the words are typed only on the restore screen of a wallet not made yet). */
+  function forgot(reason) {
+    gz.app.gate(h("div", { class: "card", id: "forgot-page" },
+      h("h1", {}, "Forgot your password?"),
+      h("p", {}, "Nobody can recover it. Your 24 words restore the wallet on this computer, with a new password."),
+      h("p", {}, "Stop Gazpacho, move its data folder somewhere safe, and start Gazpacho again. It opens on first run: choose Restore from 24 words."),
+      h("p", { class: "small mute" }, "The words bring back your keys and on-chain coins, not your place in a factory, so keep the old folder."),
+      ui.actions(ui.button("Back", function () { signIn(reason); }, "primary"))));
   }
 
   /* ---- files older than the wallet's last saved state (4.7) ---- */
@@ -175,7 +185,7 @@
     var restore = ui.button("Start these files as a restore", function () {
       ui.askPassphrase({
         title: "Start these files as a restore?",
-        why: "Gazpacho will start on these files with new keys, so no key used after them can come back. This cannot be undone. Type your passphrase to go on.",
+        why: "Gazpacho will start on these files with new keys, so no key used after them can come back. This cannot be undone. Type your password to go on.",
         button: "Start as a restore",
         run: function (pass) { return api.call("POST", "/wallet/start-as-restore", { confirm: "restore_new_keys", passphrase: pass }); }
       }).then(function () { return api.refreshSession().then(gz.app.enter); }, function (e) { u.clear(msg); u.add(msg, ui.error(e)); });
@@ -189,7 +199,7 @@
   }
 
   /* ---- first run: the steps ---- */
-  var STEPS = ["Make a wallet, or bring one back", "Choose your passphrase", "Write down the 24 words", "Check the words", "Say what you will accept", "Find a lobby, or host one"];
+  var STEPS = ["Make a wallet, or bring one back", "Choose a password", "Write down the 24 words", "Check the words", "Say what you will accept", "Find a lobby, or host one"];
 
   function frame(cur, body) {
     var ol = h("ol", { class: "steps" });
@@ -229,7 +239,7 @@
       h("p", {}, "Type your 24 words in order, one in each field. They bring back your keys and your on-chain coins."),
       h("p", { class: "small mute" }, ASKED),
       w.node, msg,
-      ui.actions(ui.button("Next: choose a passphrase", function () {
+      ui.actions(ui.button("Next: choose a password", function () {
         var words = w.take();
         if (words.some(function (x) { return !x; })) {
           u.clear(msg);
@@ -244,18 +254,20 @@
     gz.app.onLeave(w.clear);
   }
 
-  /* The passphrase: six generated words first, or the person's own (storage 14). */
+  /* The password: six generated words first, or the person's own (storage 14). */
   function stepPass(mode, words) {
     var six = sixWords(), own = false, msg = h("div", {});
     var box = h("p", { class: "sixwords", id: "sixwords" }, six.join(" "));
     var typed = ui.passField("Type the six words once, with a space between them", true, "So you know you have them written down.");
-    var p1 = ui.passField("Your own passphrase", true), p2 = ui.passField("The same passphrase again", true);
+    var p1 = ui.passField("Your own password", true), p2 = ui.passField("The same password again", true);
     var count = h("p", { class: "small mute", role: "status" });
     var go = h("button", { type: "submit", class: "btn primary" }, mode === "create" ? "Make the wallet" : "Restore the wallet");
     var other = ui.button("Make six other words", function () { six = sixWords(); box.textContent = six.join(" "); });
     var swap = ui.button("Choose my own", function () { own = !own; draw(); });
     var made = h("div", {}), mine = h("div", {});
-    var form = h("form", { novalidate: true }, made, mine, msg, ui.actions(go, swap), h("p", { class: "small mute" }, MANAGER));
+    var form = h("form", { novalidate: true },
+      h("p", {}, "Your password opens Gazpacho and locks its files on this computer. It is not part of your seed: your 24 words alone restore your wallet."),
+      made, mine, msg, ui.actions(go, swap), h("p", { class: "small mute" }, MANAGER));
     function forget() {
       u.wipe(six);
       box.textContent = "";
@@ -268,10 +280,10 @@
       swap.textContent = own ? "Use six words Gazpacho makes" : "Choose my own";
     }
     u.add(made, [
-      h("p", {}, "Gazpacho has made a passphrase for you: six words. Write it down with your 24 words, or keep it in a password manager. You will type it each time you open Gazpacho on this computer. It locks every file Gazpacho keeps here."),
+      h("p", {}, "Gazpacho made a password for you: six words. Write it down, or keep it in a password manager."),
       box, ui.actions(other), typed.wrap]);
     u.add(mine, [
-      h("p", {}, "At least 15 characters. Nobody can recover it for you. If you forget it, your 24 words still bring the wallet back on this computer."),
+      h("p", {}, "At least 15 characters. Nobody can recover it for you."),
       p1.wrap, count, p2.wrap]);
     p1.input.addEventListener("input", function () {
       var n = Array.from(p1.input.value.normalize("NFC")).length;
@@ -290,7 +302,7 @@
         if (b !== a) { u.add(msg, ui.notice("bad", "That is not the six words shown.", "Type them exactly, with one space between words.")); typed.input.value = ""; return; }
       }
       p1.input.value = p2.input.value = typed.input.value = "";
-      if (!a) { u.add(msg, ui.notice("warn", "Type a passphrase first.")); return; }
+      if (!a) { u.add(msg, ui.notice("warn", "Enter a password.")); return; }
       go.disabled = true;
       u.add(msg, h("p", { role: "status" }, "Making the wallet… this takes about a second."));
       (mode === "create"
@@ -329,7 +341,7 @@
     var msg = h("div", {}), body = h("div", {});
     frame(2, body);
     u.add(body, [
-      h("p", {}, "This wallet was made, but setting it up was not finished. Your 24 words can be shown again with your passphrase."),
+      h("p", {}, "This wallet was made, but setting it up was not finished. Your 24 words can be shown again with your password."),
       msg,
       ui.actions(
         ui.button("Show the 24 words", function () { revealInto(body, msg, function () { stepCheck(false); }); }),
@@ -342,7 +354,7 @@
   function revealInto(into, msg, after) {
     ui.askPassphrase({
       title: "Show the 24 words",
-      why: "Type your passphrase. Make sure nobody can see your screen and nothing is recording it.",
+      why: "Type your password. Make sure nobody can see your screen and nothing is recording it.",
       button: "Show the words",
       run: function (pass) { return api.call("POST", "/wallet/phrase/reveal", { confirm: "show_words", passphrase: pass }); }
     }).then(function (r) {
@@ -355,7 +367,7 @@
   function checkForm(onOk, extra) {
     var box = h("div", {}, h("p", { role: "status" }, "Loading…"));
     api.call("POST", "/wallet/phrase/check-start", {}).then(function (c) {
-      var w = wordInputs(c.positions), pf = ui.passField("Wallet passphrase", false, "The check opens your words for one comparison, so it needs the passphrase."), msg = h("div", {});
+      var w = wordInputs(c.positions), pf = ui.passField("Password", false, "The check opens your words for one comparison, so it needs the password."), msg = h("div", {});
       var go = h("button", { type: "submit", class: "btn primary" }, "Check");
       var form = h("form", { novalidate: true },
         h("p", {}, "Type words " + c.positions.join(", ").replace(/, ([^,]*)$/, " and $1") + " from your paper."),
@@ -369,7 +381,7 @@
         u.clear(msg);
         if (!pass || words.some(function (x) { return !x; })) {
           u.wipe(words);
-          u.add(msg, ui.notice("warn", "Type the three words and your passphrase.", "The fields were emptied; type them again."));
+          u.add(msg, ui.notice("warn", "Type the three words and your password.", "The fields were emptied; type them again."));
           return;
         }
         go.disabled = true;

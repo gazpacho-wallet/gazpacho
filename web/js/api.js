@@ -92,8 +92,8 @@
     return call(method, path, body, opts).catch(function (e) {
       if (e.code !== "fresh_sign_in_needed") throw e;
       return gz.ui.askPassphrase({
-        title: "Type your passphrase again",
-        why: (opts && opts.why) || "This changes what Gazpacho does for you, so it asks for your passphrase again.",
+        title: "Type your password again",
+        why: (opts && opts.why) || "This changes what Gazpacho does for you, so it asks for your password again.",
         run: function (pass) { return call("POST", "/session/fresh", { passphrase: pass }); }
       }).then(function () { return call(method, path, body, opts); });
     });
