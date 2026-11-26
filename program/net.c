@@ -171,8 +171,11 @@ int gzp_net_sign(const gzp_net_t *n, uint32_t epoch, uint32_t index, const uint8
 {
     uint8_t s[32];
     secp256k1_keypair kp;
-    int ok = gzp_net_key(n, epoch, index, s, NULL) && secp256k1_keypair_create(n->secp, &kp, s) &&
-             secp256k1_schnorrsig_sign32(n->secp, sig, msg, &kp, NULL);
+    uint8_t aux[32];
+    int ok;
+    gzp_os_random(aux, sizeof aux);   /* K20: fresh aux randomness in every signature */
+    ok = gzp_net_key(n, epoch, index, s, NULL) && secp256k1_keypair_create(n->secp, &kp, s) &&
+         secp256k1_schnorrsig_sign32(n->secp, sig, msg, &kp, aux);
     OPENSSL_cleanse(s, sizeof s);
     OPENSSL_cleanse(&kp, sizeof kp);
     return ok;

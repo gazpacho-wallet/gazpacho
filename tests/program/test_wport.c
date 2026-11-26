@@ -63,7 +63,7 @@ static gzt_coin coin(gzp_wport_t *w, uint32_t change, uint32_t j, uint64_t amoun
     gzw_bip86_output o;
     gzw_reason why;
     memset(&c, 0, sizeof c);
-    CHECK(gzw_bip86_output_from_master(secp, &w->master, GZW_NET_SIGNET, 0, change, j, &o, &why) == 1);
+    CHECK(gzw_bip86_output_from_xpub(secp, &w->account, GZW_NET_SIGNET, 0, change, j, &o, &why) == 1);
     memset(c.txid, tag, 32);
     c.vout = 0;
     c.amount = amount;

@@ -551,6 +551,8 @@ void gzp_wallet_begin(gzp_wallet_t *w, gzp_unlock_job_t *job)
             goto out;
         }
     }
+    /* The seed source (storage 9.1): the words become the seed here, outside the
+     * signer, a reasoned exemption until 1.0.0's signer process. */
     if (gzw_phrase_to_seed(phrase, "", seed) != 1) {
         set_result(&job->result, GZP_UNLOCK_STORAGE_FAILED, "seed");
         goto out;
