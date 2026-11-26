@@ -135,6 +135,7 @@ def restore_mid_round(exe, work):
         m1 = w.member("m1", "--member-signing", "auto", "--tip", str(TIP), "--test-log-sends", "1",
                       "--test-restore-from", words, *tick)
         check(started(m1), "%s: m1 starts again, restored from its words" % name)
+        mk_r = m1.mark()
         r = m1.wait_for(r"restore-batch seq=\d+ epoch=([0-9a-f]{8})", timeout=10)
         check(r is not None and r.group(1) != e0, "%s: the restore draws a new epoch" % name)
         check(m1.wait_for(r"lobby-left-out scope=%s\S* .*why=stale_epoch" % t.tag, timeout=20) is not None,
@@ -145,6 +146,19 @@ def restore_mid_round(exe, work):
               "%s: nothing sent for the lobby: no nonce, no partial, no ack, no resend" % name)
         check(m1.count(r"start-resend") == 0, "%s: nothing resent at the start" % name)
         check(m1.count(r"sign-(begin|outcome|refused) scope=%s" % t.tag) == 0, "%s: the round is not resumed" % name)
+        # The round's exposure is not left waiting (review B of #98): the person joins the lobby again (a new
+        # slot, a new key pair) and then leaves it. Were the old round's exposure still unresolved, the leave
+        # would be refused while its partials are "out" (409 too_late); it is Abandoned at the restart, so the
+        # leave is answered 200 and the new slot closes.
+        w.join(m1, t)
+        check(m1.wait_for(r"slot-opened scope=%s .*role=member" % t.tag, timeout=10, start=mk_r) is not None,
+              "%s: the person joins the lobby again: a new slot" % name)
+        mk_l = m1.mark()
+        m1.send(cmd(LEAVE, (12, t.scope)))
+        rl = m1.wait_for(r"command-result id=\S+ status=(\d+)", timeout=10, start=mk_l)
+        check(rl is not None and rl.group(1) == "200", "%s: its leave is answered 200, not too_late (got %s)"
+              % (name, rl.group(1) if rl else None))
+        check(m1.count(r"too_late", start=mk_l) == 0, "%s: no too_late: the old round's exposure is Abandoned" % name)
         w.clean(name)
     finally:
         kill_all(w.procs)
