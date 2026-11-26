@@ -2,8 +2,8 @@
 """Every member of a large factory exits at once, on a real regtest node (R6).
 
 The Slice 1.5 plan's P8 (docs/SLICE-1.5-PLAN.md, test R6, the risk U-3): a
-factory of N members (128 and 512 in the nightly run; 4 and 16 to prove the
-harness) is built and signed by tests/regtest/tree_massexit with the core in
+factory of N members (128, 256 and 512 in the nightly run; 4 and 16 to
+prove the harness) is built and signed by tests/regtest/tree_massexit with the core in
 one process, funded on a node this tool starts, and then every member
 publishes its own exit path at the same time, from its own thread, against a
 mempool kept full of other traffic. It checks, against the node:
@@ -13,10 +13,17 @@ mempool kept full of other traffic. It checks, against the node:
      package with a child on its anchor;
   2. siblings publishing the same shared step at the same moment never
      conflict: every member sends the identical package for a shared step, so
-     the second copy is "already in the mempool", never a replacement;
+     the second copy is "already in the mempool", never a replacement. The
+     children are identical BY CONSTRUCTION (RawEngine.child_for builds one
+     per step and every member reuses it): what this tests is that identical
+     concurrent packages are harmless, not that competing children resolve;
+     members with their own, different children belong to P3's engine and
+     test R7;
   3. every path confirms, and the amounts are right: each tree transaction
      on chain pays exactly the outputs the tree was signed with, every
-     interior output and every anchor is spent by the tree, each member's
+     interior output and every anchor is spent, each input's value is its
+     parent's output as the node holds it (never a value the tree builder
+     printed), each member's
      channel output is unspent on chain with its own amount and script, and
      the funding amount = the leaves' outputs + every tree fee + every
      anchor, to the satoshi;
@@ -538,21 +545,34 @@ def main():
         print(f"every path confirmed after {rnd} rounds, at tip {chain.tip}: {published} publications,"
               f" {dup} of them a sibling's identical copy of a shared step, none refused")
 
-        # ---- The amounts, from the chain.
-        total_leaf, total_fee = 0, 0
+        # ---- The amounts, from the chain. Every value below is read from a
+        # transaction the node holds in a block: each input's value is its
+        # parent's output on chain (the funding's for the root), never the
+        # value the code under test printed. The signed values are compared
+        # with the chain's only as a second check.
+        total_leaf, total_fee, total_anchor = 0, 0, 0
         leaves = {m["leaf"] for m in tree.members}
+        onchain = {ftxid: ftx}
         for nd in tree.nodes:
-            tx = node.rpc("getrawtransaction", nd["txid"], True, chain.block[nd["txid"]])
+            onchain[nd["txid"]] = node.rpc("getrawtransaction", nd["txid"], True, chain.block[nd["txid"]])
+        funded = round(ftx["vout"][vout]["value"] * 1e8)
+        for nd in tree.nodes:
+            tx = onchain[nd["txid"]]
             got = [(round(o["value"] * 1e8), o["scriptPubKey"]["hex"]) for o in tx["vout"]]
             if got != nd["outs"]:
                 sys.exit(f"node {nd['node']}: the outputs on chain are not the signed tree's")
             spent = ftxid if nd["parent"] < 0 else tree.nodes[nd["parent"]]["txid"]
-            if tx["vin"][0]["txid"] != spent or tx["vin"][0]["vout"] != (vout if nd["parent"] < 0 else nd["vout"]):
-                sys.exit(f"node {nd['node']}: does not spend its parent's output")
-            fee = nd["in"] - sum(a for a, _ in got)
-            if fee != nd["fee"]:
-                sys.exit(f"node {nd['node']}: fee {fee} on chain, {nd['fee']} signed")
+            if len(tx["vin"]) != 1 or tx["vin"][0]["txid"] != spent \
+                    or tx["vin"][0]["vout"] != (vout if nd["parent"] < 0 else nd["vout"]):
+                sys.exit(f"node {nd['node']}: does not spend its parent's output, alone")
+            in_chain = round(onchain[spent]["vout"][tx["vin"][0]["vout"]]["value"] * 1e8)
+            fee = in_chain - sum(a for a, _ in got)
+            if fee < 0 or in_chain != nd["in"] or fee != nd["fee"]:
+                sys.exit(f"node {nd['node']}: input {in_chain} and fee {fee} on chain, {nd['in']} and {nd['fee']} signed")
             total_fee += fee
+            if got[nd["anchor"]] != (ANCHOR_SAT, P2A):
+                sys.exit(f"node {nd['node']}: the anchor on chain is not 240 sat of P2A")
+            total_anchor += got[nd["anchor"]][0]
             for k, (amt, _) in enumerate(got):
                 left = node.rpc("gettxout", nd["txid"], k)
                 is_leaf_out = nd["node"] in leaves and k != nd["anchor"]
@@ -568,10 +588,9 @@ def main():
             o = node.rpc("gettxout", leaf["txid"], 0)
             if o is None or round(o["value"] * 1e8) != m["channel"] or o["scriptPubKey"]["hex"] != m["script"]:
                 sys.exit(f"member {m['member']}: the channel output is not on chain with its amount and script")
-        anchors = ANCHOR_SAT * len(tree.nodes)
-        print(f"amounts: funding {amount} = leaves {total_leaf} + tree fees {total_fee} + anchors {anchors}"
-              f" ({total_leaf + total_fee + anchors})")
-        if total_leaf + total_fee + anchors != amount:
+        print(f"amounts, from the chain: funding output {funded} = leaves {total_leaf} + tree fees {total_fee}"
+              f" + anchors {total_anchor} ({total_leaf + total_fee + total_anchor}); R(root) {amount}")
+        if total_leaf + total_fee + total_anchor != funded or funded != amount:
             sys.exit("the funding does not balance")
         channels = [m["channel"] for m in tree.members]
         print(f"every member's channel output is unspent on chain: {n} outputs, {min(channels)} to {max(channels)} sat")

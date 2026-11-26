@@ -107,6 +107,11 @@ tests/program/silent_peer.c	secp256k1_ec_seckey_verify	1
 tests/program/test_net.c	gzp_net_sign	2
 tests/regtest/tree_regtest.c	factory_sign_all	1
 tests/regtest/tree_regtest.c	secp256k1_keypair_create	1
+# Test only (#103, Slice 1.5 P8, test R6): the mass-exit driver signs a large
+# tree with the test keys of terms.md 11, as tree_regtest.c does for T1, for
+# a regtest node only. Nothing leaves the process but the signed test tree.
+tests/regtest/tree_massexit.c	factory_sign_all	1
+tests/regtest/tree_massexit.c	secp256k1_keypair_create	1
 tests/scale/tree_shapes.c	factory_sign_all	1
 tests/scale/tree_shapes.c	secp256k1_keypair_create	1
 tests/signing/decoders.h	secp256k1_keypair_create	1
