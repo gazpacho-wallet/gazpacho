@@ -248,11 +248,16 @@ class Filler:
 
     def fill(self, cap=120):
         """Add filler until the node refuses one for its own minimum: it is
-        full, has evicted, and its minimum is now above the filler's rate."""
+        full, has evicted, and its minimum is now above the filler's rate.
+        The node's rolling minimum stays up after a block empties the
+        mempool, so each round pays just above it (at least --fill): every
+        round starts from a mempool refilled to the point of eviction."""
         made, why = 0, "cap"
+        floor = self.node.rpc("getmempoolinfo")["mempoolminfee"] * 1e5
+        self.round_rate = rate = max(self.rate, round(floor + 0.01, 2))
         for _ in range(cap):
             txid, vout, value = self.coins.take("filler")
-            fee = math.ceil(self.rate * FILLER_VSIZE)
+            fee = math.ceil(rate * FILLER_VSIZE)
             change = value - FILLER_OUTPUTS * 330 - fee
             raw = ser_tx(2, [(txid, vout, 0xFFFFFFFD)], [(330, P2WSH_TRUE)] * FILLER_OUTPUTS + [(change, self.coins.script)])
             try:
@@ -432,7 +437,7 @@ def main():
         # The funding, and the test coins for the children and the filler.
         fund_addr = node.rpc("deriveaddresses", node.rpc("getdescriptorinfo", f"rawtr({script[4:]})")["descriptor"])[0]
         ftxid = node.w("sendtoaddress", fund_addr, f"{amount / 1e8:.8f}")
-        coins.split(n_nodes + 16 if bump == "wallet" else 0, 900 if fill_rate else 0)
+        coins.split(n_nodes + 16 if bump == "wallet" else 0, 1500 if fill_rate else 0)
         node.rpc("generatetoaddress", 1, addr)
         ftx = node.rpc("getrawtransaction", ftxid, True, node.rpc("getbestblockhash"))
         vout = next(o["n"] for o in ftx["vout"] if o["scriptPubKey"]["hex"] == script)
@@ -497,9 +502,11 @@ def main():
                 continue
             made, why = filler.fill() if filler else (0, "-")
             before = node.rpc("getmempoolinfo")
-            if filler and (why != "minfee" or before["mempoolminfee"] * 1e5 <= fill_rate):
-                sys.exit(f"the mempool is not full: the filler stopped ({why}) with the minimum at "
-                         f"{before['mempoolminfee'] * 1e5:.2f} sat/vB, not above the filler's {fill_rate}")
+            if filler and (why != "minfee" or made == 0 or before["mempoolminfee"] * 1e5 <= filler.round_rate):
+                sys.exit(f"the mempool is not full: the filler stopped ({why}, +{made}) with the minimum at "
+                         f"{before['mempoolminfee'] * 1e5:.2f} sat/vB, not above the filler's {filler.round_rate}")
+            # A child brings its package at least 1 sat/vB above the node's minimum now.
+            engine.rate = max(package_rate, before["mempoolminfee"] * 1e5 + 1)
             # Children first (the wallet is one), then every member at once, in a random order.
             for i in {i for _, i in steps}:
                 engine.child_for(i, node)
@@ -516,7 +523,8 @@ def main():
             chain.mine(1, addr, watch)
             confirmed = sum(1 for i in per_step if tree.nodes[i]["txid"] in chain.height)
             print(f"round {rnd}: mempool {before['size']} txs, {before['bytes']} vB, usage {before['usage']}/{before['maxmempool']},"
-                  f" min fee {before['mempoolminfee'] * 1e5:.2f} sat/vB (filler +{made}, {why}); {len(steps)} members published"
+                  f" min fee {before['mempoolminfee'] * 1e5:.2f} sat/vB (filler +{made} at"
+                  f" {filler.round_rate if filler else 0} sat/vB, {why}); {len(steps)} members published"
                   f" {len(per_step)} steps ({len(results) - len(per_step)} shared copies), {len(bad)} refused;"
                   f" block {chain.tip}: {confirmed} of those steps mined")
             report["rounds"].append({"round": rnd, "tip": chain.tip, "mempool": before, "filler_added": made,
