@@ -814,27 +814,20 @@ static void stranger(int who, int hello, gz_link_t *l)
 /* An outsider `who` joins lobby `t` on fresh keys of its own: the connection, then the join. */
 static void outsider_join(int who, const terms_t *t, gz_link_t *l)
 {
-    lt_key_t hk, ck, fk;
+    lt_key_t hk, ck;
     char name[48];
-    uint8_t b[32], sf[64], sc[64], aux[32], buf[400];
+    uint8_t buf[400];
     gz_lobby_enc_t e;
     size_t n;
     whost(&hk);
     snprintf(name, sizeof name, "outsider %d contribution", who);
     lt_key(&ck, name);
-    snprintf(name, sizeof name, "outsider %d factory", who);
-    lt_key(&fk, name);
     *l = h_link(hk.pub, ck.pub);
-    memset(aux, 0, sizeof aux);
-    gz_lobby_binding(t->scope, fk.pub, ck.pub, b);
-    CHECK(secp256k1_schnorrsig_sign32(lt_ctx(), sf, b, &fk.kp, aux) == 1);
-    CHECK(secp256k1_schnorrsig_sign32(lt_ctx(), sc, b, &ck.kp, aux) == 1);
+    /* K1: a join is the envelope alone, no factory key and no binding (the link proves the contribution
+     * key; the factory key and its binding come with the first ready) */
     gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_JOIN, t->scope);
-    gz_lobby_enc_record(&e, 2, fk.pub, 33);
-    gz_lobby_enc_record(&e, 4, sf, 64);
-    gz_lobby_enc_record(&e, 6, sc, 64);
     n = gz_lobby_enc_done(&e);
-    CHECK(n > 38);
+    CHECK(n == 38);
     w_peer(0, l, 1, 0, 0, 0);
     w_msg(0, l, GZ_KIND_JOIN, t->scope, buf + 38, n - 38);
 }
@@ -1124,11 +1117,14 @@ static void test_refusals(void)
         CHECK(N[1].n_batches == 0 && gz_route_slot_by_scope(N[1].n, t[0].scope) < 0);
         CHECK(w_restart(1) == GZ_OK && N[1].n_batches == 0);
     }
-    /* A key the port will not sign with: the join is not made, nothing breaks. */
+    /* A key the port will not sign with (K1: a join carries no signature, so it is made; the first ready,
+     * which the contribution key signs and which carries the binding, is not): nothing breaks. */
     SIGN_FAIL[1] = 1;
     CHECK(member_join(1, &t[0]) == 200);
     w_run(2000, 100);
-    CHECK(slot(1, &t[0]) && !slot(1, &t[0])->lobby.m.joined && h_records_of(&N[1], GZ_REC_JOINED) == 0);
+    CHECK(slot(1, &t[0]) && slot(1, &t[0])->lobby.m.joined && h_records_of(&N[1], GZ_REC_JOINED) == 1);
+    CHECK(!slot(1, &t[0])->lobby.m.ready && h_records_of(&N[1], GZ_REC_READY_SENT) == 0 &&
+          h_records_of(&N[1], GZ_REC_SEAT_KEY) == 0);
     SIGN_FAIL[1] = 0;
     /* A second join for the same lobby, and a ninth lobby: refused. */
     CHECK(member_join(1, &t[0]) == 409);
@@ -4391,6 +4387,32 @@ static void test_funds_no_wallet_start(void)
     w_free(3);
 }
 
+/* K1: a ready too large for its buffer is a bug, and the node error that stops the run is its outcome (a
+ * restart recovers from the journal): with the test hook shrinking member 1's ready buffer, its first ready
+ * fails with the lobby's area, and nothing of that ready was saved or sent. */
+static void test_ready_over_limit(void)
+{
+    terms_t t;
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node(1, 1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    N[1].cfg.test_ready_cap = 200;                              /* the largest K1 ready is 317 */
+    h_new_node(&N[1]);
+    for (int n = 0; n <= 1; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 4, 3, 3000);
+    CHECK(host_open(&t, 0) == 200);
+    int before = ERRORS;
+    size_t sent = NSENT;
+    (void)member_join(1, &t);
+    w_run(2000, 100);
+    CHECK(ERRORS > before && gz_node_error_area(N[1].n) == GZ_AREA_LOBBY);
+    CHECK(h_records_of(&N[1], GZ_REC_READY_SENT) == 0 && h_records_of(&N[1], GZ_REC_SEAT_KEY) == 0);
+    int readies = 0;
+    for (size_t k = sent; k < NSENT; k++) readies += SENT[k].node == 1 && SENT[k].kind == GZ_KIND_READY;
+    CHECK(readies == 0);
+    ERRORS = before;                                            /* this one was the test's */
+    w_free(1);
+}
 
 /* The signing engine runs only with a secp256k1 context (node.h): a node
  * given the engine's memory but no context starts without it, and never
@@ -4456,6 +4478,33 @@ static void test_funds_auto_start(void)
     w_free(3);
 }
 
+/* Review B of PR 95, L-4: the lobby's signing hook cannot sign with the factory key at all, on the
+ * member's slot or the host's: the call is refused and the key port is never asked. */
+static void test_k1_ls_sign_no_factory(void)
+{
+    terms_t t;
+    uint8_t msg[32], sig[64];
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    w_node(1, 1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    for (int n = 0; n <= 1; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 4, 3, 3110);
+    CHECK(host_open(&t, 0) == 200 && member_join(1, &t) == 200);
+    w_run(3000, 100);
+    slot_t *m = slot(1, &t), *h = slot(0, &t);
+    CHECK(m && h);
+    if (!m || !h) { w_free(1); return; }
+    memset(msg, 0x42, sizeof msg);
+    int before = SIGNS[1];
+    CHECK(m->lobby.m.crypto.sign(m->lobby.m.crypto.ctx, GZ_LOBBY_KEY_FACTORY, msg, sig) == 0 && SIGNS[1] == before);
+    CHECK(h->lobby.h.crypto.sign(h->lobby.h.crypto.ctx, GZ_LOBBY_KEY_FACTORY, msg, sig) == 0);
+    /* the contribution key still signs (the ready) */
+    CHECK(m->lobby.m.crypto.sign(m->lobby.m.crypto.ctx, GZ_LOBBY_KEY_CONTRIBUTION, msg, sig) == 1 && SIGNS[1] == before + 1);
+    no_errors(1);
+    w_free(1);
+}
+
+
 int main(int argc, char **argv)
 {
     unsigned long events = argc > 1 ? strtoul(argv[1], NULL, 10) : 20000;
@@ -4518,5 +4567,7 @@ int main(int argc, char **argv)
     test_timer_of_ended_lobby();
     test_gate_refused_ready();
     test_hostile(events, seed);
+    test_ready_over_limit();
+    test_k1_ls_sign_no_factory();
     return check_done();
 }

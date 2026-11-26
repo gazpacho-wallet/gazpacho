@@ -32,6 +32,13 @@
 #include <unistd.h>
 
 #include "../check.h"
+#include "gazpacho/lobby.h"
+#include "journal.h"
+
+/* A lobby step saves at most a record for each seat and a few of its own, each at most GZ_LOBBY_REC_MAX:
+ * that batch fits one journal entry, so the lobby's limits and the journal's cannot drift apart unseen. */
+_Static_assert((GZ_LOBBY_MAX_SEATS + 8u) * (GZ_LOBBY_REC_MAX + 8u) <= GZ_JOURNAL_ENTRY_MAX,
+               "a lobby batch fits one journal entry (GZ_JOURNAL_ENTRY_MAX)");
 #include "gazpacho/envelope.h"
 #include "gazpacho/node.h"
 #include "gazpacho/test_engine.h"

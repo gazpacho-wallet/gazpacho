@@ -263,8 +263,7 @@ int gz_tx_sighash1(const uint8_t *tx, size_t len, uint64_t amount, const uint8_t
 typedef struct {
     uint8_t factory_key[33];
     uint8_t contribution_key[33];
-    uint8_t bind_by_factory[64];
-    uint8_t bind_by_contribution[64];
+    uint8_t bind_by_contribution[64];   /* the factory key signs no binding (K1) */
 } gz_tree_participant_t;
 
 /* The tree digest of messages.md 7.12, over the funding outpoint, amount,

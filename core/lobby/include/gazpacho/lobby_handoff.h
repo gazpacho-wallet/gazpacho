@@ -22,7 +22,7 @@
 
 typedef struct {
     uint8_t factory_key[33], contribution_key[33];
-    uint8_t bind_by_factory[64], bind_by_contribution[64];
+    uint8_t bind_by_contribution[64];   /* the factory key signs no binding (K1) */
 } gz_lobby_participant_t;
 
 /* What the lobby gives the signing engine when a round may begin. Pointers

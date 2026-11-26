@@ -26,6 +26,7 @@ against sections 9 and 9.1: no clash.
 | `0x00010012` | `host_fault` | Member | Listed |
 | `0x00010014` | `start_sent` | Host | Listed |
 | `0x00010016` | `start_received` | Member | Listed |
+| `0x0001001c` | `seat_key` | Member | Listed (`journal.md` 9.1, BD3). The seat's factory key, saved in the batch of its first `ready` and never replaced |
 | `0x00010018` | `lobby_state` | Both | **New**, registered in `journal.md` 9.1. The signing engine's outcome. Host: the lobby moved to Open after a failed signing attempt (a retry), to Funding, or to Active; saved before the `lobby_status` that shows it. Member: its round's outcome, so that a restart never hands the finished check to the signing engine again (decision 29) |
 
 **Layouts** (contract v2, P4.2; `spec/journal.md` open point 3 is settled
@@ -40,16 +41,17 @@ field its type does not have, and a record over its largest size
 |---|---|
 | `lobby_opened` | 4 outer record, 6 outer signature (64), 8 current record, 10 current signature (64) |
 | `terms_version` | 4 current record, 6 its signature (64) |
-| `seat` | 4 contribution key (33), 6 factory key (33), 8 `bind_by_factory` (64), 10 `bind_by_contribution` (64), 12 seat state (`u8`), 14 `min_members` (`u16`), 16 version readied for (`u32`), 18 join sequence (`u64`), 20 the seat's latest `ready` (absent: none) |
+| `seat` | 4 contribution key (33), 6 factory key (33) and 10 `bind_by_contribution` (64), both from the seat's first `ready` and absent while it has only joined (BD; 8, `bind_by_factory`, is gone), 12 seat state (`u8`), 14 `min_members` (`u16`), 16 version readied for (`u32`), 18 join sequence (`u64`), 20 the seat's latest `ready` (absent: none) |
 | `freeze` | 4 `check_id` (32), 6 version (`u32`), 8 current digest (32), 10 the signed `ready_check`; read back only if that check names the same three values and the record's scope |
 | `lobby_ended` | 4 state (`u8`: 6 Cancelled, 7 Failed; 0 on the member when no cancel ended it), 6 reason (`u16`), 8 the signed `cancel` (absent: none), 10 how (`u8`, member, with state 0 only: absent its own leave, 1 removed by the host, 2 its join refused as invalid, 3 the terms refused before any seat) |
 | `terms_received` | as `lobby_opened` (the outer record, then the current record the member readies for) |
-| `joined` | 4 the signed `join` |
+| `joined` | 4 the `join` (BD: no keys and no signature; at most the display name) |
 | `ready_sent` | 4 the signed `ready`; or, for an `unready`, 6 its reason (`u16`: 1 conditions, 2 the user's choice, 3 locked) |
 | `host_fault` | 4 fault (`u8`), 6 evidence a, 8 evidence b |
 | `start_sent` | 4 `check_id` (32), 6 the time the signing budget began (`u64`, Unix ms), 8 one or more of (contribution key (33), `u16` length, that seat's signed `start`) |
 | `start_received` | 4 the signed `start` |
 | `lobby_state` | 4 state (`u8`: 1 Open, 4 Funding, 5 Active); member, with state 1: 6 the spent check's `check_id` (32) |
+| `seat_key` | 4 factory key (33), 6 key epoch (`u32`), 8 key index (`u32`), 10 the first `ready`'s `bind_by_contribution` (64), which every later `ready` sends byte for byte (review H1); a field 10 that does not verify is damaged storage |
 
 ## 2. Decisions to confirm or overrule
 
@@ -141,8 +143,8 @@ field its type does not have, and a record over its largest size
     17th such connection, or any connection when the table is full, pushes
     out a connection without a seat, never a seated one: one that has said
     nothing yet first, then the oldest, as the transport does (review A, F7;
-    review B, B7). A saved `ready`, `start`, `ready_check` or `cancel` is at most 256
-    bytes (a ready larger than that is not taken; a larger signed `cancel` is
+    review B, B7). A saved `ready`, `start`, `ready_check` or `cancel` is at most 384
+    bytes (K1: a `ready` with its factory key and binding is 317 bytes at most; a ready larger than that is not taken; a larger signed `cancel` is
     not taken either, review A, m17).
 13. **Any error from an engine call is fatal for the node**, like a refused
     action list (runner.h): the program stops the node and rebuilds it from
