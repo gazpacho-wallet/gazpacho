@@ -348,18 +348,21 @@ static inline size_t lt_rec_freeze(uint8_t *out, size_t cap, const uint8_t scope
     return gz_lr_done(&w);
 }
 
-/* SEAT, every field: 20 (the seat's latest ready) only if ready_len > 0. */
+/* SEAT in K1's layout: 6 (the factory key) and 10 (the contribution key's binding of it) only once the
+ * seat's first ready fixed them (fkey not NULL), and no 8 (the factory key signs no binding); 20 (the
+ * seat's latest ready) only if ready_len > 0. */
 static inline size_t lt_rec_seat(uint8_t *out, size_t cap, const uint8_t scope[32], const uint8_t ckey[33],
-                                 const uint8_t fkey[33], const uint8_t bind_f[64], const uint8_t bind_c[64],
+                                 const uint8_t fkey[33], const uint8_t bind_c[64],
                                  uint8_t state, uint16_t min_members, uint32_t ready_version, uint64_t join_seq,
                                  const uint8_t *ready, size_t ready_len)
 {
     gz_lr_t w;
     gz_lr_start(&w, out, cap, scope);
     gz_lr_put(&w, 4, ckey, 33);
-    gz_lr_put(&w, 6, fkey, 33);
-    gz_lr_put(&w, 8, bind_f, 64);
-    gz_lr_put(&w, 10, bind_c, 64);
+    if (fkey) {
+        gz_lr_put(&w, 6, fkey, 33);
+        gz_lr_put(&w, 10, bind_c, 64);
+    }
     gz_lr_int(&w, 12, state, 1);
     gz_lr_int(&w, 14, min_members, 2);
     gz_lr_int(&w, 16, ready_version, 4);

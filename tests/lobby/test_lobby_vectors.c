@@ -216,9 +216,7 @@ static void test_m1(lt_signer_t *member)
     gz_terms_current_digest(t2, t2n, cd);
     gz_lobby_binding(od, member->key[3].pub, member->key[2].pub, b);
     CHECK(hexeq(b, 32, "47cc4207f628d147d528abc4dfab2c393e208dfcfa550789540bddd09259007e"));
-    cr.sign(cr.ctx, GZ_LOBBY_KEY_FACTORY, b, sig);
-    CHECK(hexeq(sig, 64, "64c9b7016f2484c6d4e162a02e701bc3cad8f7741a2ab2f07a2ad32fac0d0932"
-                         "bb7e4286df722cbe5147a72425fe9a58fd4afe37357f843ee6d0eb1aa9946cea"));
+    /* BD (K1): the factory key signs no binding; the contribution key's signature is draft 2's, unchanged */
     cr.sign(cr.ctx, GZ_LOBBY_KEY_CONTRIBUTION, b, sig);
     CHECK(hexeq(sig, 64, "20e17a88512a7899a72ecfa56bc456a12a71012cc2a1f2b5b77bc2c4143b3eb8"
                          "676168a973998b2fdb71d2d8284b9a9e0adf8f2927815ae965398cf4c8184813"));
@@ -226,16 +224,22 @@ static void test_m1(lt_signer_t *member)
     gz_lobby_enc_record(&e, 2, od, 32);
     gz_lobby_enc_u32(&e, 4, 1);
     gz_lobby_enc_record(&e, 6, cd, 32);
+    gz_lobby_enc_record(&e, 12, member->key[3].pub, 33);   /* BD: the factory key and its binding in the ready */
+    gz_lobby_enc_record(&e, 14, sig, 64);
     n = gz_lobby_enc_sign(&e, &cr, GZ_LOBBY_KEY_CONTRIBUTION);
-    CHECK(n == 178);
-    {   /* M1 as published: the Lightning type, then exactly the envelope */
+    CHECK(n == 279);
+    {   /* M1 as published (messages.md 11, regenerated for BD: 281 bytes): the Lightning type, then exactly the
+         * envelope */
         static const char M1[] =
             "ce37677a6601001675e970b6d95c7de97bf35f67033e2c9f55de1ea54beecb8431419659f0a424f2"
             "022075e970b6d95c7de97bf35f67033e2c9f55de1ea54beecb8431419659f0a424f2"
             "040400000001"
             "0620d1db6ddfd5a2c12ae197036f285457ae6ceaf468c2a47fb71691dde4b1153942"
-            "f0407eb07e7116d893db0aa57ca3c88fd1b7c67aeb5a0772923c08a4f10350197cbc"
-            "08c19ce8d566df618ab0df88d9773f5089c63b83d4fc99636a5ba7f433762627";
+            "0c210223a26c411e719d542783e3bb05fa00a467fb73227d495ab89734fef0ecec3974"
+            "0e4020e17a88512a7899a72ecfa56bc456a12a71012cc2a1f2b5b77bc2c4143b3eb8"
+            "676168a973998b2fdb71d2d8284b9a9e0adf8f2927815ae965398cf4c8184813"
+            "f040c9aeb5be67136054edb4f5870f539aaf15cf2b4e9e4f6b3da9055cc6294c13fc"
+            "28bd272cb8dad7914e7283c1057bd7514d8657ebbf4a9b23852ccc5b0980ca55";
         size_t vn = 0;
         const uint8_t *v = lobby_env(M1, &vn);
         gz_lobby_msg_t mv, mt;
@@ -245,15 +249,17 @@ static void test_m1(lt_signer_t *member)
               memcmp(mv.scope, od, 32) == 0 && mv.records == v + GZ_LOBBY_ENV_HDR && mv.records_len == vn - GZ_LOBBY_ENV_HDR);
         CHECK(v && gz_lobby_decode(GZ_KIND_READY, v + 6, v + GZ_LOBBY_ENV_HDR, vn - GZ_LOBBY_ENV_HDR, &mt) == GZ_DEC_OK &&
               mt.version == 1 && mt.signed_len == mv.signed_len && mt.sig == mv.sig);
+        CHECK(v && mv.factory_key && memcmp(mv.factory_key, member->key[3].pub, 33) == 0 && mv.bind_by_contribution &&
+              memcmp(mv.bind_by_contribution, sig, 64) == 0);
         if (v) {
             gz_lobby_msg_hash(&mv, h);
-            CHECK(hexeq(h, 32, "683a9673360b942f37224c92dfeb58765fc9085e14bae4c6120b46c5be42f8d0"));
+            CHECK(hexeq(h, 32, "35296630cb14a6dec24fa4750eda07d6fcd7c20978537e5d68e079360c5d1994"));
         }
     }
     CHECK(gz_lobby_decode_env(buf, n, &m) == GZ_DEC_OK && m.kind == GZ_KIND_READY && m.version == 1);
     CHECK(!m.has_check_id && !m.has_min_members && m.sig == buf + n - 64 && m.signed_len == n - GZ_LOBBY_ENV_HDR - 66);
     gz_lobby_msg_hash(&m, h);
-    CHECK(hexeq(h, 32, "683a9673360b942f37224c92dfeb58765fc9085e14bae4c6120b46c5be42f8d0"));
+    CHECK(hexeq(h, 32, "35296630cb14a6dec24fa4750eda07d6fcd7c20978537e5d68e079360c5d1994"));
     CHECK(lt_verify(NULL, member->key[2].pub, h, m.sig));
 }
 
@@ -299,18 +305,23 @@ static void test_envelope(lt_signer_t *member)
     static uint8_t buf[70000], pad[70000];
     uint8_t x[400];
     size_t n;
-    uint8_t cd[32];
+    uint8_t cd[32], bnd[32], bsig[64];
     gz_terms_current_digest(t2, t2n, cd);
+    /* K1: every ready carries the factory key (12) and the contribution key's binding (14), after the
+     * records the cases below add (types 9 to 11) */
+    gz_lobby_binding(od, member->key[3].pub, member->key[2].pub, bnd);
+    cr.sign(cr.ctx, GZ_LOBBY_KEY_CONTRIBUTION, bnd, bsig);
 #define BUILD(extra) do { gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_READY, od); \
     gz_lobby_enc_record(&e, 2, od, 32); gz_lobby_enc_u32(&e, 4, 1); \
-    gz_lobby_enc_record(&e, 6, cd, 32); extra; n = gz_lobby_enc_sign(&e, &cr, 2); } while (0)
+    gz_lobby_enc_record(&e, 6, cd, 32); extra; gz_lobby_enc_record(&e, 12, member->key[3].pub, 33); \
+    gz_lobby_enc_record(&e, 14, bsig, 64); n = gz_lobby_enc_sign(&e, &cr, 2); } while (0)
     BUILD(gz_lobby_enc_record(&e, 9, (const uint8_t *)"x", 1));
     CHECK(gz_lobby_decode_env(buf, n, &m) == GZ_DEC_OK);          /* unknown odd: skipped */
     {
         uint8_t h[32];
         gz_lobby_msg_hash(&m, h);
         CHECK(lt_verify(NULL, member->key[2].pub, h, m.sig));
-        buf[n - 64 - 2 - 1] ^= 1;                               /* the odd record changed */
+        buf[38 + 34 + 6 + 34 + 2] ^= 1;                         /* the odd record changed (its byte, K1: before 12 and 14) */
         gz_lobby_decode_env(buf, n, &m);
         gz_lobby_msg_hash(&m, h);
         CHECK(!lt_verify(NULL, member->key[2].pub, h, m.sig));
@@ -410,14 +421,19 @@ static void test_kinds(lt_signer_t *member)
     memset(a, 0x33, sizeof a);
     memset(k32, 0x44, 32);
     for (opt = 0; opt < 2; opt++) {
+        /* K1: a join carries no factory key and no binding, only the optional display name */
+        gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_JOIN, od);
+        if (opt) gz_lobby_enc_record(&e, 7, (const uint8_t *)"Ana", 3);
+        n = gz_lobby_enc_done(&e);
+        CHECK(gz_lobby_decode_env(buf, n, &m) == GZ_DEC_OK && m.kind == GZ_KIND_JOIN && m.factory_key == NULL);
+        CHECK(opt ? m.display_name_len == 3 && memcmp(m.display_name, "Ana", 3) == 0 : m.display_name == NULL);
+        /* a join of the old form (the factory key, its two bindings): unknown even records, refused */
         gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_JOIN, od);
         gz_lobby_enc_record(&e, 2, member->key[3].pub, 33);
         gz_lobby_enc_record(&e, 4, a, 64);
         gz_lobby_enc_record(&e, 6, a, 64);
-        if (opt) gz_lobby_enc_record(&e, 7, (const uint8_t *)"Ana", 3);
         n = gz_lobby_enc_done(&e);
-        CHECK(gz_lobby_decode_env(buf, n, &m) == GZ_DEC_OK && m.kind == GZ_KIND_JOIN && memcmp(m.factory_key, member->key[3].pub, 33) == 0);
-        CHECK(m.bind_by_factory == buf + 38 + 35 + 2 && (opt ? m.display_name_len == 3 && memcmp(m.display_name, "Ana", 3) == 0 : m.display_name == NULL));
+        CHECK(gz_lobby_decode_env(buf, n, &m) != GZ_DEC_OK);
         gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_UNREADY, od);
         if (opt) gz_lobby_enc_u16(&e, 1, 2);
         n = gz_lobby_enc_done(&e);
@@ -436,6 +452,8 @@ static void test_kinds(lt_signer_t *member)
         gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_READY, od);
         gz_lobby_enc_record(&e, 2, od, 32); gz_lobby_enc_u32(&e, 4, 9); gz_lobby_enc_record(&e, 6, k32, 32);
         if (opt) { gz_lobby_enc_record(&e, 8, a, 32); gz_lobby_enc_u16(&e, 11, 40); }
+        gz_lobby_enc_record(&e, 12, member->key[3].pub, 33);   /* K1: required in every ready */
+        gz_lobby_enc_record(&e, 14, a, 64);
         n = gz_lobby_enc_sign(&e, &cr, 2);
         CHECK(gz_lobby_decode_env(buf, n, &m) == GZ_DEC_OK && m.version == 9 && memcmp(m.current_digest, k32, 32) == 0);
         CHECK(m.has_check_id == opt && m.has_min_members == opt && m.min_members == (opt ? 40 : 0) && m.signed_len == n - 38 - 66);
@@ -535,10 +553,7 @@ static void test_kinds(lt_signer_t *member)
         uint8_t nm[40];
         memset(nm, 'n', sizeof nm);
         for (L = 0; L <= 33; L += (L == 1 ? 31 : 1)) {
-            gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_JOIN, od);
-            gz_lobby_enc_record(&e, 2, member->key[3].pub, 33);
-            gz_lobby_enc_record(&e, 4, a, 64);
-            gz_lobby_enc_record(&e, 6, a, 64);
+            gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_JOIN, od);   /* K1: the name alone */
             gz_lobby_enc_record(&e, 7, nm, L);
             n = gz_lobby_enc_done(&e);
             CHECK((gz_lobby_decode_env(buf, n, &m) == GZ_DEC_OK) == (L >= 1 && L <= 32));

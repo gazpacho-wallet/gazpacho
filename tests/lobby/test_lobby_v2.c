@@ -3,7 +3,8 @@
  *   - the largest record of every type: each row of gz_lobby_rec_table built
  *     at its largest legal content, through the real engines where they can
  *     produce it (32 seats all answering a check, terms of 4,096 bytes with
- *     every adjustable type, saved messages of 256 bytes) and with gz_lr_*
+ *     every adjustable type, saved messages of GZ_LOBBY_MAX_SAVED_MSG, 384
+ *     bytes under K1) and with gz_lr_*
  *     where they cannot; no larger than its row; taken by the engine's own
  *     restore, also padded to exactly the row's size; refused one byte over;
  *   - the member's signing gate, by outcome: what is saved, what is sent,
@@ -198,17 +199,12 @@ static int largest(const journal_t *j, uint32_t type)
 
 static uint8_t PADB[400];
 
+/* K1: a join is the envelope alone (the link proves the contribution key); `who` is the sender. */
 static size_t join_env(uint8_t *buf, size_t cap, const uint8_t *scope, int who)
 {
-    uint8_t b[32], sf[64], sc[64];
     gz_lobby_enc_t e;
-    gz_lobby_binding(scope, MEM[who].key[3].pub, MEM[who].key[2].pub, b);
-    lt_sign(&MEM[who], 3, b, sf);
-    lt_sign(&MEM[who], 2, b, sc);
+    (void)who;
     gz_lobby_enc_start(&e, buf, cap, GZ_KIND_JOIN, scope);
-    gz_lobby_enc_record(&e, 2, MEM[who].key[3].pub, 33);
-    gz_lobby_enc_record(&e, 4, sf, 64);
-    gz_lobby_enc_record(&e, 6, sc, 64);
     return gz_lobby_enc_done(&e);
 }
 
@@ -225,6 +221,13 @@ static size_t ready_env(uint8_t *buf, size_t cap, const uint8_t *scope, int who,
     if (check) gz_lobby_enc_record(&e, 8, check, 32);
     if (pad) gz_lobby_enc_record(&e, 9, PADB, pad);
     if (min) gz_lobby_enc_u16(&e, 11, min);
+    {   /* K1: the member's factory key and the contribution key's binding of it in this lobby */
+        uint8_t b[32], sc[64];
+        gz_lobby_binding(scope, MEM[who].key[3].pub, MEM[who].key[2].pub, b);
+        lt_sign(&MEM[who], 2, b, sc);
+        gz_lobby_enc_record(&e, 12, MEM[who].key[3].pub, 33);
+        gz_lobby_enc_record(&e, 14, sc, 64);
+    }
     return gz_lobby_enc_sign(&e, &cr, GZ_LOBBY_KEY_CONTRIBUTION);
 }
 
@@ -270,7 +273,7 @@ static size_t host_env_sized(uint8_t *buf, size_t cap, const uint8_t *scope, uin
                              size_t want)
 {
     size_t pad, n;
-    for (pad = 1; pad < 250; pad++) {
+    for (pad = 1; pad < sizeof PADB; pad++) {
         n = host_env(buf, cap, scope, kind, check, version, digest, role, signers, reason, pad, &HOST);
         if (n == want) return n;
     }
@@ -281,7 +284,7 @@ static size_t ready_env_sized(uint8_t *buf, size_t cap, const uint8_t *scope, in
                               const uint8_t *digest, const uint8_t *check, size_t want)
 {
     size_t pad, n;
-    for (pad = 1; pad < 250; pad++) {
+    for (pad = 1; pad < sizeof PADB; pad++) {
         n = ready_env(buf, cap, scope, who, version, digest, check, 0, pad);
         if (n == want) return n;
     }
@@ -465,7 +468,7 @@ static void test_helpers(void)
     static gz_lobby_host_t h;
     gz_link_t l = hlink(5);
     gz_lobby_msg_t g;
-    uint8_t other[32], cancel[300], bad[300], rb[GZ_LOBBY_REC_MAX_ENDED + 8], sc[32], st;
+    uint8_t other[32], cancel[GZ_LOBBY_MAX_SAVED_MSG + 16], bad[GZ_LOBBY_MAX_SAVED_MSG + 16], rb[GZ_LOBBY_REC_MAX_ENDED + 8], sc[32], st;
     uint16_t reason;
     const uint8_t *ec;
     size_t cn, ecn, rn;
@@ -511,10 +514,10 @@ static void test_helpers(void)
     CHECK(gz_lobby_host_ended(&l, other, GZ_LOBBY_CANCELLED, 2, cancel, cn - 1, &A.l) == GZ_OK && A.l.count == 1);
     rn = host_env_sized(bad, sizeof bad, other, GZ_KIND_CANCEL, NULL, 0, NULL, 0, 0, 2, GZ_LOBBY_MAX_SAVED_MSG + 1);
     acts_reset();                                       /* larger than a saved message */
-    CHECK(rn == 257 && gz_lobby_host_ended(&l, other, GZ_LOBBY_CANCELLED, 2, bad, rn, &A.l) == GZ_OK && A.l.count == 1);
+    CHECK(rn == GZ_LOBBY_MAX_SAVED_MSG + 1 && gz_lobby_host_ended(&l, other, GZ_LOBBY_CANCELLED, 2, bad, rn, &A.l) == GZ_OK && A.l.count == 1);
     rn = host_env_sized(bad, sizeof bad, other, GZ_KIND_CANCEL, NULL, 0, NULL, 0, 0, 2, GZ_LOBBY_MAX_SAVED_MSG);
     acts_reset();                                       /* the largest: sent */
-    CHECK(rn == 256 && gz_lobby_host_ended(&l, other, GZ_LOBBY_CANCELLED, 2, bad, rn, &A.l) == GZ_OK && A.l.count == 2);
+    CHECK(rn == GZ_LOBBY_MAX_SAVED_MSG && gz_lobby_host_ended(&l, other, GZ_LOBBY_CANCELLED, 2, bad, rn, &A.l) == GZ_OK && A.l.count == 2);
     CHECK(gz_lobby_host_ended(NULL, other, 6, 2, NULL, 0, &A.l) == GZ_ERR_ARGUMENT &&
           gz_lobby_host_ended(&l, NULL, 6, 2, NULL, 0, &A.l) == GZ_ERR_ARGUMENT &&
           gz_lobby_host_ended(&l, other, 6, 2, NULL, 0, NULL) == GZ_ERR_ARGUMENT);
@@ -567,12 +570,12 @@ static void test_helpers(void)
         CHECK(gz_lobby_rec_ended(&r, sc, &st, &reason, &ec, &ecn) && st == 0 && reason == 2 && ecn == 0 && ec == NULL);
         CHECK(!gz_lobby_rec_scope(NULL, sc) && !gz_lobby_rec_scope(&r, NULL));
     }
-    /* the table: twelve rows, each type once, the largest of all is GZ_LOBBY_REC_MAX */
+    /* the table: thirteen rows (K1 adds seat_key), each type once, the largest of all is GZ_LOBBY_REC_MAX */
     {
         size_t nt = 0, i, k;
         const gz_lobby_rec_max_t *t = gz_lobby_rec_table(&nt);
         uint32_t top = 0;
-        CHECK(t != NULL && nt == 12 && gz_lobby_rec_table(NULL) == t);
+        CHECK(t != NULL && nt == 13 && gz_lobby_rec_table(NULL) == t);
         for (i = 0; i < nt; i++) {
             CHECK(t[i].max >= GZ_LOBBY_REC_SCOPE && t[i].name && t[i].name[0] && gz_lobby_rec_max(t[i].type) == t[i].max);
             for (k = 0; k < i; k++) CHECK(t[k].type != t[i].type);
@@ -588,13 +591,17 @@ static void test_helpers(void)
                 {GZ_REC_JOINED, GZ_LOBBY_REC_MAX_JOINED}, {GZ_REC_READY_SENT, GZ_LOBBY_REC_MAX_READY_SENT},
                 {GZ_REC_HOST_FAULT, GZ_LOBBY_REC_MAX_HOST_FAULT}, {GZ_REC_START_SENT, GZ_LOBBY_REC_MAX_START_SENT},
                 {GZ_REC_START_RECEIVED, GZ_LOBBY_REC_MAX_START_RECEIVED}, {GZ_REC_LOBBY_STATE, GZ_LOBBY_REC_MAX_STATE},
+                {GZ_REC_SEAT_KEY, GZ_LOBBY_REC_MAX_SEAT_KEY},
             };
             for (i = 0; i < sizeof want / sizeof want[0]; i++) CHECK(gz_lobby_rec_max(want[i].type) == want[i].max);
             CHECK(sizeof want / sizeof want[0] == nt);
-            CHECK(GZ_LOBBY_REC_MAX_OPENED == 5300 && GZ_LOBBY_REC_MAX_VERSION == 1132 && GZ_LOBBY_REC_MAX_SEAT == 537 &&
-                  GZ_LOBBY_REC_MAX_FREEZE == 376 && GZ_LOBBY_REC_MAX_ENDED == 312 && GZ_LOBBY_REC_MAX_JOINED == 296 &&
-                  GZ_LOBBY_REC_MAX_READY_SENT == 296 && GZ_LOBBY_REC_MAX_HOST_FAULT == 2225 &&
-                  GZ_LOBBY_REC_MAX_START_SENT == 9400 && GZ_LOBBY_REC_MAX_START_RECEIVED == 296 && GZ_LOBBY_REC_MAX_STATE == 77);
+            /* K1: a saved message is up to 384 bytes (was 256), the seat has no factory binding (64 bytes fewer),
+             * and seat_key is new: 36 scope + 37 key + 8 + 8 + 68 for the first bind_by_contribution (review H1) */
+            CHECK(GZ_LOBBY_REC_MAX_OPENED == 5300 && GZ_LOBBY_REC_MAX_VERSION == 1132 && GZ_LOBBY_REC_MAX_SEAT == 597 &&
+                  GZ_LOBBY_REC_MAX_FREEZE == 504 && GZ_LOBBY_REC_MAX_ENDED == 440 && GZ_LOBBY_REC_MAX_JOINED == 424 &&
+                  GZ_LOBBY_REC_MAX_READY_SENT == 424 && GZ_LOBBY_REC_MAX_HOST_FAULT == 2225 &&
+                  GZ_LOBBY_REC_MAX_START_SENT == 13496 && GZ_LOBBY_REC_MAX_START_RECEIVED == 424 && GZ_LOBBY_REC_MAX_STATE == 77 &&
+                  GZ_LOBBY_REC_MAX_SEAT_KEY == 157);
         }
     }
 }
@@ -683,20 +690,25 @@ static void test_no_key(void)
     CHECK(htimer(&h, GZ_LOBBY_TIMER_DEADLINE) == GZ_OK && h.state == GZ_LOBBY_CANCELLED && h.end_reason == 1 &&
           note(GZ_NOTE_NO_KEY, GZ_LOBBY_KEY_HOST, -1) && saves(GZ_REC_LOBBY_ENDED) == 1 && sends(GZ_KIND_CANCEL) == 0);
 
-    /* MEMBER. The factory key missing: no join, nothing saved, nothing sent */
+    /* MEMBER. K1: a join needs no key (before K1 the factory key signed it, and its absence stopped the join).
+     * The contribution key missing at the first ready: the join goes, the note names the contribution key,
+     * and no ready, no seat_key and no ready_sent are saved or sent */
     CLOCK = W_T0 - 3600000;
     member_new(&m, 1, &mk, SCOPE, 0, &cond);
     m_in(&m, 1, GZ_LIN_CONNECTED);
     on = offer_env(ob, sizeof ob, SCOPE, T1, T1N, T2, T2N, &HOST);
     mk.fail_sign = 1;
-    CHECK(feed(&m, 1, ob, on) == GZ_OK && note(GZ_NOTE_NO_KEY, GZ_LOBBY_KEY_FACTORY, -1) && A.l.count == 1 && !m.joined &&
-          m.have_terms && !m.ready && m.join_len == 0);
-    acts_reset();                                       /* and again at the person's word: still nothing */
-    CHECK(gz_lobby_member_set_conditions(&m, &cond, &A.l) == GZ_OK && notes(GZ_NOTE_NO_KEY) == 1 && A.l.count == 1 && !m.joined);
-    mk.fail_sign = 0;                                   /* the key is back: joined and ready */
+    CHECK(feed(&m, 1, ob, on) == GZ_OK && note(GZ_NOTE_NO_KEY, GZ_LOBBY_KEY_CONTRIBUTION, -1) && notes(GZ_NOTE_NO_KEY) == 1 &&
+          sends(GZ_KIND_JOIN) == 1 && sends(GZ_KIND_READY) == 0 && saves(GZ_REC_JOINED) == 1 &&
+          saves(GZ_REC_READY_SENT) == 0 && saves(GZ_REC_SEAT_KEY) == 0 && m.joined && m.have_terms && !m.ready &&
+          !m.seat_key_saved);
+    acts_reset();                                       /* and again at the person's word: still no ready */
+    CHECK(gz_lobby_member_set_conditions(&m, &cond, &A.l) == GZ_OK && notes(GZ_NOTE_NO_KEY) == 1 && A.l.count == 1 &&
+          m.joined && !m.ready);
+    mk.fail_sign = 0;                                   /* the key is back: ready, its seat_key saved with it */
     acts_reset();
-    CHECK(gz_lobby_member_set_conditions(&m, &cond, &A.l) == GZ_OK && sends(GZ_KIND_JOIN) == 1 && sends(GZ_KIND_READY) == 1 &&
-          saves(GZ_REC_JOINED) == 1 && saves(GZ_REC_READY_SENT) == 1 && m.joined && m.ready);
+    CHECK(gz_lobby_member_set_conditions(&m, &cond, &A.l) == GZ_OK && sends(GZ_KIND_JOIN) == 0 && sends(GZ_KIND_READY) == 1 &&
+          saves(GZ_REC_SEAT_KEY) == 1 && saves(GZ_REC_READY_SENT) == 1 && m.joined && m.ready);
     /* a ready that cannot be signed: the note; not ready for the new values, nothing saved for them */
     {
         uint8_t t3[128], ob3[8000];
@@ -917,7 +929,7 @@ static void test_largest(void)
         CHECK(n > 0 && hin(&h, GZ_LIN_MESSAGE, k, buf, n) == GZ_OK && saves(GZ_REC_SEAT) == 1);
         keep(&HJ);
     }
-    CHECK(h.n_seats == 32 && h.state == GZ_LOBBY_READY_CHECK && sends(GZ_KIND_READY_CHECK) == 32 && h.seats[0].ready_len == 256);
+    CHECK(h.n_seats == 32 && h.state == GZ_LOBBY_READY_CHECK && sends(GZ_KIND_READY_CHECK) == 32 && h.seats[0].ready_len == GZ_LOBBY_MAX_SAVED_MSG);
     CHECK(last_sent(GZ_KIND_READY_CHECK, &g));
     memcpy(chk, g.check_id, 32);
     for (k = 1; k <= 32; k++) {
@@ -943,7 +955,7 @@ static void test_largest(void)
     CHECK(gz_lobby_host_resume(&h2, &A.l) == GZ_OK && h2.state == GZ_LOBBY_CANCELLED && h2.n_seats == 32);
 
     /* A MEMBER of the same lobby (version 1 of the values): terms of 4,096
-     * bytes, then a ready check, a start and a cancel of 256 bytes each */
+     * bytes, then a ready check, a start and a cancel of GZ_LOBBY_MAX_SAVED_MSG (384) bytes each */
     CLOCK = W_T0 - 3600000;
     member_new(&m, 1, &MEM[1], BSCOPE, 0, &BCOND);
     m_in(&m, 1, GZ_LIN_CONNECTED);
@@ -952,13 +964,13 @@ static void test_largest(void)
           saves(GZ_REC_READY_SENT) == 1 && m.joined && m.ready);
     keep(&MJ);
     n = host_env_sized(buf, sizeof buf, BSCOPE, GZ_KIND_READY_CHECK, c1, 1, BCD, 0, 0, 0, GZ_LOBBY_MAX_SAVED_MSG);
-    CHECK(n == 256 && feed(&m, 1, buf, n) == GZ_OK && saves(GZ_REC_FREEZE) == 1 && saves(GZ_REC_READY_SENT) == 1 && m.frozen);
+    CHECK(n == GZ_LOBBY_MAX_SAVED_MSG && feed(&m, 1, buf, n) == GZ_OK && saves(GZ_REC_FREEZE) == 1 && saves(GZ_REC_READY_SENT) == 1 && m.frozen);
     keep(&MJ);
     n = host_env_sized(buf, sizeof buf, BSCOPE, GZ_KIND_START, c1, 0, NULL, 1, 4, 0, GZ_LOBBY_MAX_SAVED_MSG);
-    CHECK(n == 256 && feed(&m, 1, buf, n) == GZ_OK && saves(GZ_REC_START_RECEIVED) == 1 && m.start_len == 256);
+    CHECK(n == GZ_LOBBY_MAX_SAVED_MSG && feed(&m, 1, buf, n) == GZ_OK && saves(GZ_REC_START_RECEIVED) == 1 && m.start_len == GZ_LOBBY_MAX_SAVED_MSG);
     keep(&MJ);
     n = host_env_sized(buf, sizeof buf, BSCOPE, GZ_KIND_START, c1, 0, NULL, 1, 4, 0, GZ_LOBBY_MAX_SAVED_MSG + 1);
-    {   /* a start of 257 bytes is not kept, so not taken (a second member, the same way) */
+    {   /* a start a byte over GZ_LOBBY_MAX_SAVED_MSG is not kept, so not taken (a second member, the same way) */
         static gz_lobby_member_t mx;
         uint8_t ck[300];
         size_t cn2 = host_env(ck, sizeof ck, BSCOPE, GZ_KIND_READY_CHECK, c1, 1, BCD, 0, 0, 0, 0, &HOST);
@@ -966,13 +978,13 @@ static void test_largest(void)
         m_in(&mx, 1, GZ_LIN_CONNECTED);
         feed(&mx, 1, ob, on);
         feed(&mx, 1, ck, cn2);
-        CHECK(n == 257 && feed(&mx, 1, buf, n) == GZ_OK && A.l.count == 0 && mx.start_len == 0);
+        CHECK(n == GZ_LOBBY_MAX_SAVED_MSG + 1 && feed(&mx, 1, buf, n) == GZ_OK && A.l.count == 0 && mx.start_len == 0);
     }
     acts_reset();
     CHECK(gz_lobby_member_round_result(&m, GZ_LOBBY_ROUND_RETRY, c1, &A.l) == GZ_OK && saves(GZ_REC_LOBBY_STATE) == 1);
     keep(&MJ);
     n = host_env_sized(buf, sizeof buf, BSCOPE, GZ_KIND_CANCEL, NULL, 0, NULL, 0, 0, 2, GZ_LOBBY_MAX_SAVED_MSG);
-    CHECK(n == 256 && feed(&m, 1, buf, n) == GZ_OK && saves(GZ_REC_LOBBY_ENDED) == 1 && m.ended);
+    CHECK(n == GZ_LOBBY_MAX_SAVED_MSG && feed(&m, 1, buf, n) == GZ_OK && saves(GZ_REC_LOBBY_ENDED) == 1 && m.ended);
     keep(&MJ);
     {
         static gz_lobby_member_t m2;
@@ -1010,6 +1022,7 @@ static void test_largest(void)
     row(&MJ, 0, GZ_REC_LOBBY_STATE);
     row(&MJ, 0, GZ_REC_LOBBY_ENDED);
     row(&FJ, 0, GZ_REC_HOST_FAULT);
+    row(&MJ, 0, GZ_REC_SEAT_KEY);                       /* K1 */
     for (i = 0; i < nt; i++) {
         CHECK(COVERED[i] >= 1);
         if (!COVERED[i]) printf("  no largest record for row %s\n", tab[i].name);
@@ -1017,11 +1030,12 @@ static void test_largest(void)
     /* the sizes the engines reached: the records whose content they can fill */
     CHECK(HJ.r[largest(&HJ, GZ_REC_LOBBY_OPENED)].bytes.len == 34 + 4 + BON + 66 + 4 + BCN + 66);
     CHECK(MJ.r[largest(&MJ, GZ_REC_TERMS_RECEIVED)].bytes.len == 34 + 4 + BON + 66 + 4 + BCN + 66);
-    CHECK(HJ.r[largest(&HJ, GZ_REC_SEAT)].bytes.len == 34 + 35 + 35 + 66 + 66 + 3 + 4 + 6 + 10 + 4 + 256);
-    CHECK(MJ.r[largest(&MJ, GZ_REC_FREEZE)].bytes.len == 34 + 34 + 6 + 34 + 4 + 256);
-    CHECK(MJ.r[largest(&MJ, GZ_REC_START_RECEIVED)].bytes.len == 34 + 4 + 256);
-    CHECK(MJ.r[largest(&MJ, GZ_REC_LOBBY_ENDED)].bytes.len == 34 + 3 + 4 + 4 + 256);
+    CHECK(HJ.r[largest(&HJ, GZ_REC_SEAT)].bytes.len == 34 + 35 + 35 + 66 + 3 + 4 + 6 + 10 + 4 + GZ_LOBBY_MAX_SAVED_MSG);   /* K1: no bind_f */
+    CHECK(MJ.r[largest(&MJ, GZ_REC_FREEZE)].bytes.len == 34 + 34 + 6 + 34 + 4 + GZ_LOBBY_MAX_SAVED_MSG);
+    CHECK(MJ.r[largest(&MJ, GZ_REC_START_RECEIVED)].bytes.len == 34 + 4 + GZ_LOBBY_MAX_SAVED_MSG);
+    CHECK(MJ.r[largest(&MJ, GZ_REC_LOBBY_ENDED)].bytes.len == 34 + 3 + 4 + 4 + GZ_LOBBY_MAX_SAVED_MSG);
     CHECK(MJ.r[largest(&MJ, GZ_REC_LOBBY_STATE)].bytes.len == 34 + 3 + 34);
+    CHECK(MJ.r[largest(&MJ, GZ_REC_SEAT_KEY)].bytes.len == 34 + 35 + 6 + 6 + 66);   /* K1: key, epoch, index, binding */
     CHECK(FJ.r[largest(&FJ, GZ_REC_HOST_FAULT)].bytes.len == 34 + 3 + 2 * (4 + BCN + 64));
     CHECK(HJ.r[largest(&HJ, GZ_REC_START_SENT)].bytes.len == 34 + 34 + 10 + 4 + 32 * (35 + 145));
     for (i = 0; i < nt; i++) {
@@ -1035,23 +1049,23 @@ static void test_largest(void)
 
     /* WHAT THE ENGINES CANNOT FILL, built with gz_lr_*: the largest legal
      * content of each, taken; one byte more of content, refused. */
-    /* start_sent: 32 seats, each start an envelope of 256 bytes */
+    /* start_sent: 32 seats, each start an envelope of GZ_LOBBY_MAX_SAVED_MSG (384) bytes */
     at = largest(&HJ, GZ_REC_START_SENT);
     if (at >= 0) {
         gz_lr_t w;
-        size_t ln = 0, before257 = 0;
+        size_t ln = 0, before_over = 0;
         int which;
-        for (which = 0; which < 2; which++) {           /* 0: every start 256 bytes; 1: the last one 257 */
+        for (which = 0; which < 2; which++) {           /* 0: every start at the limit; 1: the last one a byte over */
             ln = 0;
             for (k = 1; k <= 32; k++) {
-                size_t want = which == 1 && k == 32 ? 257 : 256;
+                size_t want = which == 1 && k == 32 ? GZ_LOBBY_MAX_SAVED_MSG + 1 : GZ_LOBBY_MAX_SAVED_MSG;
                 /* a start is 145 bytes; an odd record of want - 147 bytes fills it */
                 n = host_env(buf, sizeof buf, BSCOPE, GZ_KIND_START, chk, 0, NULL, 1, 33, 0, want - 147, &HOST);
                 CHECK(n == want);
                 memcpy(list + ln, MEM[k].key[2].pub, 33);
                 gz_lw_put(list + ln + 33, n, 2);
                 memcpy(list + ln + 35, buf, n);
-                if (k == 32) before257 = ln;
+                if (k == 32) before_over = ln;
                 ln += 35 + n;
             }
             gz_lr_start(&w, rb, sizeof rb, BSCOPE);
@@ -1067,41 +1081,37 @@ static void test_largest(void)
                 CHECK(r.bytes.len > 0 && restore_then(&HJ, (size_t)at, 1, &r) == GZ_ERR_CORRUPT);
             }
         }
-        (void)before257;
+        (void)before_over;
     }
-    /* joined and ready_sent: a signed message of 256 bytes; 257 is not one the engine saved */
+    /* joined and ready_sent: a message of GZ_LOBBY_MAX_SAVED_MSG (384) bytes; one byte more is not one the
+     * engine saved. K1: a join carries no keys, so the joined record's bound is reached by its name and an
+     * odd record (later versions' fields, which a join may carry): 38 + 34 + 4 + the padding. */
     at = largest(&MJ, GZ_REC_JOINED);
     if (at >= 0) {
-        uint8_t msg[300], sf[64], sc[64], b32[32];
+        uint8_t msg[GZ_LOBBY_MAX_SAVED_MSG + 16];
         gz_lobby_enc_t e;
         size_t L;
-        gz_lobby_binding(BSCOPE, MEM[1].key[3].pub, MEM[1].key[2].pub, b32);
-        lt_sign(&MEM[1], 3, b32, sf);
-        lt_sign(&MEM[1], 2, b32, sc);
-        for (L = 256; L <= 257; L++) {
+        for (L = GZ_LOBBY_MAX_SAVED_MSG; L <= GZ_LOBBY_MAX_SAVED_MSG + 1; L++) {
             gz_lobby_enc_start(&e, msg, sizeof msg, GZ_KIND_JOIN, BSCOPE);
-            gz_lobby_enc_record(&e, 2, MEM[1].key[3].pub, 33);
-            gz_lobby_enc_record(&e, 4, sf, 64);
-            gz_lobby_enc_record(&e, 6, sc, 64);
             gz_lobby_enc_record(&e, 7, (const uint8_t *)"a display name of 32 bytes ....!", 32);
-            gz_lobby_enc_record(&e, 9, PADB, L - 205 - 34 - 2);
+            gz_lobby_enc_record(&e, 9, PADB, L - GZ_LOBBY_ENV_HDR - 34 - 4);
             n = gz_lobby_enc_done(&e);
             CHECK(n == L);
             r.type = GZ_REC_JOINED; r.bytes.data = rb; r.bytes.len = lt_rec_msg(rb, sizeof rb, BSCOPE, msg, n);
-            CHECK(r.bytes.len > 0 && (L == 257 || r.bytes.len <= GZ_LOBBY_REC_MAX_JOINED));
-            CHECK(restore_then(&MJ, (size_t)at, 0, &r) == (L == 256 ? GZ_OK : GZ_ERR_CORRUPT));
+            CHECK(r.bytes.len > 0 && (L == GZ_LOBBY_MAX_SAVED_MSG + 1 || r.bytes.len <= GZ_LOBBY_REC_MAX_JOINED));
+            CHECK(restore_then(&MJ, (size_t)at, 0, &r) == (L == GZ_LOBBY_MAX_SAVED_MSG ? GZ_OK : GZ_ERR_CORRUPT));
         }
     }
     at = largest(&MJ, GZ_REC_READY_SENT);
     if (at >= 0) {
-        uint8_t msg[300];
+        uint8_t msg[GZ_LOBBY_MAX_SAVED_MSG + 16];
         size_t L;
-        for (L = 256; L <= 257; L++) {
+        for (L = GZ_LOBBY_MAX_SAVED_MSG; L <= GZ_LOBBY_MAX_SAVED_MSG + 1; L++) {
             n = ready_env_sized(msg, sizeof msg, BSCOPE, 1, 1, BCD, c1, L);
             CHECK(n == L);
             r.type = GZ_REC_READY_SENT; r.bytes.data = rb; r.bytes.len = lt_rec_msg(rb, sizeof rb, BSCOPE, msg, n);
-            CHECK(r.bytes.len > 0 && (L == 257 || r.bytes.len <= GZ_LOBBY_REC_MAX_READY_SENT));
-            CHECK(restore_then(&MJ, (size_t)at, 0, &r) == (L == 256 ? GZ_OK : GZ_ERR_CORRUPT));
+            CHECK(r.bytes.len > 0 && (L == GZ_LOBBY_MAX_SAVED_MSG + 1 || r.bytes.len <= GZ_LOBBY_REC_MAX_READY_SENT));
+            CHECK(restore_then(&MJ, (size_t)at, 0, &r) == (L == GZ_LOBBY_MAX_SAVED_MSG ? GZ_OK : GZ_ERR_CORRUPT));
         }
     }
     /* host_fault: two pieces of evidence of 1,088 bytes (a current record of 1,024 and its signature) */
@@ -1124,15 +1134,15 @@ static void test_largest(void)
     /* freeze and lobby_ended: the saved message one byte over */
     at = largest(&MJ, GZ_REC_FREEZE);
     if (at >= 0) {
-        uint8_t msg[300];
-        n = host_env_sized(msg, sizeof msg, BSCOPE, GZ_KIND_READY_CHECK, c1, 1, BCD, 0, 0, 0, 257);
+        uint8_t msg[GZ_LOBBY_MAX_SAVED_MSG + 16];
+        n = host_env_sized(msg, sizeof msg, BSCOPE, GZ_KIND_READY_CHECK, c1, 1, BCD, 0, 0, 0, GZ_LOBBY_MAX_SAVED_MSG + 1);
         r.type = GZ_REC_FREEZE; r.bytes.data = rb;
         r.bytes.len = lt_rec_freeze(rb, sizeof rb, BSCOPE, c1, 1, BCD, msg, n);
-        CHECK(n == 257 && r.bytes.len > 0 && restore_then(&MJ, (size_t)at, 0, &r) == GZ_ERR_CORRUPT);
-        n = host_env_sized(msg, sizeof msg, BSCOPE, GZ_KIND_CANCEL, NULL, 0, NULL, 0, 0, 2, 257);
+        CHECK(n == GZ_LOBBY_MAX_SAVED_MSG + 1 && r.bytes.len > 0 && restore_then(&MJ, (size_t)at, 0, &r) == GZ_ERR_CORRUPT);
+        n = host_env_sized(msg, sizeof msg, BSCOPE, GZ_KIND_CANCEL, NULL, 0, NULL, 0, 0, 2, GZ_LOBBY_MAX_SAVED_MSG + 1);
         r.type = GZ_REC_LOBBY_ENDED;
         r.bytes.len = lt_rec_ended(rb, sizeof rb, BSCOPE, GZ_LOBBY_CANCELLED, 2, msg, n);
-        CHECK(n == 257 && r.bytes.len > 0 && restore_then(&MJ, MJ.n - 1, 0, &r) == GZ_ERR_CORRUPT);
+        CHECK(n == GZ_LOBBY_MAX_SAVED_MSG + 1 && r.bytes.len > 0 && restore_then(&MJ, MJ.n - 1, 0, &r) == GZ_ERR_CORRUPT);
         CHECK(restore_then(&HJ, HJ.n - 1, 1, &r) == GZ_ERR_CORRUPT);
     }
     /* a record of another lobby is not this engine's, on either side: also a
@@ -1322,7 +1332,7 @@ static void test_gate(void)
      * a fifth pair's ready is refused by the limit of 10 changes in 10
      * minutes (its unready, a move out, is always taken). */
     {
-        uint8_t un3[64], rd[300];
+        uint8_t un3[64], rd[GZ_LOBBY_MAX_SAVED_MSG];   /* K1: a ready with a check is 313 bytes */
         size_t un3n = reason_env(un3, sizeof un3, SCOPE, GZ_KIND_UNREADY, 3), rn;
         rn = ready_env(rd, sizeof rd, SCOPE, 1, 1, CD2, NULL, 0, 0);
         for (k = 1; k <= 4; k++) {
@@ -1341,7 +1351,7 @@ static void test_gate(void)
         n = join_env(buf, sizeof buf, SCOPE, 2);
         CHECK(hin(&h, GZ_LIN_MESSAGE, 2, buf, n) == GZ_OK && saves(GZ_REC_SEAT) == 1);
         {
-            uint8_t un2[64], rd2[300];
+            uint8_t un2[64], rd2[GZ_LOBBY_MAX_SAVED_MSG];
             size_t un2n = reason_env(un2, sizeof un2, SCOPE, GZ_KIND_UNREADY, 2), r2n;
             gz_lobby_seat_t *s2 = seat(&h, 2);
             r2n = ready_env(rd2, sizeof rd2, SCOPE, 2, 1, CD2, NULL, 0, 0);

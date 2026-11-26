@@ -73,7 +73,8 @@
  * closed as idle is the node part's rule (composite-node.md section 3); the
  * lobby sees only connections bound to it. */
 #define GZ_LOBBY_MAX_CONNS     64
-#define GZ_LOBBY_MAX_SAVED_MSG 256      /* a saved ready, start, ready_check or cancel, as an envelope */
+#define GZ_LOBBY_MAX_SAVED_MSG 384      /* a saved ready, start, ready_check or cancel, as an envelope (K1: a
+                                         * ready with its factory key and binding is 317 bytes at most) */
 #define GZ_LOBBY_STATUS_MAX    64       /* a lobby_status envelope: 38 + 3 + 3 + 6 + 4 + 4 + 4 */
 #define GZ_LOBBY_MAX_ADDRESS   64       /* a host address, "host:port" (GZ_CONNECT_MAX_ADDRESS) */
 
@@ -87,7 +88,7 @@
 #define GZ_LOBBY_REC_MAX_OPENED       (GZ_LOBBY_REC_SCOPE + GZ_LOBBY_FIELD(GZ_TERMS_OUTER_MAX) + GZ_LOBBY_FIELD(64u) + \
                                        GZ_LOBBY_FIELD(GZ_TERMS_CURRENT_MAX) + GZ_LOBBY_FIELD(64u))
 #define GZ_LOBBY_REC_MAX_VERSION      (GZ_LOBBY_REC_SCOPE + GZ_LOBBY_FIELD(GZ_TERMS_CURRENT_MAX) + GZ_LOBBY_FIELD(64u))
-#define GZ_LOBBY_REC_MAX_SEAT         (GZ_LOBBY_REC_SCOPE + 2u * GZ_LOBBY_FIELD(33u) + 2u * GZ_LOBBY_FIELD(64u) + \
+#define GZ_LOBBY_REC_MAX_SEAT         (GZ_LOBBY_REC_SCOPE + 2u * GZ_LOBBY_FIELD(33u) + GZ_LOBBY_FIELD(64u) + \
                                        GZ_LOBBY_FIELD(1u) + GZ_LOBBY_FIELD(2u) + GZ_LOBBY_FIELD(4u) + \
                                        GZ_LOBBY_FIELD(8u) + GZ_LOBBY_FIELD(GZ_LOBBY_MAX_SAVED_MSG))
 #define GZ_LOBBY_REC_MAX_FREEZE       (GZ_LOBBY_REC_SCOPE + GZ_LOBBY_FIELD(32u) + GZ_LOBBY_FIELD(4u) + \
@@ -104,6 +105,7 @@
                                        GZ_LOBBY_FIELD(GZ_LOBBY_MAX_SEATS * GZ_LOBBY_START_ITEM))
 #define GZ_LOBBY_REC_MAX_START_RECEIVED (GZ_LOBBY_REC_SCOPE + GZ_LOBBY_FIELD(GZ_LOBBY_MAX_SAVED_MSG))
 #define GZ_LOBBY_REC_MAX_STATE        (GZ_LOBBY_REC_SCOPE + GZ_LOBBY_FIELD(1u) + GZ_LOBBY_FIELD(32u))
+#define GZ_LOBBY_REC_MAX_SEAT_KEY     (GZ_LOBBY_REC_SCOPE + GZ_LOBBY_FIELD(33u) + 2u * GZ_LOBBY_FIELD(4u) + GZ_LOBBY_FIELD(64u))
 #define GZ_LOBBY_REC_MAX              GZ_LOBBY_REC_MAX_START_SENT   /* the largest of all (asserted) */
 /* The table itself, for readers and tests: `*n` rows of (type, largest size). */
 typedef struct { uint32_t type; uint32_t max; const char *name; } gz_lobby_rec_max_t;
@@ -196,7 +198,7 @@ typedef struct {
     const uint8_t *outer, *outer_sig, *current, *current_sig;
     size_t outer_len, current_len;
     /* join */
-    const uint8_t *factory_key, *bind_by_factory, *bind_by_contribution, *display_name;
+    const uint8_t *factory_key, *bind_by_contribution, *display_name;   /* ready's records 12, 14 (K1) */
     size_t display_name_len;
     /* ready, ready_check, start */
     const uint8_t *outer_digest, *current_digest, *check_id;
@@ -284,6 +286,7 @@ enum { GZ_SEAT_NONE = 0, GZ_SEAT_JOINED, GZ_SEAT_READY, GZ_SEAT_CHOSEN, GZ_SEAT_
 #define GZ_REC_START_RECEIVED 0x00010016u
 #define GZ_REC_TERMS_VERSION  0x00010004u   /* host: a new current version, before it is sent */
 #define GZ_REC_LOBBY_STATE    0x00010018u   /* the signing outcome: host and member (new; docs/notes/lobby.md) */
+#define GZ_REC_SEAT_KEY       0x0001001cu   /* member: its seat's factory key, saved before the first ready (K1) */
 
 /* Notification codes (GZ_ACTION_NOTIFY). Bytes: see each. 0x4c01 (close)
  * and 0x4c08 (seated) are gone: DISCONNECT and SET_SEATED replace them. */
@@ -356,7 +359,7 @@ typedef struct {
 /* --------------------------------------------------------------- host */
 
 typedef struct {
-    uint8_t ckey[33], fkey[33], bind_f[64], bind_c[64];
+    uint8_t ckey[33], fkey[33], bind_c[64];   /* fkey: all zero until the seat's first ready (K1) */
     uint8_t state;
     uint16_t min_members;
     uint32_t ready_version;
@@ -559,6 +562,7 @@ typedef struct {
     uint8_t address[GZ_LOBBY_MAX_ADDRESS]; uint8_t address_len;   /* "host:port", numeric */
     uint32_t key_epoch, key_index;   /* of the contribution key: CONNECT names them */
     int auto_join;
+    uint32_t test_ready_cap;         /* tests only (the node sets it in test builds): see node.h */
     uint32_t max_tree_nodes;         /* as the host's: terms past it are refused before any seat */
 } gz_lobby_member_config_t;
 
@@ -601,6 +605,10 @@ typedef struct {
     int resends;                     /* state messages resent on lobby_status, this connection */
     int retries;                     /* joins again after a refusal for a limit, this connection */
     int sent_here;                   /* the join was already sent on this connection */
+    uint32_t test_ready_cap;         /* tests only: the ready's buffer, shrunk (0: the whole) */
+    int seat_key_saved;              /* the seat's factory key is saved (K1: before the first ready) */
+    uint8_t seat_bind_c[64];         /* seat_key field 10: the first ready's bind_by_contribution, sent in every
+                                      * later ready byte for byte (BD3, review H1) */
     uint32_t max_tree_nodes;         /* the config's (M2) */
     int heard_here;                  /* the host sent this lobby a message on this connection */
     int hello_tries;                 /* hellos asked again on this connection, unanswered */
