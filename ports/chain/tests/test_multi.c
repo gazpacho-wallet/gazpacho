@@ -1608,6 +1608,208 @@ static void test_broadcast(test_state *T) {
   mfx_close(&x);
 }
 
+/* ---- packages ---- */
+
+#define PKG_OK(id) "\"" id "\":{\"txid\":\"" id "\",\"vsize\":61,\"fees\":{\"base\":0.00000240}}"
+#define PKG_ERR(id, why) "\"" id "\":{\"txid\":\"" id "\",\"error\":\"" why "\"}"
+#define PKG_ANSWER(msg, entries) \
+  "{\"package_msg\":\"" msg "\",\"tx-results\":{" entries "},\"replaced-transactions\":[]}"
+#define PKG_SUCCESS PKG_ANSWER("success", PKG_OK(TX_A) "," PKG_OK(TX_SPENDER))
+#define PKG_FAILED(why_parent)                                                 \
+  PKG_ANSWER("transaction failed", PKG_ERR(TX_A, why_parent) "," PKG_ERR(TX_SPENDER, \
+                                                                         "unevaluated"))
+
+/* Sent to both servers; each server's whole result is in the report, and
+ * the two may disagree. */
+static void test_package_to_every_server(test_state *T) {
+  mfx x;
+  ids k;
+  gz_package_result pr;
+  gz_chain_tip tip;
+  uint8_t parent[1024], child[1024], spender[GZ_HASH_LEN];
+  mfx_open(&x, 2);
+  ids_init(&k);
+  test_hash(TX_SPENDER, spender);
+  size_t plen = load_raw("tx_a_hex.txt", parent, sizeof parent);
+  size_t clen = load_raw("tx_spender_hex.txt", child, sizeof child);
+  const gz_multi_report *rep = gz_multi_last_report(&x.multi);
+  CHECK_RESULT(gz_chain_tip_get(&x.multi, &tip), GZ_CHAIN_OK);
+#define SEND() gz_chain_broadcast_package(&x.multi, parent, plen, child, clen, &pr)
+
+  /* both accept: each was sent it once */
+  fake_set(&x.fake[0], true, B0 "/txs/package", 200, PKG_SUCCESS);
+  fake_set(&x.fake[1], true, B1 "/txs/package", 200, PKG_SUCCESS);
+  CHECK_RESULT(SEND(), GZ_CHAIN_OK);
+  CHECK(fake_hits(&x.fake[0], true, B0 "/txs/package") == 1);
+  CHECK(fake_hits(&x.fake[1], true, B1 "/txs/package") == 1);
+  CHECK(rep->call == GZ_CALL_BROADCAST && rep->package && rep->verdict == GZ_CHAIN_OK);
+  for (size_t i = 0; i < 2; i++) {
+    const gz_package_result *s = &rep->answers[i].package;
+    CHECK(rep->answers[i].result == GZ_CHAIN_OK && s->result == GZ_CHAIN_OK);
+    CHECK(s->parent.result == GZ_CHAIN_OK && memcmp(s->parent.txid, k.a, GZ_HASH_LEN) == 0);
+    CHECK(s->child.result == GZ_CHAIN_OK && memcmp(s->child.txid, spender, GZ_HASH_LEN) == 0);
+  }
+
+  /* the servers disagree: one takes it, one refuses it. Taken by one is
+   * success, as for a single transaction, and the refusal is kept with its
+   * words for each transaction */
+  fake_set(&x.fake[1], true, B1 "/txs/package", 200, PKG_FAILED("min relay fee not met, 0 < 61"));
+  CHECK_RESULT(SEND(), GZ_CHAIN_OK);
+  CHECK(pr.parent.result == GZ_CHAIN_OK && pr.child.result == GZ_CHAIN_OK);
+  CHECK(rep->answers[0].result == GZ_CHAIN_OK && rep->answers[0].package.result == GZ_CHAIN_OK);
+  CHECK(rep->answers[1].result == GZ_CHAIN_REJECTED);
+  CHECK(rep->answers[1].package.result == GZ_CHAIN_REJECTED);
+  CHECK(rep->answers[1].package.server_status == 200);
+  CHECK(strcmp(rep->answers[1].package.reason, "transaction failed") == 0);
+  CHECK(strcmp(rep->answers[1].package.parent.reason, "min relay fee not met, 0 < 61") == 0);
+  CHECK(strcmp(rep->answers[1].package.child.reason, "unevaluated") == 0);
+  /* the single-transaction view of the report still holds the child's */
+  CHECK(rep->answers[1].u.broadcast.result == GZ_CHAIN_REJECTED);
+  CHECK(strcmp(rep->answers[1].u.broadcast.reason, "unevaluated") == 0);
+
+  /* the same the other way round: the first server's refusal does not hide
+   * the second's acceptance */
+  fake_set(&x.fake[0], true, B0 "/txs/package", 400, "package topology disallowed");
+  fake_set(&x.fake[1], true, B1 "/txs/package", 200, PKG_SUCCESS);
+  CHECK_RESULT(SEND(), GZ_CHAIN_OK);
+  CHECK(rep->answers[0].package.result == GZ_CHAIN_REJECTED);
+  CHECK(strcmp(rep->answers[0].package.reason, "package topology disallowed") == 0);
+  CHECK(rep->answers[1].package.result == GZ_CHAIN_OK);
+
+  /* both refuse, for different reasons: refused, each reason kept */
+  fake_set(&x.fake[1], true, B1 "/txs/package", 200, PKG_FAILED("mempool full"));
+  CHECK_RESULT(SEND(), GZ_CHAIN_REJECTED);
+  CHECK(strcmp(pr.reason, "package topology disallowed") == 0);
+  CHECK(strcmp(rep->answers[0].package.reason, "package topology disallowed") == 0);
+  CHECK(strcmp(rep->answers[1].package.parent.reason, "mempool full") == 0);
+
+  /* one has no endpoint, the other takes it: success, and the first is
+   * reported as having none */
+  fake_set(&x.fake[0], true, B0 "/txs/package", 404, "Not Found");
+  fake_set(&x.fake[0], true, B0 "/v1/txs/package", 404, "Not Found");
+  fake_set(&x.fake[1], true, B1 "/txs/package", 200, PKG_SUCCESS);
+  CHECK_RESULT(SEND(), GZ_CHAIN_OK);
+  CHECK(rep->answers[0].result == GZ_CHAIN_UNSUPPORTED);
+  CHECK(rep->answers[0].package.result == GZ_CHAIN_UNSUPPORTED);
+  CHECK(rep->answers[0].package.server_status == 404);
+  CHECK(rep->answers[1].package.result == GZ_CHAIN_OK);
+
+  /* one has no endpoint, the other refuses: the refusal */
+  fake_set(&x.fake[1], true, B1 "/txs/package", 200, PKG_FAILED("min relay fee not met, 0 < 61"));
+  CHECK_RESULT(SEND(), GZ_CHAIN_REJECTED);
+  CHECK(strcmp(pr.parent.reason, "min relay fee not met, 0 < 61") == 0);
+
+  /* neither has an endpoint: unsupported, never mistaken for "down" */
+  fake_set(&x.fake[1], true, B1 "/txs/package", 405, "");
+  fake_set(&x.fake[1], true, B1 "/v1/txs/package", 404, "");
+  CHECK_RESULT(SEND(), GZ_CHAIN_UNSUPPORTED);
+  CHECK(pr.parent.result == GZ_CHAIN_UNSUPPORTED && pr.child.result == GZ_CHAIN_UNSUPPORTED);
+  CHECK(rep->answers[0].package.result == GZ_CHAIN_UNSUPPORTED);
+  CHECK(rep->answers[1].package.result == GZ_CHAIN_UNSUPPORTED);
+
+  /* one has no endpoint, the other is down: down, not "unsupported" */
+  x.fake[1].down = true;
+  CHECK_RESULT(SEND(), GZ_CHAIN_UNREACHABLE);
+  CHECK(rep->answers[1].package.result == GZ_CHAIN_UNREACHABLE);
+  x.fake[1].down = false;
+
+  /* a malformed answer from one, success from the other: success, and the
+   * malformed answer is reported as such */
+  fake_set(&x.fake[0], true, B0 "/txs/package", 200, PKG_ANSWER("success", PKG_OK(TX_A)));
+  fake_set(&x.fake[1], true, B1 "/txs/package", 200, PKG_SUCCESS);
+  CHECK_RESULT(SEND(), GZ_CHAIN_OK);
+  CHECK(rep->answers[0].result == GZ_CHAIN_MALFORMED);
+  CHECK(rep->answers[0].package.result == GZ_CHAIN_MALFORMED);
+  CHECK(rep->answers[1].package.result == GZ_CHAIN_OK);
+
+  /* an oversized answer from one, a refusal from the other: the refusal */
+  static char huge[20000];
+  memset(huge, 'A', sizeof huge - 1);
+  huge[sizeof huge - 1] = '\0';
+  fake_set(&x.fake[0], true, B0 "/txs/package", 400, huge);
+  fake_set(&x.fake[1], true, B1 "/txs/package", 400, "package topology disallowed");
+  CHECK_RESULT(SEND(), GZ_CHAIN_REJECTED);
+  CHECK(rep->answers[0].package.result == GZ_CHAIN_TOO_LARGE);
+
+  /* a single-transaction broadcast afterwards is not reported as a package */
+  fake_set(&x.fake[0], true, B0 "/tx", 200, TX_A);
+  fake_set(&x.fake[1], true, B1 "/tx", 200, TX_A);
+  gz_broadcast_result br;
+  CHECK_RESULT(gz_chain_broadcast(&x.multi, parent, plen, &br), GZ_CHAIN_OK);
+  CHECK(rep->call == GZ_CALL_BROADCAST && !rep->package);
+#undef SEND
+  mfx_close(&x);
+}
+
+/* Says it took the package, with the child under another txid. */
+static gz_chain_result wrong_package_child(void *ctx, const uint8_t *parent, size_t parent_len,
+                                           const uint8_t *child, size_t child_len,
+                                           gz_package_result *out) {
+  (void)child;
+  (void)child_len;
+  ((stub *)ctx)->broadcasts++;
+  memset(out, 0, sizeof *out);
+  if (!gz_txid_from_raw(parent, parent_len, out->parent.txid)) return GZ_CHAIN_INVALID_ARG;
+  test_hash(TX_B, out->child.txid);
+  out->result = out->parent.result = out->child.result = GZ_CHAIN_OK;
+  return GZ_CHAIN_OK;
+}
+
+/* Says it took the package, with the parent under another txid. */
+static gz_chain_result wrong_package_parent(void *ctx, const uint8_t *parent, size_t parent_len,
+                                            const uint8_t *child, size_t child_len,
+                                            gz_package_result *out) {
+  (void)parent;
+  (void)parent_len;
+  ((stub *)ctx)->broadcasts++;
+  memset(out, 0, sizeof *out);
+  if (!gz_txid_from_raw(child, child_len, out->child.txid)) return GZ_CHAIN_INVALID_ARG;
+  test_hash(TX_B, out->parent.txid);
+  out->result = out->parent.result = out->child.result = GZ_CHAIN_OK;
+  return GZ_CHAIN_OK;
+}
+
+/* A backend that "takes" a package under other txids has not taken it: its
+ * answer is malformed, as for a single transaction (review L2 of #109). */
+static void test_package_backend_not_taken_at_its_word(test_state *T) {
+  mfx x;
+  gz_multi_config mc;
+  gz_chain m;
+  gz_chain_ops ops;
+  stub st = {0};
+  gz_package_result pr;
+  uint8_t parent[1024], child[1024];
+  mfx_open(&x, 2);
+  size_t plen = load_raw("tx_a_hex.txt", parent, sizeof parent);
+  size_t clen = load_raw("tx_spender_hex.txt", child, sizeof child);
+  gz_multi_config_default(&mc, GZ_NET_SIGNET);
+  mc.now_ms = test_clock;
+  memset(&ops, 0, sizeof ops);
+  ops.block_hash = stub_block_hash;
+  /* an honest server that refuses it, and a backend that lies */
+  fake_set(&x.fake[0], true, B0 "/txs/package", 400, "package topology disallowed");
+  gz_chain two[2] = {x.server[0], {&st, &ops}};
+  CHECK_RESULT(gz_multi_create(&mc, two, 2, &m), GZ_CHAIN_OK);
+  const gz_multi_report *rep = gz_multi_last_report(&m);
+  ops.broadcast_package = wrong_package_child;
+  CHECK_RESULT(gz_chain_broadcast_package(&m, parent, plen, child, clen, &pr), GZ_CHAIN_REJECTED);
+  CHECK(st.broadcasts == 1);
+  CHECK(rep->answers[1].result == GZ_CHAIN_MALFORMED);
+  CHECK(rep->answers[1].package.result == GZ_CHAIN_MALFORMED);
+  CHECK(rep->answers[1].u.broadcast.result == GZ_CHAIN_MALFORMED);
+  ops.broadcast_package = wrong_package_parent;
+  CHECK_RESULT(gz_chain_broadcast_package(&m, parent, plen, child, clen, &pr), GZ_CHAIN_REJECTED);
+  CHECK(rep->answers[1].result == GZ_CHAIN_MALFORMED);
+  CHECK(rep->answers[1].package.result == GZ_CHAIN_MALFORMED);
+  /* the honest server down: nothing was taken */
+  x.fake[0].down = true;
+  CHECK_RESULT(gz_chain_broadcast_package(&m, parent, plen, child, clen, &pr), GZ_CHAIN_UNREACHABLE);
+  CHECK(pr.result != GZ_CHAIN_OK);
+  x.fake[0].down = false;
+  gz_chain_destroy(&m);
+  mfx_close(&x);
+}
+
 /* ---- fees ---- */
 
 static void test_fee_rule(test_state *T) {
@@ -1811,6 +2013,8 @@ int main(void) {
   RUN(test_one_down_of_three);
   RUN(test_three_servers_one_wrong);
   RUN(test_broadcast);
+  RUN(test_package_to_every_server);
+  RUN(test_package_backend_not_taken_at_its_word);
   RUN(test_fee_rule);
   RUN(test_create_and_single_server);
   TEST_MAIN_END("test_multi");

@@ -13,11 +13,14 @@ One plain-HTTP server offers:
     signet answers in DATADIR. Personas: honest, honest2 (the same answers),
     hider (hides transaction A), mainnet (claims mainnet's block 0), behind
     (has not seen block 329439), feehigh (another operator's fee estimates).
+    honest2 also has a package endpoint (POST .../txs/package); parsefirst and
+    refuseall answer 400 to POSTs on any path (see below).
 Three HTTPS servers offer /ok with, in turn: a certificate for localhost
 signed by the test authority; one for another name signed by the same
 authority; a self-signed one. Every POST is logged to WORKDIR/posts.log.
 """
 import gzip
+import json
 import os
 import ssl
 import sys
@@ -94,6 +97,36 @@ PERSONAS["feehigh"]["/fee-estimates"] = (200, data("fee_estimates_blockstream.js
 POST_ANSWER = (400, data("post_known_blockstream.txt"))
 post_lock = threading.Lock()
 
+# Package endpoint (POST /<persona>/txs/package): honest2 has one, as Esplora
+# over Bitcoin Core 28 or later does; every other persona answers 404. It
+# accepts exactly [transaction A, its spender] and answers what Esplora
+# passes on from submitpackage; a body that is not JSON gets Esplora's 400.
+# Two servers that answer 400 whatever the path, as a web framework can that
+# reads the body before it routes: parsefirst refuses a body that is not
+# JSON on every path, refuseall refuses every POST. Neither has a package
+# endpoint; a probe must not report one (review M1 of #109).
+PERSONAS["parsefirst"] = honest_routes()
+PERSONAS["refuseall"] = honest_routes()
+
+PACKAGE_PERSONAS = ("honest2",)
+PACKAGE_PAIR = [data("tx_a_hex.txt").decode().strip(), data("tx_spender_hex.txt").decode().strip()]
+
+
+def package_answer(persona, body):
+    if persona not in PACKAGE_PERSONAS:
+        return 404, b"Not Found"
+    try:
+        txs = json.loads(body)
+    except ValueError:
+        return 400, b"invalid package: expected a JSON array of transactions"
+    if isinstance(txs, list) and len(txs) < 2:
+        return 400, b"submitpackage RPC error: Array must contain between 2 and 25 transactions."
+    if txs != PACKAGE_PAIR:
+        return 400, b"unexpected package"
+    results = {t: {"txid": t, "vsize": 61} for t in (TX_A, TX_SP)}
+    return 200, json.dumps({"package_msg": "success", "tx-results": results,
+                            "replaced-transactions": []}).encode()
+
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -122,9 +155,21 @@ class Handler(BaseHTTPRequestHandler):
             with post_lock:
                 with open(os.path.join(WORK, "posts.log"), "a") as log:
                     log.write("%s %d\n" % (self.path, len(body)))
+            persona = self.path.split("/")[1]
+            if persona == "refuseall":
+                self.plain(400, b"Bad Request")
+                return
+            if persona == "parsefirst":
+                try:
+                    json.loads(body)
+                except ValueError:
+                    self.plain(400, b"Bad Request: body is not JSON")
+                    return
             if self.path == "/post":
                 ctype = self.headers.get("Content-Type", "")
                 self.plain(200, ctype.encode() + b"|" + body)
+            elif self.path.endswith("/txs/package") and self.path.split("/")[1] in PERSONAS:
+                self.plain(*package_answer(self.path.split("/")[1], body))
             elif self.path.endswith("/tx") and self.path.split("/")[1] in PERSONAS:
                 self.plain(*POST_ANSWER)
             else:

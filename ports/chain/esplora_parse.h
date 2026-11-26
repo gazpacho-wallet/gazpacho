@@ -85,10 +85,12 @@ typedef struct gz_es_package {
  * result: {"package_msg":"..","tx-results":{"<wtxid>":{"txid":"..",
  * "error":".."?, ...}, ...}, ...}. Unlike the other parsers this one allows
  * fields it does not know, because the result has grown with each Core
- * release; it requires an object with a string "package_msg", and, if
- * "tx-results" is present, an object of objects whose "txid" (if present) is
- * a hash and whose "error" (if present) is a string. `parent` and `child`
- * are the txids sent. */
+ * release. It requires an object with a string "package_msg"; if
+ * "tx-results" is present, an object of objects, each with a "txid" that is
+ * one of the two sent (`parent`, `child`), neither listed twice, and an
+ * "error", if present, that is a string. "success" requires both listed
+ * without an error, and any other message requires at least one not in:
+ * an answer that contradicts itself is refused (false). */
 bool gz_es_parse_package(const char *s, size_t len, const uint8_t parent[GZ_HASH_LEN],
                          const uint8_t child[GZ_HASH_LEN], gz_es_package *out);
 

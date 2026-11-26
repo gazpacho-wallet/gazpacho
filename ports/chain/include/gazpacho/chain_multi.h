@@ -91,6 +91,11 @@
  *  - broadcast: sent to every server on the right network; GZ_CHAIN_OK if at
  *    least one accepts (or already has it). Every server's result is in the
  *    report. Accepted is not the same as relayed: follow up with tx_status.
+ *  - broadcast_package: the same, for a parent and its child. The report's
+ *    `package` flag is set and each answer's `package` holds that server's
+ *    whole result (pair, parent, child); the union's broadcast member holds
+ *    the child's, as for a single transaction. GZ_CHAIN_UNSUPPORTED only when
+ *    every server asked has no package endpoint.
  *  - fee_estimates: opinions, not facts. At least a quorum of operators must
  *    answer the call. The result has an entry for each target any of them
  *    lists. A server ANSWERS FOR a target T with its estimate for the
@@ -197,6 +202,8 @@ typedef struct gz_multi_answer {
     gz_fee_estimates fees;
     gz_script_history history;
   } u;
+  /* A package call only (report.package): this server's whole result. */
+  gz_package_result package;
 } gz_multi_answer;
 
 typedef struct gz_multi_report {
@@ -204,6 +211,8 @@ typedef struct gz_multi_report {
   gz_chain_result verdict; /* what the call returned */
   /* The verdict is an answer, but the servers differ about unconfirmed data. */
   bool unconfirmed_differs;
+  /* The call was gz_chain_broadcast_package (call is GZ_CALL_BROADCAST). */
+  bool package;
   size_t server_count;
   size_t operator_count; /* distinct operators among the servers */
   gz_multi_answer answers[GZ_MULTI_MAX_SERVERS]; /* in the order given at creation */
