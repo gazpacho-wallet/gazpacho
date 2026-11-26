@@ -762,17 +762,16 @@ static void test_skip(uint32_t n, uint8_t d)
             else CHECK(first_bcast(step_txid(i)) >= 0);
         }
     }
-    /* Two members: the second publishes only what the first did not. */
+    /* Two members: the second publishes only what the first did not (U-2). */
     {
         uint8_t own[33], how = 0;
         gz_xe_tree_in_t in;
         int a = -1, b = -1;
         static gz_xe_plan_t FIRST;
         build(n);
-        for (uint32_t i = 0; i < NMEM && b < 0; i++) {
-            if (P.depth[i] != d) continue;
-            if (a < 0) a = (int)i; else b = (int)i;
-        }
+        a = member_at(d);                                           /* the second at any depth: 3 members have one at depth 1 */
+        for (uint32_t i = 0; i < NMEM && b < 0; i++)
+            if ((int)i != a) b = (int)i;
         CHECK(a >= 0 && b >= 0);
         if (a < 0 || b < 0) return;
         in = tin();
