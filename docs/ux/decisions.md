@@ -228,4 +228,12 @@ Today's comparison of two Esplora operators stays. This moves compact block filt
 
 **Refinement (owner, 2026-11-26): the speed-up output is purely a host setting.** It is not part of the lobby terms, it is not sent to members, and members cannot object: how the host funds is the host's business. The default stays Auto. Members still see the funding-waiting countdown, because it is about their seat, not the funding's shape. The members' checks read only the funding output the tree spends, so an extra change or anchor output never affects their safety rule (`spec/safety-rule.md` C1).
 
+**Second refinement (owner, 2026-11-26).**
+- **"Never" stays fully allowed.** A funding with no change output and no anchor is a valid host choice.
+- **A warning when the funding has no speed-up handle** (no change and no anchor) **and its rate is close to what may not get through.** "Close" means within a margin, for example 2×, of the higher of two figures: the static relay floor, and the current mempool minimum fee the chain servers report (the higher of the two servers' answers).
+- The warning says plainly: "This funding can't be sped up if it gets stuck. If it doesn't confirm within M blocks, the lobby ends and the members are released. The coins stay yours."
+- **It never blocks.** The host can still go ahead.
+- **The chain port needs a "current minimum fee" read** (Esplora's fee estimates and mempool information) as part of this feature.
+- All of it is host-only, as before.
+
 Recorded in `PLAN.md` ("Funding" and the work list), `SLICES.md` ("A stuck funding"), `spec/safety-rule.md` (C1, H16) and `spec/exit.md` (5.7, H16). It answers Q2 of the Slice 1.5 plan (PR #99).
