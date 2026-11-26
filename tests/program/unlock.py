@@ -203,7 +203,7 @@ def main():
         fg = p.wait_for(r"test-check forged status=(\S+) wrong_in_row=(\d+)", timeout=90)
         wr = p.find(r"test-check wrong status=(\S+)")[1]
         rt = p.find(r"test-check right status=(\S+) wrong_in_row=(\d+)")[1]
-        bd = p.find(r"test-begin-in-delay status=(\S+) before=(\d+) after=(\d+)")[1]
+        bd = p.wait_for(r"test-begin-in-delay status=(\S+) before=(\d+) after=(\d+)", timeout=60)
         df = p.wait_for(r"test-deferred-finish right status=(\S+)", timeout=30)
         check(df is not None and df.group(1) == "ok",
               "9: a wrong answer's delay runs from the answer, not from a late finish: the next try is checked (%s)"
