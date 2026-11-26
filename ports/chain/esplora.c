@@ -636,6 +636,22 @@ static gz_chain_result es_request_as(esplora *es, bool post, const char *content
       es->http.sleep_ms(es->http.ctx, (uint32_t)(gap - (now - es->last_ms)));
       now = es->http.now_ms(es->http.ctx);
     }
+    if (es->cfg.pacer != NULL) {
+      /* the server's pace, shared with the program's other clients of it */
+      gz_esplora_pacer *p = es->cfg.pacer;
+      pthread_mutex_lock(&p->mu);
+      for (;;) {
+        now = es->http.now_ms(es->http.ctx);
+        if (!p->has_last || now < p->last_ms || now - p->last_ms >= p->interval_ms) break;
+        uint32_t left = (uint32_t)(p->interval_ms - (now - p->last_ms));
+        pthread_mutex_unlock(&p->mu);
+        es->http.sleep_ms(es->http.ctx, left);
+        pthread_mutex_lock(&p->mu);
+      }
+      p->last_ms = now;
+      p->has_last = true;
+      pthread_mutex_unlock(&p->mu);
+    }
     es->last_ms = now;
     es->has_last = true;
 

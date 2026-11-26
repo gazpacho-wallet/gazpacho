@@ -1,5 +1,6 @@
 /* The funding engine's wallet port over wallet/tx: see wport.h. */
 #define _POSIX_C_SOURCE 200809L   /* nanosleep */
+#include "pchain.h"
 #include "wport.h"
 
 #include <stdio.h>
@@ -890,6 +891,7 @@ static void *scan_thread(void *arg)
     if (!gz_http_curl_create(&http, &hc)) return NULL;
     gz_esplora_config_default(&cfg);
     cfg.base_url = w->url;
+    cfg.pacer = gzp_chain_pacer(w->url, w->wnet == GZW_NET_REGTEST);   /* the server's pace, with the chain adapter's */
     if (gz_esplora_create(&cfg, &http, &view) != GZ_CHAIN_OK) {
         gz_http_curl_destroy(&http);
         return NULL;
