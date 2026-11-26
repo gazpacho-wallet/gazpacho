@@ -4342,11 +4342,12 @@ static void test_funds_check(void)
 }
 
 /* The early start with no wallet port: no_wallet, nothing started. */
-/* Review A of #55, confirmation of L2: a set-aside of 0 is refused, 400 bad_terms, with no
- * slot and no batch kept. On the stand-in node (no signing engine, so no max_tree_nodes)
- * terms with a target above 256 pass the open's fundability check, which looks only up to
- * 256, and gz_fund_set_aside_sat gives 0 for them: the guard is reached (mutant
- * set-aside-zero-taken; the stand-in wallet would say "enough" for 0). */
+/* Review A of #55, confirmation of L2: terms whose set-aside would be 0 (a target above 256,
+ * past the fundability check's reach) are refused, 400 bad_terms, with no slot and no batch
+ * kept, also on the stand-in node (no signing engine, so no max_tree_nodes). They are refused
+ * before the set-aside guard: the host engine takes at most GZ_LOBBY_MAX_SEATS (32) seats,
+ * target and standbys, so the guard itself is unreachable (mutant set-aside-zero-taken,
+ * triaged equivalent in tests/node/mutants.txt). */
 static void test_set_aside_zero(void)
 {
     terms_t t;
