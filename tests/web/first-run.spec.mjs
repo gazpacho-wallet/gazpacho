@@ -81,7 +81,7 @@ test('create a wallet: six generated words first, the 24 words, the check, a pre
     await expect(fields.nth(i)).toHaveAttribute('autocorrect', 'off');
     await fields.nth(i).fill(WORDS[pos - 1]);
   }
-  await page.getByLabel('Wallet passphrase').fill(six);
+  await page.getByLabel('Password', { exact: true }).fill(six);
   await page.getByRole('button', { name: 'Check', exact: true }).click();
   await expect(page.getByText('Your words are written down correctly.')).toBeVisible();
 
@@ -109,17 +109,17 @@ test('a failed check never says which word was wrong, and signs the browser out'
   const fields = page.locator('input[data-word]');
   await expect(fields).toHaveCount(3);
   for (let i = 0; i < 3; i++) await fields.nth(i).fill('zebra');
-  await page.getByLabel('Wallet passphrase').fill(six);
+  await page.getByLabel('Password', { exact: true }).fill(six);
   await page.getByRole('button', { name: 'Check', exact: true }).click();
   await expect(page.getByText(/The words did not match, so Gazpacho signed this browser out/)).toBeVisible();
   await expect(page.locator('main')).not.toContainText(/Word \d+ (is|was) wrong/);
   // signing in again leads back into setup, where the words can be shown again with the passphrase
   await page.waitForTimeout(1100);
-  await page.getByLabel('Wallet passphrase').fill(six);
+  await page.getByLabel('Password', { exact: true }).fill(six);
   await page.getByRole('button', { name: 'Sign in' }).click();
   await expect(page.getByText('setting it up was not finished')).toBeVisible();
   await page.getByRole('button', { name: 'Show the 24 words' }).click();
-  await page.getByLabel('Wallet passphrase').fill(six);
+  await page.getByLabel('Password', { exact: true }).fill(six);
   await page.getByRole('button', { name: 'Show the words', exact: true }).click();
   await page.getByRole('button', { name: 'Show the words', exact: true }).click();
   await expect(page.locator('ol.words li')).toHaveCount(24);
@@ -159,7 +159,7 @@ test('the 24 words leave the page: hidden with the tab, shown again, gone after 
   // from Settings: shown only with the passphrase typed for that request, gone on leaving the view
   await page.goto(fake.url + '#/settings/words');
   await page.getByRole('button', { name: 'Show the 24 words' }).click();
-  await page.getByLabel('Wallet passphrase').fill(six);
+  await page.getByLabel('Password', { exact: true }).fill(six);
   await page.locator('dialog').getByRole('button', { name: 'Show the words' }).click();
   await page.getByRole('button', { name: 'Show the words' }).click();
   await expect(page.locator('ol.words li')).toHaveCount(24);
@@ -169,7 +169,7 @@ test('the 24 words leave the page: hidden with the tab, shown again, gone after 
   // and when the page is hidden for good
   await page.goto(fake.url + '#/settings/words');
   await page.getByRole('button', { name: 'Show the 24 words' }).click();
-  await page.getByLabel('Wallet passphrase').fill(six);
+  await page.getByLabel('Password', { exact: true }).fill(six);
   await page.locator('dialog').getByRole('button', { name: 'Show the words' }).click();
   await page.getByRole('button', { name: 'Show the words' }).click();
   await expect(page.locator('ol.words li')).toHaveCount(24);
@@ -178,7 +178,7 @@ test('the 24 words leave the page: hidden with the tab, shown again, gone after 
   expect(await inDom()).toBe(false);
 });
 
-test('restore from 24 words: a wrong word, a weak passphrase, then the restored wallet', async ({ page }) => {
+test('restore from 24 words: a wrong word, a weak password, then the restored wallet', async ({ page }) => {
   await openFromProgram(page);
   await page.getByRole('button', { name: 'Restore from 24 words' }).click();
   const fields = page.locator('input[data-word]');
@@ -188,25 +188,25 @@ test('restore from 24 words: a wrong word, a weak passphrase, then the restored 
   await page.getByRole('button', { name: 'abandon', exact: true }).click();
   await expect(fields.nth(0)).toHaveValue('abandon');
   for (let i = 1; i < 24; i++) await fields.nth(i).fill(i === 23 ? 'about' : 'abandon');
-  await page.getByRole('button', { name: 'Next: choose a passphrase' }).click();
+  await page.getByRole('button', { name: 'Next: choose a password' }).click();
   await page.getByRole('button', { name: 'Choose my own' }).click();
-  await page.getByLabel('Your own passphrase').fill('a long enough passphrase');
-  await page.getByLabel('The same passphrase again').fill('a long enough passphrase');
+  await page.getByLabel('Your own password').fill('a long enough passphrase');
+  await page.getByLabel('The same password again').fill('a long enough passphrase');
   await page.getByRole('button', { name: 'Restore the wallet' }).click();
   await expect(page.getByText(/These 24 words do not belong together/)).toBeVisible();
   await page.getByRole('button', { name: 'Type the 24 words again' }).click();
   await expect(fields).toHaveCount(24);
   for (let i = 0; i < 24; i++) await fields.nth(i).fill(WORDS[i]);
-  await page.getByRole('button', { name: 'Next: choose a passphrase' }).click();
+  await page.getByRole('button', { name: 'Next: choose a password' }).click();
   await page.getByRole('button', { name: 'Choose my own' }).click();
-  await page.getByLabel('Your own passphrase').fill('too short');
+  await page.getByLabel('Your own password').fill('too short');
   await expect(page.getByText('9 of 15 characters.')).toBeVisible();
-  await page.getByLabel('The same passphrase again').fill('too short');
+  await page.getByLabel('The same password again').fill('too short');
   await page.getByRole('button', { name: 'Restore the wallet' }).click();
-  await expect(page.getByText('This passphrase is too short (9 of 15 characters).')).toBeVisible();
+  await expect(page.getByText('This password is too short (9 of 15 characters).')).toBeVisible();
   await page.waitForTimeout(1100);
-  await page.getByLabel('Your own passphrase').fill('a long enough passphrase');
-  await page.getByLabel('The same passphrase again').fill('a long enough passphrase');
+  await page.getByLabel('Your own password').fill('a long enough passphrase');
+  await page.getByLabel('The same password again').fill('a long enough passphrase');
   await page.getByRole('button', { name: 'Restore the wallet' }).click();
   // restoring: never "your wallet is fine", and nothing is said to be watched
   await expect(page.locator('#restoring')).toContainText('Your balance is not confirmed yet.');
@@ -244,4 +244,20 @@ test('a start link used before: the hijack warning, in place of every other scre
   await expect(page.getByText(/Someone may have used this program's start link before you/)).toBeVisible();
   await expect(page.getByRole('button')).toHaveCount(1); // the theme switch only
   await other.close();
+});
+
+// Owner, 2026-11-25: the step says once, plainly, what the password is and is not.
+test('the password step: called a password, said once to lock the files here and not to be part of the seed', async ({ page }) => {
+  await openFromProgram(page);
+  await expect(page.locator('ol.steps h2').nth(1)).toHaveText('Choose a password');
+  await page.getByRole('button', { name: 'Make a new wallet' }).click();
+  const step = page.locator('ol.steps li.cur');
+  await expect(step.locator('h2')).toHaveText('Choose a password');
+  await expect(step).toContainText('Gazpacho made a password for you: six words.');
+  const about = 'Your password opens Gazpacho and locks its files on this computer. It is not part of your seed: your 24 words alone restore your wallet.';
+  await expect(step.getByText(about, { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Choose my own' }).click();
+  await expect(step.getByText(about, { exact: true })).toBeVisible(); // the same once, whichever way is chosen
+  await expect(step.getByText(about, { exact: true })).toHaveCount(1);
+  expect(await page.locator('body').innerText()).not.toMatch(/passphrase/i);
 });

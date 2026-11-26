@@ -73,6 +73,7 @@ static inline int lt_sign(void *ctx, uint32_t which, const uint8_t msg[32], uint
 static inline gz_lobby_crypto_t lt_crypto(lt_signer_t *s)
 {
     gz_lobby_crypto_t c;
+    memset(&c, 0, sizeof c);                          /* factory_pub (K1 stage 3) and any later hook: none */
     c.verify = lt_verify;
     c.point_ok = lt_point_ok;
     c.sign = lt_sign;

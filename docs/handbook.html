@@ -6658,6 +6658,13 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <td>Keep #52's immediate switch as the public command (and make it versioned), or keep both with one documented as the API's</td>
 </tr>
 <tr>
+<td>K35</td>
+<td><strong><code>lobby_left_out</code> is an attention item, tier <code>important</code>.</strong> A person whose seat was left out at a start (its keys could not be given) should see it, but it is not urgent</td>
+<td><code>spec/local-api.md</code> 11.4</td>
+<td>The attention list of a wallet restarted locked or without its signer</td>
+<td>It would be <code>heads_up</code> (told once), or not shown</td>
+</tr>
+<tr>
 <td>K36</td>
 <td><strong>How decisions 17a and 17b were placed</strong> (2026-11-26). (a) "The next slice" after Slice 1 is read as Slice 1.5 if PR #99's plan is adopted, Slice 2 otherwise. (b) The idle lock's default N, whether "never" is offered, what counts as use, and what happens when the time runs out during a signing round are left to the specification pass. None is chosen here. (c) Compact block filters are placed in the 1.0.0 release row (1.0.0 is the first release meant for mainnet), and Electrum-protocol servers and the person's own node in M5.</td>
 <td><code>PLAN.md</code> (Decisions in force, Milestones, Releases, Work list); <code>SLICES.md</code></td>

@@ -178,9 +178,27 @@ static int status(void *be, gz_api_status_facts *f)
     f->watcher_runs = 0;
     f->watching_reason = "no_bundle";
     f->as_of_height = f->chain_height;
+    /* 11.4: the core's attention items (kind 7), with their lobby's role */
+    if (w == GZ_API_WALLET_UNLOCKED) {
+        gzp_view_attention(&a->view, &a->attention);
+        for (int i = 0; i < a->attention.n; i++) f->attention[i] = a->attention.item[i];
+        f->nattention = a->attention.n;
+        {   /* items left out are logged, once per change (review A of #107, L3) */
+            char said[sizeof a->attention_dropped_said];
+            size_t at = 0;
+            said[0] = 0;
+            for (int i = 0; i < a->attention.skipped && i < GZP_ATT_DROPPED_MAX && at < sizeof said; i++)
+                at += (size_t)snprintf(said + at, sizeof said - at, "%s%s", i ? ", " : "", a->attention.dropped[i]);
+            if (strcmp(said, a->attention_dropped_said) != 0) {
+                if (a->attention.skipped) gzp_log("attention: %d item(s) left out of the status: %s%s", a->attention.skipped, said,
+                                                  a->attention.skipped > GZP_ATT_DROPPED_MAX ? ", ..." : "");
+                snprintf(a->attention_dropped_said, sizeof a->attention_dropped_said, "%s", said);
+            }
+        }
+    }
     /* The host's coin list (11.2 coins; review of PR 88, M-1): its state, and
      * coins_incomplete while it cannot be read or was published without an
-     * address (11.4). */
+     * address (11.4), after the core's items. */
     if (a->wport) {
         gzp_wport_coins_t c;
         gzp_wport_coins(a->wport, &c);

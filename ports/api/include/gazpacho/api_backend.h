@@ -139,6 +139,7 @@ typedef struct gz_api_attention {
     const char *due_json;     /* a date (7.2) or NULL */
     const char *params_json;  /* or NULL */
     const char *lobby_id, *factory_id;
+    const char *lobby_role;   /* "joined" or "hosted": required with lobby_id (11.4, draft 5 rule) */
     int at_risk_override;     /* exit_needs_fee_coin past WARN_LEAD: at_risk */
 } gz_api_attention;
 

@@ -37,6 +37,7 @@ from lobby import World, cmd, parse_tlv, started, state, tlv  # noqa: E402
 check = Checks()
 lobby.check = check
 OPEN, JOIN, READY, LEAVE = 0x0101, 0x0102, 0x0103, 0x0105
+SEAT_KEY, READY_SENT = 0x0001001c, 0x00010010   # K1: the member's seat_key and ready_sent records
 ROUND_STARTED, ROUND_PROPOSAL, EXPOSURE, ROUND_SIGNED, ROUND_COMPLETED, ACK_RECEIVED, ROUND_ENDED = (
     0x00020002, 0x00020004, 0x00020006, 0x00020008, 0x0002000a, 0x0002000c, 0x0002000e)
 LOBBY_STATE, GUARD = 0x00010018, 0x0004000a
@@ -91,7 +92,11 @@ def sign(exe, work):
         check(m3.wait_for(r"lobby scope=%s role=member state=\d+ seat=\d+ joined=1" % t.tag, timeout=30) is not None,
               "1: the AT_JOIN member is seated")
         mk3 = m3.mark()
+        # K1 stage 3: joined and seated without the passphrase, the AT_JOIN member has derived no factory key
+        check(m3.count(r"factory-key scope=%s" % t.tag) == 0, "1: K1: no factory key at the AT_JOIN member's join")
         m3.send(cmd(READY, (12, t.scope), (14, bytes([1])), (16, lobby.th("gazpacho/terms/current", t.current))))
+        check(m3.wait_for(r"factory-key scope=%s .*at=first-ready" % t.tag, timeout=30, start=mk3) is not None,
+              "1: K1: its factory key is derived at its first ready, with the passphrase")
         # The first attempt: four chosen; m4 refuses; the host blames it.
         check(ms["m4"].wait_for(r"sign-refused scope=%s .*rule=\d+ reason=9" % t.tag, timeout=90) is not None,
               "1: the member with another chain view refuses the proposal (reason 9)")
@@ -139,6 +144,10 @@ def sign(exe, work):
             # With the funding engine wired (P4.6), a member's engine writes its first funding_status
             # (state 1, acked) from its ack, as funding.md's member row says (integration B13).
             check(any(FUNDING_STATUS in b for b in mj), "1: %s's funding engine writes funding_status from its ack" % n)
+            # K1 (BD3): seat_key saved once, in the batch of the first ready_sent; never replaced over two attempts
+            check(has_batch(mj, [SEAT_KEY, READY_SENT]) and sum(b.count(SEAT_KEY) for b in mj) == 1,
+                  "1: K1: %s saved seat_key once, with its first ready" % n)
+            check(ms[n].count(r"factory-key scope=%s " % t.tag) == 1, "1: K1: %s derived its factory key once" % n)
         m4j = w.journal("m4")
         check(all(FUNDING_STATUS not in b for b in m4j), "1: the refusing member writes no funding_status")
         check(all(EXPOSURE not in b and ROUND_STARTED not in b for b in m4j),

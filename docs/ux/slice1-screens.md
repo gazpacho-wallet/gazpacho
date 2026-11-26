@@ -35,9 +35,9 @@ The strip's sentences, by `doing.code`: `no_wallet`, `restoring`, `node_stopped`
 | No wallet, no start link | `wallet: none`, not signed in | "Open Gazpacho from the program", the first-run code field | `POST /session/start` with `{ code }` → `bad_code`, `code_expired`, `too_many_attempts`, `rate_limited` |
 | First run from the program | the fragment `#start=<43 characters>` | the token is read, taken out of the address, and sent once | `POST /session/start` with `{ start_token }` → a setup session |
 | Hijack warning | `token_used` or `wallet_exists` within 10 minutes of `first_run_launched_at` | the warning of 4.3, in place of every other screen | `GET /session` → `first_run_launched_at` |
-| Sign in / Unlock | a wallet exists, not signed in | the passphrase field; the locked headline; "the wallet is still unlocked" when only this browser is signed out | `GET /status` (locked shape, no session) → `watching.headline`; `POST /session` → `wrong_passphrase`, `rate_limited` (`retry_after_s`), `passphrase_not_checked`, `node_stopped` |
-| Files older than the wallet | session kind `files_behind` | start as a restore (the passphrase, in a dialog), or stay locked | `POST /wallet/start-as-restore` (`confirm: "restore_new_keys"`, kind A); `DELETE /session` |
-| Passphrase again (dialog) | any kind B call answered `fresh_sign_in_needed` | the passphrase; then the same request is sent again | `POST /session/fresh` |
+| Sign in / Unlock | a wallet exists, not signed in | one field, "Password", with a one-line password-manager note under it; the locked headline; "the wallet is still unlocked" when only this browser is signed out; a "Forgot your password?" link to a page, with no fields, that says the 24 words restore the wallet (move the data folder away, then Restore from 24 words at first run) | `GET /status` (locked shape, no session) → `watching.headline`; `POST /session` → `wrong_passphrase`, `rate_limited` (`retry_after_s`), `passphrase_not_checked`, `node_stopped` |
+| Files older than the wallet | session kind `files_behind` | start as a restore (the password, in a dialog), or stay locked | `POST /wallet/start-as-restore` (`confirm: "restore_new_keys"`, kind A); `DELETE /session` |
+| Password again (dialog) | any kind B call answered `fresh_sign_in_needed` | the password; then the same request is sent again | `POST /session/fresh` |
 
 ## First run
 
@@ -47,10 +47,10 @@ Never asks "member or host" (decision 4). Steps are numbered on the screen.
 |---|---|---|
 | 1. Make a wallet, or bring one back | the two choices; the networks, with mainnet "switched off in this release" | `GET /wallet/setup` → `state`, `network`, `networks` |
 | 1b. Restore | 24 fields, one per word, with matching words offered from the 24-word list in the page | none until step 2 |
-| 2. Choose your passphrase | six generated words first (typed once to confirm), or the person's own (at least 15 characters, typed twice, with a live count) | `POST /wallet/create` (`confirm: "create_wallet"`, `passphrase`, `confirm_passphrase`) → `words`; or `POST /wallet/restore` (`words`, `passphrase`, `confirm_passphrase`) → `restoring`; errors `weak_passphrase` (`reason`, `length`, `minimum`), `passphrases_differ`, `bad_words` (`position` or `reason: "checksum"`), `rate_limited` |
+| 2. Choose a password | said once: it opens Gazpacho and locks its files on this computer, is not part of the seed, and the 24 words alone restore the wallet; six generated words first (typed once to confirm), or the person's own (at least 15 characters, typed twice, with a live count) | `POST /wallet/create` (`confirm: "create_wallet"`, `passphrase`, `confirm_passphrase`) → `words`; or `POST /wallet/restore` (`words`, `passphrase`, `confirm_passphrase`) → `restoring`; errors `weak_passphrase` (`reason`, `length`, `minimum`), `passphrases_differ`, `bad_words` (`position` or `reason: "checksum"`), `rate_limited` |
 | 3. Write down the 24 words | not in the page until "Show the words"; out of the page while the tab is hidden; "Show again"; cleared on Done, on leaving, on `pagehide` and `freeze`, and after 10 minutes | the `create` answer; later only `POST /wallet/phrase/reveal` (`confirm: "show_words"`, `passphrase`) |
 | 3 (resumed) | setup was left unfinished (a closed tab, a restart): show the words again, check them, or go on | `GET /wallet/setup` → `created_not_finished`; `GET /backup` → `words.checked_at` |
-| 4. Check the words | three positions, three fields, the passphrase; "Skip for now" | `POST /wallet/phrase/check-start` → `check_id`, `positions`, `checks_left_today`; `POST /wallet/phrase/check` (`check_id`, `passphrase`, `words`) → `ok`. A failed check never says which word; the session has ended, so the sign-in screen follows |
+| 4. Check the words | three positions, three fields, the password; "Skip for now" | `POST /wallet/phrase/check-start` → `check_id`, `positions`, `checks_left_today`; `POST /wallet/phrase/check` (`check_id`, `passphrase`, `words`) → `ok`. A failed check never says which word; the session has ended, so the sign-in screen follows |
 | 5. Say what you will accept | the presets and every number each sets | `GET /conditions` → `presets`; `POST /wallet/finish-setup` (`preset`, `find: "browse"`) |
 | 6. Find a lobby, or host one | the doors; the dedication line | none |
 | Restoring (on Home) | "Your balance is not confirmed yet"; coins found; factories not known and not watched | `GET /wallet/restore`; redrawn on `wallet`, `status` |
@@ -72,7 +72,7 @@ Never asks "member or host" (decision 4). Steps are numbered on the screen.
 |---|---|---|
 | The limits | the nine limits Slice 1 compares (13.1), with the program's bounds; the presets | `GET /conditions` → `conditions`, `limits`, `presets`, `fit_summary`, `copied_into`, `editable`, `version` |
 | As the numbers are typed | how many lobbies fit; the limit that excludes most; lobbies the app would leave; what loosens | `POST /conditions/preview` → `fit_summary`, `would_leave`, `loosens`, `problems` |
-| Save | saved; saved and left lobbies; the passphrase again when it loosens | `PUT /conditions` (`conditions`, `based_on_version`, `preset`, `confirm_loosens`; kind B when it loosens) → `left_lobbies`; errors `changed_elsewhere`, `signing_now`, `below_floor`, `confirm_mismatch`, `bad_value` |
+| Save | saved; saved and left lobbies; the password again when it loosens | `PUT /conditions` (`conditions`, `based_on_version`, `preset`, `confirm_loosens`; kind B when it loosens) → `left_lobbies`; errors `changed_elsewhere`, `signing_now`, `below_floor`, `confirm_mismatch`, `bad_value` |
 
 ## Lobbies
 
@@ -92,7 +92,7 @@ Never asks "member or host" (decision 4). Steps are numbered on the screen.
 |---|---|---|---|---|
 | Hosting | always there | coins free and set aside; my lobbies; "Write terms" | `GET /host/lobbies`, `GET /wallet` | `host_lobby`, `status`, `wallet` |
 | Write terms | the form and the program's preview | problems; funding at the minimum and the target; whether the wallet covers it; the dates; the terms as members will see them; whether it can be opened and why not | `POST /host/preview` (the draft of 15.1) → `draft_digest`, `as_members_see_it`, `funding_at_*`, `covers`, `dates`, `host_deadlines`, `problems`, `can_open`, `cannot_open_because` | — |
-| Write terms | sign and open | the amount set aside and the consent, then the passphrase in the request | `POST /host/lobbies` (`request_id`, `draft`, `draft_digest`, `confirm_funding_sat`, `passphrase`; kind A) → `draft_changed`, `confirm_mismatch`, `wrong_passphrase`, the `cannot_open_because` values | — |
+| Write terms | sign and open | the amount set aside and the consent, then the password in the request | `POST /host/lobbies` (`request_id`, `draft`, `draft_digest`, `confirm_funding_sat`, `passphrase`; kind A) → `draft_changed`, `confirm_mismatch`, `wrong_passphrase`, the `cannot_open_because` values | — |
 | My lobby | open | ready of target; "starts by itself"; Start now on or off with the reason; cancel | `GET /host/lobbies/{id}` → `counts`, `can_start_now`, `start_blocked_by`, `funding`; `POST …/start` (`confirm_funding_max_sat`, kind B); `POST …/cancel` → `too_late` | `host_lobby`, `status` |
 | My lobby | seats | each seat and its state; remove before the ready check | `seats[]`; `DELETE /host/lobbies/{id}/seats/{seat}` (`confirm_seat`, kind B) → `frozen` | `host_lobby` |
 | My lobby | signing and funding | the host's round; funding published by the program itself, last (decision 16a); the way to the factory | `round`, `funding_tx`, `factory_id` | `host_lobby`, `factory` |
@@ -115,7 +115,7 @@ Never asks "member or host" (decision 4). Steps are numbered on the screen.
 
 | Part | What it shows | Calls | Redrawn on |
 |---|---|---|---|
-| The 24 words | checked or not; show them (the passphrase typed for that request); check them | `GET /backup` → `words`; `POST /wallet/phrase/reveal`; `…/check-start`; `…/check` | `status` |
+| The 24 words | checked or not; show them (the password typed for that request); check them | `GET /backup` → `words`; `POST /wallet/phrase/reveal`; `…/check-start`; `…/check` | `status` |
 | On chain | free, unconfirmed, set aside, coins; a new address | `GET /wallet`; `POST /wallet/address` | `wallet` |
 | Watching | who watches | `GET /status` → `watching` | `status` |
 | Connections | chain servers with operator and state; hosts the app knows | `GET /settings/connections` | `chain`, `settings` |
@@ -129,7 +129,7 @@ Never asks "member or host" (decision 4). Steps are numbered on the screen.
 | `401 not_signed_in` | Drops its token, tells the other tabs, shows the sign-in screen |
 | `423 wallet_locked` | The same, with the unlock screen and the locked headline |
 | A `session` event | The same; the stream is closed and not reopened |
-| `403 fresh_sign_in_needed` | Asks for the passphrase, calls `POST /session/fresh`, sends the same request again |
+| `403 fresh_sign_in_needed` | Asks for the password, calls `POST /session/fresh`, sends the same request again |
 | `429 rate_limited` | Says how long to wait and holds the button for that long |
 | `503 node_busy` | Says the last request is still being saved; "Try again" sends the same `request_id` (7.4), so it cannot act twice. While a call is in flight the screen is not redrawn under it |
 | `503 node_stopped` | Says the node is starting again from its files |
@@ -143,7 +143,7 @@ Places where the spec lacks something a Slice 1 screen needs, or says something 
 
 1. **Several lobbies at once** (owner decision 16b, 13 November). The spec still has Slice 1's one-lobby rule: `already_in_lobby` (14.2), `already_hosting` and `cannot_open_because` (15.1), 24.2 item 9. The screens are built for several of each (lists everywhere, no "the lobby"); the two errors keep their wording for as long as the program sends them. Two things several lobbies need that the status lacks: `doing` names one lobby, chosen by priority, and nothing says whether `doing.lobby_id` (or an attention item's `lobby_id`) is a lobby joined or a lobby hosted. The interface tries `GET /lobbies/{id}` and then `GET /host/lobbies/{id}`.
 2. **Member signing modes** (owner decision 16d: C, "unlock once when I join", is the default; A and B are options). The API has no place for them: `join` takes no passphrase and no mode; no call sets a default mode (Settings are 1.0.0); there is no state for "waiting for your passphrase" (mode B) in `you.seat`, `doing.code` or attention, and no call to give the passphrase when the lobby fills; nothing reports "not unlocked, so counted as not answering the ready check". What is built is what the API does today: joining is the consent and the app then signs by itself, which is mode A's behaviour. The join screen says exactly that. Needed: a mode on `join` (and what a host allows, if hosts may restrict it), the passphrase in the `join` request for C (kind A), a `doing.code` and attention item for B with a call that carries the passphrase, and an outcome for "did not unlock in time".
-3. **The suggested passphrase** (owner: six generated words offered first; `spec/storage-encryption.md` 14: "Gazpacho has made a passphrase for you"). No call returns one. The interface makes the six words itself, with the browser's random source, from the same EFF list the program holds (`web/js/eff.js`, generated from `ports/storage/crypto/sc_wordlist.c` and checked equal by a test). To decide: keep it in the page, or add a setup-session call.
+3. **The suggested passphrase** (owner: six generated words offered first; `spec/storage-encryption.md` 14: "Gazpacho has made a passphrase for you"; the interface says "Gazpacho made a password for you", decisions.md 17). No call returns one. The interface makes the six words itself, with the browser's random source, from the same EFF list the program holds (`web/js/eff.js`, generated from `ports/storage/crypto/sc_wordlist.c` and checked equal by a test). To decide: keep it in the page, or add a setup-session call.
 4. **The host cannot see why a member left at signing.** `seats[].state` has only the seat values of 14.1, and the host's `round.state = failed` carries only `silent` and `invalid` counts. A member whose own check fails sends `round_abort` and shows on the host's screen as `left`, with the lobby Open again. "A member whose conditions are not met is seen to refuse" is therefore complete on the member's screen (both numbers, the failed check, the saved copy) and partial on the host's ("a member left at its own check").
 5. **No `doing.code` for "removed by the host"** (the outcome `removed` exists; 11.2 has `refused_by_host` only). The strip falls back to the next code. Open since the draft 1 table.
 6. **"Your lobby starts soon"** has no Slice 1 attention code (`date_near` is 1.0.0). The next-date chip shows the date; nothing announces it.

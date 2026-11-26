@@ -164,6 +164,10 @@ int gz_sg_keys(void *ctx, const uint8_t scope[32], const uint8_t *terms_digest, 
     int host, slot, ok = 1;
     if (!sg_scope_keys(c, scope, &host, &epoch, &index, &slot)) return 0;
     if (host != (c->cfg.host != 0)) return 0;
+    /* BD2 (review A of #98, M1): a member's keys of an older epoch than the node's current one are never
+     * given, for a slot or an ended lobby's entry alike: nothing is derived under a saved epoch that a
+     * restore has replaced. (The restore batch runs before the signing engine resumes.) */
+    if (!host && epoch != (c->np.have_epoch ? c->np.epoch : 0)) return 0;                /* RULE-NODE:KEYS_CURRENT_EPOCH */
     if (kc) {
         /* the host's long-term key, or the member's contribution key of the lobby */
         int got = host ? (c->cfg.keys.host_secret && c->cfg.keys.host_secret(c->cfg.keys.ctx, sec) == 1)
@@ -181,6 +185,24 @@ int gz_sg_keys(void *ctx, const uint8_t scope[32], const uint8_t *terms_digest, 
             ok = c->cfg.keys.secret && c->cfg.keys.secret(c->cfg.keys.ctx, epoch, index + 1, sec) == 1 &&
                  secp256k1_keypair_create(secp, f, sec);
             sg_wipe(sec, sizeof sec);
+        }
+        /* BD5 (messages.md 6.4, signing-round.md 2): the factory key derived now must be the seat's saved
+         * one (seat_key). A different one (another seed or passphrase than at the first ready) gives no key:
+         * the engine aborts with reason 12 before any nonce, the lobby keeps the seat (a Retry), and the
+         * person is told plainly, once per derivation. */
+        if (ok && !host && slot >= 0 && c->slots[slot].lobby.m.seat_key_saved) {
+            secp256k1_pubkey pk;
+            uint8_t pub[33];
+            size_t pl = sizeof pub;
+            ok = secp256k1_keypair_pub(secp, &pk, f) && secp256k1_ec_pubkey_serialize(secp, pub, &pl, &pk, SECP256K1_EC_COMPRESSED) &&
+                 sg_same(pub, c->slots[slot].lobby.m.factory_key, 33);                     /* RULE-NODE:BD5_SEAT_KEY */
+            if (!ok) {
+                memset(f, 0, sizeof *f);
+                c->slots[slot].bd5_mismatch = 1;              /* the seat is unreadied after this step (B of #98, L-2) */
+                if (c->sg_out && c->sg_line_st == GZ_OK)
+                    c->sg_line_st = sg_line(c, c->sg_out, "attention factory-key-mismatch", scope, NULL,
+                                            " reason=", 12, NULL, 0);
+            }
         }
     }
     return ok;

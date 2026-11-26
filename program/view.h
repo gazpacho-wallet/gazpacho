@@ -9,6 +9,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "gazpacho/api_backend.h"
+
 #define GZP_VIEW_MAX 512
 #define GZP_VIEW_ID_MAX 64
 
@@ -37,5 +39,28 @@ const char *gzp_view_topic(uint32_t kind);
 
 /* 1 for a member's lobby view, 2 for a hosted lobby's, 0 for any other kind. */
 int gzp_view_lobby_class(uint32_t kind);
+
+/* GET /api/v1/status's attention list (local-api.md 11.4) from the core's
+ * kind 7 items (docs/notes/view-objects.md 5): code, lobby_id, lobby_role
+ * (joined or hosted: the item's GZ_VAT_ROLE, else the lobby's own view kind,
+ * else the code), and
+ * params (lobby_id and lobby_role, and need_sat, have_sat for
+ * host_funds_short, count for member_refused, each required). Oldest first
+ * (since_at, then id); the server orders them by tier. An item of an unknown
+ * code, whose lobby has no role, or without its numbers is left out, counted
+ * in `skipped`, and named in `dropped` (the first GZP_ATT_DROPPED_MAX, as
+ * "id why") for the program's log. */
+#define GZP_ATT_DROPPED_MAX 8
+#define GZP_ATT_PARAMS_MAX 192
+typedef struct {
+    char id[GZ_API_MAX_ATTENTION][GZP_VIEW_ID_MAX + 1];
+    char lobby[GZ_API_MAX_ATTENTION][GZP_VIEW_ID_MAX + 1];
+    char params[GZ_API_MAX_ATTENTION][GZP_ATT_PARAMS_MAX];
+    gz_api_attention item[GZ_API_MAX_ATTENTION];
+    int n;
+    int skipped;
+    char dropped[GZP_ATT_DROPPED_MAX][GZP_VIEW_ID_MAX + 24];
+} gzp_attention_t;
+void gzp_view_attention(const gzp_view_t *v, gzp_attention_t *out);
 
 #endif

@@ -101,7 +101,7 @@ async function apiSession(request, p, pass) {
 
 async function signIn(page, p, pass) {
   await page.goto(p.url);
-  await page.getByLabel('Wallet passphrase').fill(pass);
+  await page.getByLabel('Password', { exact: true }).fill(pass);
   await page.getByRole('button', { name: /^(Unlock|Sign in)$/ }).click();
   await expect(page.locator('body')).toHaveAttribute('data-chrome', 'app');
 }
@@ -142,7 +142,7 @@ test('a host and three members: one lobby opened, joined and readied up to the r
     await expect(hp.locator('#open-lobby')).toBeEnabled();
     await hp.waitForTimeout(1100);
     await hp.locator('#open-lobby').click();
-    await hp.locator('dialog').getByLabel('Wallet passphrase').fill(PASS.host);
+    await hp.locator('dialog').getByLabel('Password', { exact: true }).fill(PASS.host);
     await hp.locator('dialog').getByRole('button', { name: 'Sign and open' }).click();
     await expect(hp.locator('#host-lobby')).toHaveAttribute('data-stage', 'open');
 
@@ -158,7 +158,7 @@ test('a host and three members: one lobby opened, joined and readied up to the r
     const joins = [];
     p1.on('request', (r) => { if (r.url().endsWith('/join')) joins.push({ url: r.url(), body: JSON.parse(r.postData()) }); });
     await p1.locator('#join').click();
-    await p1.locator('dialog').getByLabel('Wallet passphrase').fill(PASS.m1);
+    await p1.locator('dialog').getByLabel('Password', { exact: true }).fill(PASS.m1);
     await p1.locator('dialog').getByRole('button', { name: 'Join', exact: true }).click();
     await expect(p1.locator('#lobby')).toHaveAttribute('data-seat', 'ready', { timeout: 20000 });
     await expect(hp.locator('#host-counts')).toContainText('1 ready of 4', { timeout: 20000 });
@@ -191,7 +191,7 @@ test('a host and three members: one lobby opened, joined and readied up to the r
       await pg.locator('#lobbies-fit li a').first().click();
       await pg.waitForTimeout(1100);
       await pg.locator('#join').click();
-      await pg.locator('dialog').getByLabel('Wallet passphrase').fill(pass);
+      await pg.locator('dialog').getByLabel('Password', { exact: true }).fill(pass);
       await pg.locator('dialog').getByRole('button', { name: 'Join', exact: true }).click();
       await expect(pg.locator('#lobby')).toHaveAttribute('data-seat', 'ready', { timeout: 20000 });
     };
@@ -237,11 +237,11 @@ test('a host and three members: one lobby opened, joined and readied up to the r
     // it is kind B: the passphrase is asked only when the sign-in is not fresh (4.8's
     // 5-minute window). Signed in a minute ago, m2 is fresh, so the save goes through
     // without it; when it does come, it names what is loosened and is answered.
-    const fresh = p2.locator('dialog').filter({ has: p2.getByLabel('Wallet passphrase') });
+    const fresh = p2.locator('dialog').filter({ has: p2.getByLabel('Password', { exact: true }) });
     const asked = await fresh.waitFor({ state: 'visible', timeout: 3000 }).then(() => true, () => false);
     if (asked) {
       await expect(fresh).toContainText('This loosens: fewest members');
-      await fresh.getByLabel('Wallet passphrase').fill(PASS.m2);
+      await fresh.getByLabel('Password', { exact: true }).fill(PASS.m2);
       await fresh.getByRole('button', { name: 'Continue' }).click();
     }
     await expect(p2.locator('#toasts')).toContainText('Saved');
@@ -255,7 +255,7 @@ test('a host and three members: one lobby opened, joined and readied up to the r
     await hp.locator('#start').click();
     const again = hp.locator('dialog');
     if (await again.isVisible()) {
-      await again.getByLabel('Wallet passphrase').fill(PASS.host);
+      await again.getByLabel('Password', { exact: true }).fill(PASS.host);
       await again.getByRole('button').first().click();
     }
     await expect(hp.locator('#host-lobby')).toHaveAttribute('data-stage', /ready_check|signing/, { timeout: 30000 });

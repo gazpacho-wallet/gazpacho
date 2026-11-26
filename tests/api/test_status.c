@@ -241,6 +241,33 @@ static void test_attention(void)
     CHECK(strcmp(gz_attention_tier("exit_needs_fee_coin", 0), "important") == 0);
     CHECK(strcmp(gz_attention_tier("exit_needs_fee_coin", 1), "at_risk") == 0);
     CHECK(strcmp(gz_attention_tier("terms_changed", 1), "heads_up") == 0);
+    /* the core's lobby items (11.4): important, and every one names its lobby's role */
+    CHECK(strcmp(gz_attention_tier("member_refused", 0), "important") == 0);
+    CHECK(strcmp(gz_attention_tier("lobby_left_out", 0), "important") == 0);
+    CHECK(strcmp(gz_attention_tier("host_funds_short", 0), "important") == 0);
+    base();
+    g_facts.attention[0].id = "att_7k2q";
+    g_facts.attention[0].code = "host_funds_short";
+    g_facts.attention[0].lobby_id = "lob_7k2q";
+    g_facts.attention[0].lobby_role = "hosted";
+    g_facts.attention[0].params_json = "{\"lobby_id\":\"lob_7k2q\",\"lobby_role\":\"hosted\",\"need_sat\":9,\"have_sat\":4}";
+    g_facts.nattention = 1;
+    CHECK(write_status(s, 0, 1, &d) == 0);
+    a = gz_json_get(d.root, "attention");
+    CHECK(a && a->len == 1);
+    if (a && a->len == 1) {
+        CHECK(strcmp(path_str(a->child, "lobby_id", NULL), "lob_7k2q") == 0);
+        CHECK(strcmp(path_str(a->child, "lobby_role", NULL), "hosted") == 0);
+        CHECK(strcmp(path_str(a->child, "params", "lobby_role"), "hosted") == 0);
+    }
+    gz_json_free(&d);
+    {
+        gz_jw w;
+        g_facts.attention[0].lobby_role = NULL;      /* a lobby item without its role is refused, not softened */
+        gz_jw_init(&w);
+        CHECK(gz_status_write(s, &w, 0, 1) != 0);
+        gz_jw_free(&w);
+    }
     free(s);
 }
 
@@ -375,6 +402,21 @@ static void test_rebuilding(void)
     free(s);
 }
 
+/* The messages the interface can show for the password codes say "password",
+ * never "passphrase", which in Bitcoin means the BIP39 seed extension (owner,
+ * 2026-11-25). The codes themselves are protocol and keep their names. */
+static void test_password_messages(void)
+{
+    static const char *const codes[] = {"wrong_passphrase", "passphrase_not_checked", "weak_passphrase",
+                                        "passphrases_differ", "fresh_sign_in_needed"};
+    size_t i;
+    for (i = 0; i < sizeof codes / sizeof codes[0]; i++) {
+        const char *m = gz_error_message(codes[i]);
+        CHECK(m != NULL && strstr(m, "password") != NULL);
+        CHECK(m != NULL && strstr(m, "assphrase") == NULL);
+    }
+}
+
 int main(void)
 {
     test_rebuilding();
@@ -383,5 +425,6 @@ int main(void)
     test_attention();
     test_headlines();
     test_locked_shape();
+    test_password_messages();
     return check_done();
 }
