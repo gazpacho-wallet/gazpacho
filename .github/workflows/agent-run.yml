@@ -47,11 +47,13 @@ on:
 permissions:
   contents: read
 
-# One run at a time per ref and suite: a newer one waits for the running one
-# (and replaces an older one still waiting).
+# One run at a time per ref, suite and pattern: a newer one cancels the one it
+# makes stale, so runners are not held by runs on superseded commits. A run
+# pinned to a commit id has a group of its own and is never cancelled by a
+# later push to the branch.
 concurrency:
-  group: agent-run-${{ inputs.ref }}-${{ inputs.suite }}
-  cancel-in-progress: false
+  group: agent-run-${{ inputs.ref }}-${{ inputs.suite }}-${{ inputs.regex }}-${{ inputs.sanitizer }}
+  cancel-in-progress: true
 
 jobs:
   plan:
