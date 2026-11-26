@@ -75,6 +75,21 @@ Rotation into the next factory (M4); paying and being paid across the wider Ligh
 
 **Many factories and rolling forward** (1.1.0, `MULTI-FACTORY.md`): one member in three factories with two hosts moves its balance from an ending factory into a live one over Lightning, by a standing rule and without anyone acting, and the app settles to chain by its own deadline when no lobby is available.
 
+## A stuck funding (owner, 2026-11-26)
+
+The funding's txid is fixed before anything is signed, because the whole tree is signed against it. A replacement by fee therefore kills the factory (H16), so a funding that waits can only be helped by a child transaction (CPFP). The funding stays version 2.
+
+| Piece | What it does |
+|---|---|
+| Coin selection | Prefers a plan that leaves a change output, adding a small coin if needed |
+| Speed-up output | When no change is possible, the funding preview says so plainly and offers a 240-sat P2A output that anyone can bump from. Setting "Speed-up output on fundings": **Auto** (the default: on when the chosen rate is near the relay floor, 0.1 to 1 sat/vB, off otherwise), **Always** or **Never** |
+| "Speed up" (host) | On a funding that is waiting, a button with a preview of the child: what it spends (the change or the speed-up output), its fee and the package rate. It never replaces the funding |
+| Status (host and members) | "Funding not confirmed: waited N blocks; the lobby ends in M blocks if it doesn't confirm", where M counts to the funding deadline (the tip at the acknowledgement plus 36). Amber once the wait is longer than normal; red when M is small (for example 6 or fewer) |
+| Status (members) | "The host's funding is waiting; you are released automatically in M blocks." No button. For later: members could bump through a keyless anchor |
+| Version 3 | Reconsidered before mainnet. It would only add zero-fee fundings, which are not needed |
+
+Tested in the Slice 1.5 plan's S7 (PR #99), on regtest at 0.1 and 1 sat/vB floors.
+
 ## Chain sources (owner, 2026-11-26)
 
 The owner: "we need all the options covered". Today's comparison of two Esplora operators stays. These are added in this order:

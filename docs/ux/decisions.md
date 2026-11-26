@@ -215,3 +215,15 @@ Order and shape:
 3. Compact block filters (BIP 157/158), as the default private light mode before mainnet.
 
 Today's comparison of two Esplora operators stays. This moves compact block filters from "later" (16g) to "before mainnet". Trust and privacy for each, and how each closes the host wallet's single-server scan gap, are in `SLICES.md` ("Chain sources").
+
+**c. A stuck funding is bumped, never replaced.** The funding's txid is fixed by the pre-signed tree, so a replacement by fee would kill the factory (H16). The funding stays version 2.
+1. Coin selection prefers to leave a change output, adding a small coin if needed.
+2. If no change is possible, the funding preview warns plainly and offers a 240-sat P2A "speed-up output". It is on by default when the chosen fee rate is near the relay floor (0.1 to 1 sat/vB), and off otherwise.
+3. A setting, "Speed-up output on fundings": Auto (the default, as in 2), Always or Never.
+4. A "Speed up" button for the host on a stuck funding. It has a preview, spends the change or the speed-up output with a child (CPFP), and never replaces the funding.
+   - Status, for the host and for members: "Funding not confirmed: waited N blocks; the lobby ends in M blocks if it doesn't confirm". M counts to the funding deadline, the tip at the acknowledgement plus 36.
+   - The line turns amber once the funding has waited longer than normal, and red when M is small (for example 6 or fewer).
+   - Members see "The host's funding is waiting; you are released automatically in M blocks", with no button. For later: members could bump through a keyless anchor.
+5. Before mainnet, version 3 for fundings is reconsidered. It would only add zero-fee fundings, which are not needed.
+
+Recorded in `PLAN.md` ("Funding" and the work list) and `SLICES.md` ("A stuck funding"). It answers Q2 of the Slice 1.5 plan (PR #99).
