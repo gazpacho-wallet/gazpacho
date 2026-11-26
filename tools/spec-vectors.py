@@ -416,8 +416,7 @@ cancel_hash = tagged_hash("gazpacho/msg", cancel_header + cancel_body)
 cancel_sig = schnorr_sign(cancel_hash, host_sk, AUX)
 assert schnorr_verify(cancel_hash, xonly(host_sk), cancel_sig)
 cancel_env = cancel_header + cancel_body + tlv([(240, cancel_sig)])
-print("
-== messages.md: vector M4, the host's 'cancel' of T1's lobby, reason 5")
+print("\n== messages.md: vector M4, the host's 'cancel' of T1's lobby, reason 5")
 print("signed hash =", cancel_hash.hex())
 show("Lightning message, native (52791, tag, kind, scope, records 2, 240)", u16(custom_type) + cancel_env)
 
