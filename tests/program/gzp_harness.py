@@ -47,6 +47,7 @@ class Proc:
         self.started = time.time()
         self.cv = threading.Condition()
         self.log = open(os.path.join(log_dir, name + ".log"), "a")
+        args = unlock_args(args)
         self.p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                   stdin=subprocess.PIPE if stdin else subprocess.DEVNULL, text=True, bufsize=1)
         self.eof = False
@@ -135,7 +136,7 @@ class Proc:
 
 
 def run(exe, *args, timeout=30):
-    r = subprocess.run([exe] + list(args), capture_output=True, text=True, timeout=timeout)
+    r = subprocess.run(unlock_args([exe] + list(args)), capture_output=True, text=True, timeout=timeout)
     return r.returncode, r.stdout + r.stderr
 
 
@@ -149,9 +150,70 @@ RECORD_TEST_PING = (0x7e570001, 0x7e580001)  # the test engines' ping records (t
 PING_HEADER = 82  # clock 8, link 66, serial 8
 
 
+# The wallet's passphrase for the tests (storage-encryption.md 4.1's rules:
+# 15 code points or more, not common, no words of the wallet).
+TEST_PASSPHRASE = "gazpacho test wallet passphrase, signet only"
+_PASS_FILE = None
+LAST_TEST_EXE = None
+
+
+def passphrase_file():
+    """A file holding the tests' passphrase, made once per run, closed to others."""
+    global _PASS_FILE
+    if _PASS_FILE is None:
+        import tempfile
+        fd, path = tempfile.mkstemp(prefix="gzp-pass-")
+        os.write(fd, TEST_PASSPHRASE.encode())
+        os.close(fd)
+        os.chmod(path, 0o600)
+        _PASS_FILE = path
+    return _PASS_FILE
+
+
+def unlock_args(args):
+    """args, with the test unlock added for a gazpacho-test that names a data
+    folder and does not choose its own passphrase file."""
+    global LAST_TEST_EXE
+    args = list(args)
+    if args and os.path.basename(args[0]) == "gazpacho-test":
+        LAST_TEST_EXE = args[0]
+        if "--data-dir" in args and "--test-passphrase-file" not in args:
+            args += ["--test-passphrase-file", passphrase_file(), "--test-kdf-floor"]
+    return args
+
+
+def dump_journal(folder, exe=None):
+    """The sealed journal of a stopped program's folder, read through
+    gazpacho-test --test-dump-journal: ("INCN", inc) and ("BTCH", inc, seq,
+    [(type, bytes), ...]) entries, as parse_journal gives for the stand-in."""
+    exe = exe or LAST_TEST_EXE
+    with open(os.path.join(folder, "identity")) as f:
+        role, network = f.read().split()
+    r = subprocess.run(unlock_args([exe, "--data-dir", folder, "--role", role, "--network", network,
+                                    "--no-chain", "--test-dump-journal"]),
+                       capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        raise RuntimeError("journal dump failed (%d): %s" % (r.returncode, r.stderr.strip()))
+    out = []
+    for line in r.stdout.splitlines():
+        kv = dict(w.split("=", 1) for w in line.split()[1:] if "=" in w)
+        if line.startswith("journal-incarnation"):
+            out.append(("INCN", int(kv["inc"])))
+        elif line.startswith("journal-batch"):
+            out.append(("BTCH", int(kv["inc"]), int(kv["seq"]), []))
+        elif line.startswith("journal-record"):
+            out[-1][3].append((int(kv["type"], 16), bytes.fromhex(kv.get("hex", ""))))
+    return out
+
+
 def parse_journal(path):
     """The journal stand-in's entries: a list of ("INCN", inc) and
     ("BTCH", inc, seq, [(type, bytes), ...]), stopping at a torn tail."""
+    folder = os.path.dirname(path)
+    if (os.path.basename(path) == "journal.standin" and not os.path.exists(path)
+            and os.path.exists(os.path.join(folder, "journal.gzj"))):
+        # The program's store is the sealed journal: read it through the program.
+        return dump_journal(folder)
     out = []
     with open(path, "rb") as f:
         data = f.read()

@@ -67,18 +67,22 @@ static void test_constants(void)
                                         "incarnation"};
     for (int s = 0; s <= GZ_JOURNAL_ERR_INCARNATION; s++)
         CHECK(strcmp(gz_journal_status_name((gz_journal_status_t)s), names[s]) == 0);
-    CHECK(strcmp(gz_journal_status_name((gz_journal_status_t)(GZ_JOURNAL_ERR_INCARNATION + 1)), "?") == 0);
+    CHECK(strcmp(gz_journal_status_name((gz_journal_status_t)(GZ_JOURNAL_ERR_NOT_THIS_WALLET + 1)), "?") == 0);
     /* Every type of spec section 9, and none of its odd neighbours. */
     static const uint32_t known[] = {
         0x00040002, 0x00040004, 0x00040006, 0x0004000a, 0x00010002, 0x00010004, 0x00010006,
         0x00010008, 0x0001000a, 0x0001000c, 0x0001000e, 0x00010010, 0x00010012, 0x00010014,
         0x00010016, 0x00020002, 0x00020004, 0x00020006, 0x00020008, 0x0002000a, 0x0002000c,
-        0x0002000e, 0x00030002, 0x00030004, 0x00030006};
+        0x0002000e, 0x00030002, 0x00030004, 0x00030006, 0x0004000c, 0x0004000e, 0x00010018,
+        /* Local API, area 0x000d (journal.md 9): the Slice 1 rows (F6). */
+        0x000d0002, 0x000d0004, 0x000d0006, 0x000d0008, 0x000d000a, 0x000d000c, 0x000d000e, 0x000d0010, 0x000d0012, 0x000d0014, 0x000d0016, 0x000d0024};
     for (size_t i = 0; i < sizeof known / sizeof known[0]; i++)
         CHECK(gz_journal_type_known(known[i]) == 1 && gz_journal_type_known(known[i] + 1) == 0);
-    CHECK(gz_journal_type_known(0x00040008) == 0 && gz_journal_type_known(0x00010018) == 0);
+    CHECK(gz_journal_type_known(0x00040008) == 0 && gz_journal_type_known(0x0001001a) == 0 &&
+          gz_journal_type_known(0x00040010) == 0);
     CHECK(gz_journal_type_known(0x7e570000) == 1 && gz_journal_type_known(0x7e56ffff) == 0 &&
-          gz_journal_type_known(0x7e580000) == 0);
+          gz_journal_type_known(0x7e580000) == 1 && gz_journal_type_known(0x7e5a0004) == 1 &&
+          gz_journal_type_known(0x7e5b0000) == 0);
 }
 
 static void test_scan_edges(void)

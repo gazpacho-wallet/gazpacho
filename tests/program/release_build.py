@@ -12,7 +12,9 @@ The release `gazpacho`:
     does link that build, shows the check would see it (review B of #71, L8);
   - it refuses every --test-* option;
   - kind 32767 is never delivered: a test-build member's pings to a release
-    host stay unanswered while the connection stays up.
+    host stay unanswered while the connection stays up. The release host is
+    set up through its local API (B3: the encrypted storage, the API before
+    the unlock); its sealed journal is read with gazpacho-test's dump.
 Needs `nm` (binutils).
 """
 import os
@@ -23,7 +25,11 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from gzp_harness import Checks, Proc, kill_all, parse_journal, peer_id, ping_payloads, run  # noqa: E402
+import http.client  # noqa: E402
+import json  # noqa: E402
+import socket  # noqa: E402
+
+from gzp_harness import Checks, Proc, dump_journal, kill_all, peer_id, ping_payloads, run  # noqa: E402
 
 check = Checks()
 FORBIDDEN = re.compile(r"sim_rng|sim_chacha|gzp_testping|gzp_standin_fail_at|gzp_standin_put_restore|gzp_standin_test_hooks")
@@ -31,7 +37,8 @@ FORBIDDEN = re.compile(r"sim_rng|sim_chacha|gzp_testping|gzp_standin_fail_at|gzp
 # that each half of the check can fail (review of PR 27, M5).
 IN_TEST = ("gzp_testping", "gzp_standin_fail_at", "gzp_standin_put_restore", "gzp_standin_test_hooks")
 TEST_STRINGS = (b"--test-pings", b"--test-timer-ms", b"--test-start-delay-ms", b"--test-node-error-at",
-                b"tests only (gazpacho-test)", b"test-timer fired", b"payload=%s", b"ping-payload")
+                b"tests only (gazpacho-test)", b"test-timer fired", b"payload=%s", b"ping-payload",
+                b"--test-lock-after-drop", b"--test-lock-after-command", b"locked-memory node-zero")
 
 VECTORS_NAME = re.compile(r"^(gz_sg_vectors_build_never_ship|gz_sgv_)")
 VECTORS_TEXT = b"gazpacho signer vectors build: never ship"
@@ -42,6 +49,31 @@ def symbols(path):
     if r.returncode != 0:
         r = subprocess.run(["nm", "-D", path], capture_output=True, text=True)
     return [l.split()[-1] for l in r.stdout.splitlines() if l.strip()]
+
+
+def api(port, method, path, body=None, session=None):
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=120)
+    h = {"Host": "127.0.0.1:%d" % port, "Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty"}
+    if method != "GET":
+        h["Origin"] = "http://127.0.0.1:%d" % port
+    if session:
+        h["X-Gazpacho-Session"] = session
+    data = json.dumps(body) if body is not None else None
+    if data:
+        h["Content-Type"] = "application/json"
+    c.request(method, "/api/v1" + path, data, h)
+    r = c.getresponse()
+    raw = r.read()
+    c.close()
+    return r.status, (json.loads(raw) if raw else None)
+
+
+def free_port():
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    p = s.getsockname()[1]
+    s.close()
+    return p
 
 
 def main():
@@ -88,10 +120,24 @@ def main():
         check(code == 2 and "only in the test build" in out and not os.path.exists(os.path.join(work, "x")),
               "the release build refuses --test-* (exit %s)" % code)
 
-        host = Proc("release-host", [rel, "--data-dir", os.path.join(work, "host"), "--role", "host",
-                                     "--listen", "127.0.0.1:0", "--no-chain", "--no-interface"], logs)
+        # The release host: its first run through the local API (B3).
+        pf = os.environ.get("GZP_TEST_PASSPHRASE_FILE")
+        pw = open(pf).read().strip() if pf else "gazpacho release-build test passphrase, signet only"
+        hdir = os.path.join(work, "host")
+        iport = free_port()
+        os.environ["XDG_RUNTIME_DIR"] = work
+        host = Proc("release-host", [rel, "--data-dir", hdir, "--role", "host", "--listen", "127.0.0.1:0", "--no-chain",
+                                     "--interface-port", str(iport)], logs)
         procs.append(host)
-        k = host.wait_for(r"host key=([0-9a-f]{66})")
+        check(host.wait_for(r"interface listening") is not None and host.find(r"host key=")[0] is None,
+              "the release host serves its interface, locked, before any node")
+        page = open(os.path.join(hdir, "first-run.html")).read()
+        tok = re.search(r"#start=([A-Za-z0-9_-]{43})", page).group(1)
+        st, sess = api(iport, "POST", "/session/start", {"start_token": tok})
+        st, c = api(iport, "POST", "/wallet/create", {"confirm": "create_wallet", "passphrase": pw, "confirm_passphrase": pw},
+                    sess and sess.get("session"))
+        check(st == 200 and c and len(c.get("words", [])) == 24, "the release host is set up through its API (%s)" % st)
+        k = host.wait_for(r"host key=([0-9a-f]{66})", timeout=120)
         m = host.wait_for(r"listening address=127\.0\.0\.1:(\d+)")
         if not (k and m):
             check(False, "the release host listens")
@@ -107,7 +153,7 @@ def main():
         check(mem.count(r"disconnected") == 0 and host.count(r"disconnected") == 0,
               "the connection stays up (an unknown odd kind is ignored)")
         host.stop()
-        pings = ping_payloads(parse_journal(os.path.join(work, "host", "journal.standin")))
+        pings = ping_payloads(dump_journal(hdir, tst))
         # Delivery would leave a ping record: the release adapter extracts
         # record 1 of kind 32767 like the test build's, and its node saves it.
         check(mem.count(r"pong peer=") == 0 and not pings,

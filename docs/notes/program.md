@@ -11,12 +11,13 @@ One process, one thread, one data folder, one node. `gazpacho --data-dir DIR --r
 | Piece | File | Replaced or extended by |
 |---|---|---|
 | Executor loop, timers, start, restart | `program/executor.c` | stays; engines add nothing here |
-| Storage interface | `program/store.h` | the journal (S5) and its encryption (S6) implement it |
-| Journal stand-in, start counter stand-in, restore marker | `program/journal_standin.c` | S5; the sealed counter `starts.gzs` in P9 |
+| Storage interface | `program/store.h` | implemented by `program/store_journal.c`: the journal (S5) sealed by its encryption (S6) |
+| Journal stand-in, start counter stand-in, restore marker | `program/journal_standin.c` | `gazpacho-test` only (`--test-standin-store`): replaced by the sealed journal, `starts.gzs` (P9) and `restore.gzr` |
+| Passphrase layer, keys in memory | `program/store_unlock.c` behind `program/unlock.h` | the local API (P5, P6) drives it |
 | Network adapter | `program/net.c` over `ports/net/peers.h` | links, kinds and `CONNECT` in P4; derived keys in P8 |
 | Chain adapter | `program/pchain.c` over the chain worker (`ports/chain`, `chain_watch.h`); the start-up check blocks | done (P7) |
 | User adapter | `program/notify.c` (output lines) | the view and the API server (P5, P6) |
-| Data folder, lock, key files | `program/datadir.c` | key file of S6; derived keys (P8) |
+| Data folder, lock | `program/datadir.c` | the key file of S6 (`keys.gzk`) is `store_unlock.c`'s; derived keys (P8) |
 | Command line | `program/options.c` | |
 | Test traffic | `program/testping.c` (test build only) | removed with the placeholder ping |
 
@@ -67,7 +68,11 @@ Per incarnation (`gzp_exec_incarnation`), in this order:
 
 ## 4. Storage
 
-`program/store.h` is the interface the real journal (S5) and storage encryption (S6) will provide: `begin` (fence, start counter, durable incarnation), `next`/`rewind` (the shape of `gz_storage_reader_t`), `append`, `complete`, `restored` (the restore marker), `close`. Today: `journal.standin` (a header, then `INCN` and `BTCH` entries, each with a SHA-256; no encryption, no compaction, everything in memory), `starts.standin` (the start counter, `GZSTART0 <n>`, unsealed; the sealed `starts.gzs` of `storage-encryption.md` 10.3 is P9) and `restore.pending` (the restore marker: present from the moment a backup is put in place until batch 1 of an incarnation begun with it is durable). A missing counter falls back to the journal alone and is reported (on a restore: `counter_found` 0, "the person is told"). The counter covers a restore of the journal alone, not a snapshot of the whole folder (contract v2 section 8).
+`program/store.h` is implemented by `program/store_journal.c`: the journal of `ports/storage/journal.h` (S5) in its sealed format (S6), opened with `gz_journal_open_sealed` in pull mode, under the keys of the unlocked wallet (`program/store_unlock.c`). The sealed table gives the journal the header and entries (storage 5.3 to 5.5), the start rule (6.3), the mark file's entry for every anchored batch before it is confirmed (7 step 2), the sealed guard file (10.1); the start counter `starts.gzs` (contract v2 section 8, storage 10.3, P9: sealed under KC from the seed, made at set-up) is read before the open and written before the incarnation entry; `restore.gzr` is the restore marker; in the sealed format it is trusted only beside the sealed mark file's restore marker, which the import and the start as a restore write first (review A of PR 54, M1). The set-up marker `setup.gzp` only changes what is told (storage 7.4). `append` is synchronous: sync, mark, sync, anchor, guard, then it returns. A failed append fails the journal, which writes nothing more; the next start reads what the device holds (`journal.md` 4), so the store is never "poisoned". A start refused by the rule (behind, possibly old) is `files_behind`: every key is dropped and the wallet stays locked.
+
+The stand-in (`journal.standin`, `starts.standin`, `restore.pending`) stays in `gazpacho-test` only, behind `--test-standin-store`, for the tests that read its files or rely on its cut back of a failed sync (`program_store`, `program_storage_failure`, `program_restore_counter`).
+
+**Start order** (section 2): take the folder lock; open the local interface (its sign-in and set-up are the wallet's, unlock.h over store_unlock.c, B3); come up locked (nothing of the journal is read; no peer is listened for or connected to; the chain servers are checked and polled from the start, before the folder is opened (PR 50, L1), so a chain server sees a locked wallet polling: review A of PR 54, L2); on unlock (`unlock.h`: the local API, or `--test-passphrase-file` in `gazpacho-test`) open storage (fence, start rule, counter, incarnation); start the node; only then connect. The release program, until the local API is in it (P5), stays locked until it is stopped.
 
 ## 5. Data folder, roles, network, options
 
@@ -75,7 +80,7 @@ Per incarnation (`gzp_exec_incarnation`), in this order:
 - **Identity.** `DIR/identity` holds the role and network written at the first start; another is refused (exit 4).
 - **Networks.** signet (default) or testnet4, one per folder; `init` names exactly that chain (`messages.md` 2), so a signet member and a testnet4 host both close over init. Mainnet is refused (exit 2) before any folder is made; a chain server whose block 0 is another network's, or that cannot be reached, is refused at start (exit 5), before anything is written to the data folder (review of PR 50, L1). Exit 7: the node asked for more watches than the chain worker holds, which no restart can fix (the saved watches come back at every start), so the program stops once instead of restarting into it. The build ties the two sizes together (`GZ_NODE_MAX_WATCHES` at most `GZP_MAX_WATCHES`), so only a test worker (`--test-chain-watches`) can reach it.
 - **Options.** `--data-dir`, `--role`, `--network`, `--listen ADDR:PORT` (host), `--connect KEY@ADDR:PORT` (member), `--interface-port`, `--no-interface`, `--chain-url` (up to 4, compared), `--chain-operator NAME` (who runs the `--chain-url` before it; default from its host name, all loopback names being one operator), `--no-chain`, `--chain-poll-ms`, `--check-chain` (read-only check, then stop), transport timers (`--handshake-ms`, `--recv-ms`, `--send-ms`, `--ping-ms`, `--pong-ms`, `--reconnect-ms`, `--max-per-address`). `gazpacho-test` adds `--test-pings`, `--test-ping-ms`, `--test-crash-at-ping`, `--test-storage-fail-at`, `--test-sync-fail-at`, `--test-cut-fail`, `--test-crash-after-counter`, `--test-start-delay-ms`, `--test-listen-during-start`, `--test-restore-from`, `--test-timer-ms`, `--test-burst`, `--test-oversize-send`, `--test-node-error-at`, `--test-node-error-always`, `--test-stop-at-restart`, `--test-chain-small` (a worker with 16 watches and 32 requests, to make it answer BUSY), `--test-chain-watches N`, `--test-chain-backlog N`; the release build refuses any `--test-*` without knowing their names, and neither the names, their usage lines, the test timer nor the store's test hooks are compiled into it (review B, B4). Release output lines never carry message bytes: a start's resend shows its length only (B6).
-- **Key files (stand-ins).** `transport.key` and `wallet-seed.standin`, 64 hex, mode 0600, unencrypted; derived keys replace them in P8, the key file in S6.
+- **Keys.** The key file `keys.gzk` (storage 4.5) and the attempts file `attempts.gza` (12.3); a key file open to others is refused. The BIP 39 seed is the unlocked storage layer's copy; the transport's static key is derived from it (`derive(seed, "transport stand-in N", chain)`), so it lives behind the key file and survives a restore from the words. `transport.key` and `wallet-seed.standin` are gone. Per-member keys from the seed are P8; the key port is unchanged.
 
 ## 6. The core contract
 
@@ -94,7 +99,7 @@ Draft 1 found fifteen; contract v2 decided each. Where they stand after P3:
 | 5 | The chain view blocks the loop | Done (P7): the chain worker; only the start-up network check and first tip block, before the loop |
 | 6 | The transport blocks | Done: the program uses only `peers.h`; `conn.h` only in a test client |
 | 7 | Kind and scope | Carried by the adapter as test kind 32767 until P4 |
-| 8 | A restore rewinds the incarnation | Stand-in counter done here; sealed in P9 |
+| 8 | A restore rewinds the incarnation | Done: `starts.gzs`, sealed under KC from the seed, made at set-up (branch s5-s6-program) |
 | 9, 10 | Broadcast outcome, `WATCH_SCRIPT` | Broadcast outcome done (P7); `WATCH_SCRIPT` is not in contract v2 |
 | 11 | What the interface reads | P5, P6 |
 | 12 | Transport's random type | Merged (P2): `gz_net_random_t` |
@@ -126,7 +131,7 @@ Every pull request that adds or changes an engine, a port or a stand-in must:
 
 | CTest | Contract v2 | What it shows |
 |---|---|---|
-| `program_store` | T8 (unit) | the stand-in against the storage contract; the counter, its fallbacks and the 2^63 refusal; the marker; a failed sync cut back and a poisoned store; the scan: a flipped last body byte cut as a torn tail, a repeated batch id, a repeated incarnation entry and a batch of an incarnation never begun refused; a flipped bit in a middle entry's length refused with nothing cut (B1); a short tail and an over-long last head cut and kept in `journal.standin.cut-N`; a batch with sequence 0 and an incarnation entry of 9 bytes refused |
+| `program_store` | T8 (unit) | the stand-in (`--test-standin-store`) against the storage contract; the counter, its fallbacks and the 2^63 refusal; the marker; a failed sync cut back and a poisoned store; the scan: a flipped last body byte cut as a torn tail, a repeated batch id, a repeated incarnation entry and a batch of an incarnation never begun refused; a flipped bit in a middle entry's length refused with nothing cut (B1); a short tail and an over-long last head cut and kept in `journal.standin.cut-N`; a batch with sequence 0 and an incarnation entry of 9 bytes refused |
 | `program_net` | | record 1 of the carrier's TLV stream, and nothing read past a malformed length |
 | `program_options` | | the command line; mainnet refused first |
 | `program_two_process` | P3 | a host and two members over `peers.h`: ping/pong through the real runners and journals; the host killed after a ping is durable, its start's resend dropped although the member's connection is up in the start queue, and the loss repaired at reconnect; a member killed and restarted; the start queue (a member that pings during a held start reaches the node only after "ready"; one killed during it is never reported; one that sends 1.2 MB during it is closed and reported only once it comes back; one that sends 4,100 messages of 200 bytes (payload under 1 MiB) is closed only because of the 64 bytes counted per message; a closed member's queued pings dropped when it closes; a timer due during it fires after it); the lock, also with its file deleted; the role check; the shutdown order read from the state |
@@ -145,6 +150,10 @@ Every pull request that adds or changes an engine, a port or a stand-in must:
 | `program_refusals` | review B | mainnet refused first; a host with `--connect`; a folder or a key file open to others; the reconnect delay back to its first value after a success |
 | `program_no_probes` | T14 | no core probe, no `GZ_RANDOM_OTHER` |
 | `program_signet_check` | | opt-in (`GZ_LIVE_TESTS`): read-only against public signet servers |
+| `program_unlock` | S6 | the start order (no wallet, set-up, the node, then listening); no stand-in key file; the passphrase in no output line, file or command line; the attempts (five free, then doubling; a try inside the delay refused, not counted); a missing attempts file is the strictest state; a damaged key file opens nothing; the release program stays locked without the local interface |
+| `program_journal_kill` | S5, S6 | SIGKILL before every third storage write, sync, truncate, rename and removal from set-up, and through an import with its anchored restore batch, each followed by two clean starts (no corruption, nothing behind, rising incarnations, the restore repeated until answered); `program_journal_kill_full` (label `slow`) every call |
+| `program_storage_damage` | S5, S6 | a flipped batch, header, mark file, guard file or marker refused with every file unchanged; a torn tail cut; a journal cut back behind its anchored batch refused; a damaged or missing `starts.gzs` treated as missing, told, written again |
+| `program_journal_restore` | S5, S6, P9 | the oldest backup imported four times: new epochs, never 0 or reused, incarnations above every one used, the guard counter above the device's and its epochs kept; a journal put back by hand is files behind; the journal removed alone restores as step 0 with the guard carried; a restore without its counter is told |
 
 ## 10. Review A of PR 27
 

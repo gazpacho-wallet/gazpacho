@@ -64,11 +64,13 @@ typedef struct {
     volatile sig_atomic_t *stop;
 
     /* one incarnation */
+    struct gzp_wallet *wallet;   /* the unlocked wallet: storage keys (store_unlock.h) */
     gzp_store_t store;
     int store_open;
     uint64_t incarnation;
     gz_node_t *node;             /* gz_node_size() bytes, made once per process */
     void *sign_mem;              /* gz_node_sign_size() bytes, the signing engine's, made once per process */
+    int test_locked_once;        /* tests: --test-lock-after-drop has locked */
     gz_tree_crypto_t tree_crypto;  /* the signing engine's builders' provider (tree.h) */
     gz_runner_t runner;
     gz_runner_slot_t rslots[GZP_RUNNER_SLOTS];
@@ -102,5 +104,8 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number);
 int gzp_exec_wait_unlocked(gzp_exec_t *ex);
 /* After GZP_RUN_STOP, once the connections are closed. */
 void gzp_exec_close_storage(gzp_exec_t *ex);
+
+/* Tests: 1 if the node's and the signing engine's memory read all zero. */
+int gzp_exec_test_memory_zero(const gzp_exec_t *ex, int *node_zero, int *sign_zero);
 
 #endif
