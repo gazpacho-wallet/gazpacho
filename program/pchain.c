@@ -16,8 +16,7 @@
 #include "pchain.h"
 
 #define GZP_PACERS 8
-#define GZP_PACE_PUBLIC_MS 1000u   /* a public server: at most one request a second */
-#define GZP_PACE_LOCAL_MS 250u     /* the local test chain (regtest) */
+#define GZP_PACE_PUBLIC_MS 2000u   /* a public server: at most one request every two seconds */
 static struct {
     char url[GZ_ESPLORA_URL_MAX + 1];
     gz_esplora_pacer pacer;
@@ -29,11 +28,14 @@ gz_esplora_pacer *gzp_chain_pacer(const char *url, int local)
 {
     gz_esplora_pacer *p = NULL;
     if (!url || strlen(url) > GZ_ESPLORA_URL_MAX) return NULL;
+    /* the local test chain, or a server on this machine (the only plain-http one the chain port
+     * takes): not a public server, nothing to throttle; each client keeps its own pace, as before */
+    if (local || strncmp(url, "http://", 7) == 0) return NULL;
     pthread_mutex_lock(&PACERS_MU);
     for (size_t i = 0; i < N_PACERS && !p; i++)
         if (strcmp(PACERS[i].url, url) == 0) p = &PACERS[i].pacer;
     if (!p && N_PACERS < GZP_PACERS &&
-        gz_esplora_pacer_init(&PACERS[N_PACERS].pacer, local ? GZP_PACE_LOCAL_MS : GZP_PACE_PUBLIC_MS)) {
+        gz_esplora_pacer_init(&PACERS[N_PACERS].pacer, GZP_PACE_PUBLIC_MS)) {
         snprintf(PACERS[N_PACERS].url, sizeof PACERS[N_PACERS].url, "%s", url);
         p = &PACERS[N_PACERS++].pacer;
     }
