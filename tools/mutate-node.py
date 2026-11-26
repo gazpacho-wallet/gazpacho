@@ -17,7 +17,11 @@ see) or "# untested NAME: why" (a real fault these tests do not reach, with
 where it is covered or why not) has been triaged; the run exits 1 if any
 survivor is not triaged, or any mutant does not apply or compile.
 
-usage: tools/mutate-node.py SOURCE-DIR WORK-DIR [-j N] [NAME...]
+usage: tools/mutate-node.py SOURCE-DIR WORK-DIR [-j N] [--shard I/N] [NAME...]
+
+--shard I/N (I from 0) runs only every Nth mutant of the list, in file order,
+starting at the Ith: the N shards together run each mutant exactly once (CI's
+node-mutants job runs them in parallel).
 """
 import os
 import shutil
@@ -95,13 +99,34 @@ def main():
         i = args.index("-j")
         jobs = args[i + 1]
         del args[i:i + 2]
+    shard = None
+    if "--shard" in args:
+        i = args.index("--shard")
+        try:
+            k, n = (int(x) for x in args[i + 1].split("/"))
+        except (ValueError, IndexError):
+            sys.exit("--shard wants I/N, as 0/4")
+        if not (n > 0 and 0 <= k < n):
+            sys.exit("--shard wants 0 <= I < N")
+        shard = (k, n)
+        del args[i:i + 2]
     if len(args) < 2:
         sys.exit(__doc__)
     source, work, only = os.path.abspath(args[0]), os.path.abspath(args[1]), set(args[2:])
     src, build = os.path.join(work, "src"), os.path.join(work, "build")
     mutants, triaged = load(os.path.join(source, "tests/node/mutants.txt"))
+    # A triage line whose mutant is not in the list is stale (review of #89,
+    # L2): in a full run (no names given; a shard is still the full list) it
+    # fails the run.
+    names = set(m[0] for m in mutants)
+    orphans = sorted(n for n in triaged if n not in names)
+    for n in orphans:
+        print("ORPHAN   %s (a triage line with no such mutant)" % n, flush=True)
     if only:
         mutants = [m for m in mutants if m[0] in only]
+    if shard:
+        mutants = [m for j, m in enumerate(mutants) if j % shard[1] == shard[0]]
+        print("shard %d of %d: %d mutants" % (shard[0], shard[1], len(mutants)), flush=True)
     shutil.rmtree(src, ignore_errors=True)
     os.makedirs(src)
     code, files = run(["git", "ls-files", "-co", "--exclude-standard"], cwd=source)
@@ -153,6 +178,8 @@ def main():
             if by:
                 killed.append((name, by))
                 print("killed   %s (by %s)" % (name, by), flush=True)
+                if name in triaged:   # review of #89, L2: its triage line is now wrong
+                    print("NOTE     %s is killed but still triaged: drop its triage line" % name, flush=True)
             else:
                 survivors.append(name)
                 print("SURVIVED %s%s" % (name, " (triaged: %s)" % triaged[name] if name in triaged else ""), flush=True)
@@ -164,7 +191,9 @@ def main():
     print("mutants %d: killed %d, survived %d (triaged %d), not applied or not compiled %d, %.0f s"
           % (len(mutants), len(killed), len(survivors), len(survivors) - len(untriaged), len(broken),
              time.time() - start))
-    return 1 if untriaged or broken else 0
+    if orphans and not only:
+        print("%d orphaned triage lines" % len(orphans))
+    return 1 if untriaged or broken or (orphans and not only) else 0
 
 
 if __name__ == "__main__":

@@ -246,7 +246,9 @@ ls-left-out-place-free	core/node/lobbyslot.c	        memset(&s->lobby, 0, sizeof
 ls-left-out-rejoin	core/node/lobbyslot.c	    if (left_out_by_scope(c, scope.data) >= 0) return np_command_result(out, cmd, 503, "no_key"); /* H1 */\n	
 ls-left-out-not-told	core/node/composite.c	        if (c->slots[i].state == SLOT_LEFT_OUT) return gz_ls_left_out_note(c, i, out);\n	
 ls-unknown-field-taken	core/node/lobbyslot.c	        if (!(t & 1) && (t >= 64 || !(known & (1u << (t / 2))))) return 0;\n	
-ls-index-wraps	core/node/lobbyslot.c	 ||\n        gz_get_u32(index.data) == 0xffffffffu)	)
+ls-index-wraps	core/node/lobbyslot.c	 ||\n        gz_get_u32(index.data) > GZ_LS_KEY_INDEX_MAX)	)
+ls-index-bound-high	core/node/internal.h	#define GZ_LS_KEY_INDEX_MAX 0xfffffff0u	#define GZ_LS_KEY_INDEX_MAX 0xfffffffeu
+ls-index-bound-edge	core/node/lobbyslot.c	gz_get_u32(index.data) > GZ_LS_KEY_INDEX_MAX)	gz_get_u32(index.data) >= GZ_LS_KEY_INDEX_MAX)
 timer-of-ended-slot-kept	core/node/handoff.c	            drop_action(c, out, i);\n            continue;\n        }\n        if (a->kind == GZ_ACTION_SET_TIMER || a->kind == GZ_ACTION_CANCEL_TIMER) {	        }\n        if (a->kind == GZ_ACTION_SET_TIMER || a->kind == GZ_ACTION_CANCEL_TIMER) {
 # --- P4.3: the signing engine in the composite (signslot.c and its hooks)
 sg-gate-digest-off	core/node/lobbyslot.c	return m->have_terms && memcmp(now, s->gate_digest, 32) == 0;	return m->have_terms;
@@ -278,3 +280,8 @@ sg-unknown-as-this	core/node/lobbyslot.c	return np_command_result(out, cmd, 409,
 sg-unknown-not-refused	core/node/lobbyslot.c	if (held_out == GZ_SIGN_OUT_UNKNOWN) return	if (0) return
 sg-tip-not-to-signing	core/node/composite.c	if (st == GZ_OK && c->sign_on && !c->cfg.host) st = gz_c_bracket(c, ENG_SIGN, ev, out);	
 sg-no-funding-deadline	core/node/signslot.c	sc.funding_deadline_blocks = fc.funding_deadline_blocks;	sc.funding_deadline_blocks = 0;
+ls-alloc-ceiling-host	core/node/lobbyslot.c	    if (c->np.highest_index >= GZ_LS_KEY_INDEX_MAX) return np_command_result(out, cmd, 503, "no_key");	    if (c->np.highest_index > GZ_LS_KEY_INDEX_MAX) return np_command_result(out, cmd, 503, "no_key");	1
+ls-alloc-ceiling-member	core/node/lobbyslot.c	    if (c->np.highest_index >= GZ_LS_KEY_INDEX_MAX) return np_command_result(out, cmd, 503, "no_key");	    if (c->np.highest_index > GZ_LS_KEY_INDEX_MAX) return np_command_result(out, cmd, 503, "no_key");	2
+# untested sg-accepted-only-off: the real engine's member builder (sg_build); the node's unit tests here run rounds through the signing stand-in (test_sign_outcome set), which never calls it. Follow-up test: #89's list
+# untested sg-outcome-to-member-failed: the real engine's outcome to a member slot (sg_deliver); the stand-in reports its own outcomes, so no unit test here reaches it. Follow-up test: #89's list
+# untested sg-outcome-not-queued: the real engine's outcome while the slot is busy or deferred (sg_queue); the stand-in never reports into a busy slot. Follow-up test: #89's list

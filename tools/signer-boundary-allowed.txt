@@ -103,6 +103,12 @@ tests/net/test_testkind.c	secp256k1_ec_pubkey_create	1
 tests/net/test_testkind.c	static_key	1
 tests/net/test_wipes.c	secp256k1_ec_pubkey_create	1
 tests/node/test_node_lobby.c	secp256k1_schnorrsig_sign32	3
+# Test only (#92): test_keys_own_role_only sets a member's key port to
+# w_any_host_secret, a port that hands out a host key to anyone who asks, so
+# that only gz_sg_keys' role check can refuse a host-role key on a member
+# (it kills sg-keys-any-role). Two uses: the assignment and the reset. It
+# goes with the key port's host_secret at S3.
+tests/node/test_node_lobby.c	host_secret	2
 tests/program/fuzz_keys.c	secp256k1_ec_pubkey_create	1
 tests/program/silent_peer.c	secp256k1_ec_seckey_verify	1
 tests/program/test_keys_rare.c	gzw_bip32_derive_priv	1

@@ -501,6 +501,7 @@ static int node_rec_known(gz_bytes_t b, uint32_t known)
     return 1;
 }
 
+
 /* A slot_opened record at load: the slot is Open again, with its lobby
  * engine made anew for the Lobby records that follow. */
 gz_status_t gz_ls_load_opened(gz_node_t *c, const gz_record_t *rec)
@@ -511,7 +512,7 @@ gz_status_t gz_ls_load_opened(gz_node_t *c, const gz_record_t *rec)
         !arg(rec->bytes, 2, 4, &serial) ||
         !arg(rec->bytes, 4, 32, &scope) || !arg(rec->bytes, 6, 1, &role) || role.data[0] > 1 ||
         !arg(rec->bytes, 12, 4, &epoch) || !arg(rec->bytes, 14, 4, &index) || gz_get_u32(serial.data) == 0 ||
-        gz_get_u32(index.data) == 0xffffffffu) /* the pair's second index would wrap (L4) */
+        gz_get_u32(index.data) > GZ_LS_KEY_INDEX_MAX)
         return GZ_ERR_CORRUPT;
     if (gz_get_u32(serial.data) > c->slot_serial) c->slot_serial = gz_get_u32(serial.data);
     if (gz_get_u32(index.data) + 1 > c->np.highest_index && gz_get_u32(epoch.data) == (c->np.have_epoch ? c->np.epoch : 0))
@@ -1197,7 +1198,7 @@ static gz_status_t cmd_open(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
         outer.len > GZ_TERMS_OUTER_MAX || current.len > GZ_TERMS_CURRENT_MAX)
         return np_command_result(out, cmd, 400, "bad_request");
     if ((i = free_slot(c)) < 0) return np_command_result(out, cmd, 409, "too_many_lobbies"); /* a ninth: refused */
-    if (c->np.highest_index > 0xfffffff0u) return np_command_result(out, cmd, 503, "no_key");
+    if (c->np.highest_index >= GZ_LS_KEY_INDEX_MAX) return np_command_result(out, cmd, 503, "no_key");   /* the next index would not load (#87, L1) */
     slot_t *s = &c->slots[i];
     memset(s, 0, sizeof *s);
     s->kind = SLOT_KIND_LOBBY;
@@ -1256,7 +1257,7 @@ static gz_status_t cmd_join(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
     if (left_out_by_scope(c, scope.data) >= 0) return np_command_result(out, cmd, 503, "no_key"); /* H1 */
     if (gz_route_slot_by_scope(c, scope.data) >= 0) return np_command_result(out, cmd, 409, "lobby_exists");
     if ((i = free_slot(c)) < 0) return np_command_result(out, cmd, 409, "too_many_lobbies");
-    if (c->np.highest_index > 0xfffffff0u) return np_command_result(out, cmd, 503, "no_key");
+    if (c->np.highest_index >= GZ_LS_KEY_INDEX_MAX) return np_command_result(out, cmd, 503, "no_key");   /* the next index would not load (#87, L1) */
     slot_t *s = &c->slots[i];
     memset(s, 0, sizeof *s);
     s->kind = SLOT_KIND_LOBBY;
