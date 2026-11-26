@@ -418,6 +418,8 @@ gz_status_t gz_view_query(gz_node_t *c, gz_action_list_t *out)
  * it (7.3: never in an event; review A of PR 55, M5): every lobby slot has a
  * local id from its open, or from the start that finds it without one
  * (api.c, gz_api_resume), and a slot without one has no item until then. */
+static uint8_t slot_role(const slot_t *s);
+
 static gz_status_t attention(gz_node_t *c, slot_t *s, int force, gz_action_list_t *out)
 {
     char id[GZ_LOCAL_ID_MAX + 8];
@@ -454,6 +456,7 @@ static gz_status_t attention(gz_node_t *c, slot_t *s, int force, gz_action_list_
         put8(&w, GZ_VAT_CODE, code);
         put(&w, GZ_VAT_LOBBY, s->view.local_id, slen(s->view.local_id));
         put64(&w, GZ_VAT_SINCE, wall(c));
+        put8(&w, GZ_VAT_ROLE, slot_role(s));
         if (count) put16(&w, GZ_VAT_COUNT, count);
         if (code == GZ_ATT_HOST_FUNDS_SHORT) {
             put64(&w, GZ_VAT_NEED, s->funds_need);

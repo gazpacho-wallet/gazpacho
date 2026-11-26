@@ -42,7 +42,8 @@ int gzp_view_lobby_class(uint32_t kind);
 
 /* GET /api/v1/status's attention list (local-api.md 11.4) from the core's
  * kind 7 items (docs/notes/view-objects.md 5): code, lobby_id, lobby_role
- * (joined or hosted, from the lobby's own view kind, else from the code), and
+ * (joined or hosted: the item's GZ_VAT_ROLE, else the lobby's own view kind,
+ * else the code), and
  * params (lobby_id and lobby_role, and need_sat, have_sat for
  * host_funds_short, count for member_refused). Oldest first (since_at, then
  * id); the server orders them by tier. An item of an unknown code, or whose

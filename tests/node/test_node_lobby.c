@@ -4432,6 +4432,7 @@ static void test_funds_auto_start(void)
     CHECK(host_ready(&t) == 3);                                    /* the target is reached */
     CHECK(host_state(&t) == GZ_LOBBY_OPEN && h_records_of(&N[0], GZ_REC_FREEZE) == 0 && slot(0, &t)->funds_blocked);
     w = view_of(0, GZ_VIEW_ATTENTION, aid);
+    CHECK(w && !w->gone && vf8(w, GZ_VAT_ROLE) == GZ_ROLE_HOSTED);   /* 11.4: the item names its lobby's role */
     CHECK(w && !w->gone && vf8(w, GZ_VAT_CODE) == GZ_ATT_HOST_FUNDS_SHORT && vf(w, GZ_VAT_NEED, &v) && v.len == 8 &&
           vf(w, GZ_VAT_HAVE, &v) && v.len == 8);
     FUNDS[0] = 2;                                                  /* nor when the wallet cannot tell */

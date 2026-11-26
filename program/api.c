@@ -169,6 +169,12 @@ static int status(void *be, gz_api_status_facts *f)
     f->watcher_runs = 0;
     f->watching_reason = "no_bundle";
     f->as_of_height = f->chain_height;
+    /* 11.4: the core's attention items (kind 7), with their lobby's role */
+    if (w == GZ_API_WALLET_UNLOCKED) {
+        gzp_view_attention(&a->view, &a->attention);
+        for (int i = 0; i < a->attention.n; i++) f->attention[i] = a->attention.item[i];
+        f->nattention = a->attention.n;
+    }
     return 0;
 }
 

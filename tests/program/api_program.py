@@ -305,6 +305,18 @@ def gate_after_seat_ends(exe):
                                                   "preset": (c or {}).get("preset"), "confirm_loosens": []})
         ok, you = closed_soon(ms[1], lids[1])
         check(st == 200 and ok, "gate: after a refusal, you.gate is closed (14.3 rule 1)", (st, r, you))
+        # the host's status names the refusal (local-api.md 11.4): member_refused for its lobby,
+        # hosted, one seat, from the core's attention item
+        att = []
+        for _ in range(20):
+            st, hs = h.call("GET", "/status")
+            att = [x for x in ((hs or {}).get("attention") or []) if x.get("code") == "member_refused"]
+            if att:
+                break
+            time.sleep(0.25)
+        check(len(att) == 1 and att[0].get("lobby_id") == (op or {}).get("id") and att[0].get("lobby_role") == "hosted" and
+              att[0].get("tier") == "important" and (att[0].get("params") or {}).get("count") == 1,
+              "gate: the host's status has member_refused for its lobby, hosted, one seat (11.4)", att)
     finally:
         for m in ms:
             m.stop()

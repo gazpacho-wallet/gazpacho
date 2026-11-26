@@ -239,7 +239,9 @@
     refused_to_sign: "The app refused to sign for a lobby. Nothing was signed. Nothing moved.",
     unlock_to_take_part: "A seat of yours is locked: it does not take part until you mark ready again with your passphrase.",
     host_can_start: "Enough members are ready in a lobby you host: you can start it now.",
-    host_funds_short: "A lobby you host needs more coins than this wallet has free."
+    host_funds_short: "A lobby you host needs more coins than this wallet has free.",
+    member_refused: "A member of a lobby you host refused its values. Open the lobby to see which.",
+    lobby_left_out: "A lobby you are in is waiting: this start could not get its keys. Nothing is signed or sent for it until it can."
   };
   var tiers = { at_risk: "At risk", act_now: "Act now", important: "Important", recommended: "Recommended", heads_up: "Heads-up", record: "Record" };
   var activityKinds = {

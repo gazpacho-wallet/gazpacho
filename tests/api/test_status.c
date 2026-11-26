@@ -241,6 +241,33 @@ static void test_attention(void)
     CHECK(strcmp(gz_attention_tier("exit_needs_fee_coin", 0), "important") == 0);
     CHECK(strcmp(gz_attention_tier("exit_needs_fee_coin", 1), "at_risk") == 0);
     CHECK(strcmp(gz_attention_tier("terms_changed", 1), "heads_up") == 0);
+    /* the core's lobby items (11.4): important, and every one names its lobby's role */
+    CHECK(strcmp(gz_attention_tier("member_refused", 0), "important") == 0);
+    CHECK(strcmp(gz_attention_tier("lobby_left_out", 0), "important") == 0);
+    CHECK(strcmp(gz_attention_tier("host_funds_short", 0), "important") == 0);
+    base();
+    g_facts.attention[0].id = "att_7k2q";
+    g_facts.attention[0].code = "host_funds_short";
+    g_facts.attention[0].lobby_id = "lob_7k2q";
+    g_facts.attention[0].lobby_role = "hosted";
+    g_facts.attention[0].params_json = "{\"lobby_id\":\"lob_7k2q\",\"lobby_role\":\"hosted\",\"need_sat\":9,\"have_sat\":4}";
+    g_facts.nattention = 1;
+    CHECK(write_status(s, 0, 1, &d) == 0);
+    a = gz_json_get(d.root, "attention");
+    CHECK(a && a->len == 1);
+    if (a && a->len == 1) {
+        CHECK(strcmp(path_str(a->child, "lobby_id", NULL), "lob_7k2q") == 0);
+        CHECK(strcmp(path_str(a->child, "lobby_role", NULL), "hosted") == 0);
+        CHECK(strcmp(path_str(a->child, "params", "lobby_role"), "hosted") == 0);
+    }
+    gz_json_free(&d);
+    {
+        gz_jw w;
+        g_facts.attention[0].lobby_role = NULL;      /* a lobby item without its role is refused, not softened */
+        gz_jw_init(&w);
+        CHECK(gz_status_write(s, &w, 0, 1) != 0);
+        gz_jw_free(&w);
+    }
     free(s);
 }
 

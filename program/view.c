@@ -124,8 +124,11 @@ static const char *att_code(uint8_t code)
 
 /* The lobby's role: its own view says it (kind 2 joined, kind 3 hosted);
  * without one, the codes that only one role raises. */
-static const char *att_role(const gzp_view_t *v, const char *lobby, uint8_t code)
+static const char *att_role(const gzp_view_t *v, gz_bytes_t all, const char *lobby, uint8_t code)
 {
+    gz_bytes_t f;
+    if (gz_rec_find(all, GZ_VAT_ROLE, &f) == 1 && f.len == 1 && (f.data[0] == GZ_ROLE_JOINED || f.data[0] == GZ_ROLE_HOSTED))
+        return f.data[0] == GZ_ROLE_HOSTED ? "hosted" : "joined";   /* the core's own word */
     if (gzp_view_find(v, GZ_VIEW_HOST_LOBBY, lobby)) return "hosted";
     if (gzp_view_find(v, GZ_VIEW_LOBBY, lobby)) return "joined";
     if (code == GZ_ATT_MEMBER_REFUSED || code == GZ_ATT_HOST_FUNDS_SHORT) return "hosted";
@@ -168,7 +171,7 @@ void gzp_view_attention(const gzp_view_t *v, gzp_attention_t *out)
         }
         memcpy(out->lobby[k], f.data, f.len);
         out->lobby[k][f.len] = 0;
-        role = att_role(v, out->lobby[k], code);
+        role = att_role(v, all, out->lobby[k], code);
         if (!role) {
             out->skipped++;
             continue;
