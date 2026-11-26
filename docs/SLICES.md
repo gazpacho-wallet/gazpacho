@@ -82,11 +82,19 @@ The funding's txid is fixed before anything is signed, because the whole tree is
 | Piece | What it does |
 |---|---|
 | Coin selection | Prefers a plan that leaves a change output, adding a small coin if needed |
-| Speed-up output | When no change is possible, the funding preview says so plainly and offers a 240-sat P2A output that anyone can bump from. Setting "Speed-up output on fundings": **Auto** (the default: on when the chosen rate is near the relay floor, 0.1 to 1 sat/vB, off otherwise), **Always** or **Never** |
+| Speed-up output | When no change is possible, the funding preview says so plainly and offers a 240-sat P2A output that anyone can bump from. **A host setting only**, "Speed-up output on fundings": **Auto** (the default: on when the chosen rate is near the relay floor, 0.1 to 1 sat/vB, off otherwise), **Always** or **Never**. It is not in the lobby terms and is not sent to members, and members cannot object to it: how the host funds is the host's business |
 | "Speed up" (host) | On a funding that is waiting, a button with a preview of the child: what it spends (the change or the speed-up output), its fee and the package rate. It never replaces the funding |
 | Status (host and members) | "Funding not confirmed: waited N blocks; the lobby ends in M blocks if it doesn't confirm", where M counts to the funding deadline (the tip at the acknowledgement plus 36). Amber once the wait is longer than normal; red when M is small (for example 6 or fewer) |
 | Status (members) | "The host's funding is waiting; you are released automatically in M blocks." No button. For later: members could bump through a keyless anchor |
 | Version 3 | Reconsidered before mainnet. It would only add zero-fee fundings, which are not needed |
+
+**Members' safety is unaffected by the funding's shape.** Their checks read only the funding output the tree spends, plus the inputs they watch (`spec/safety-rule.md` C1). An extra change or anchor output never changes their verdict. The countdown is shown to them because it is about their seat.
+
+**Host-side code to change before this is built.** Today two host-side checks would refuse a funding with a P2A output, or one with no change:
+- the funding engine's plan check, which requires exactly two outputs, the factory's and a P2TR change at output 1 (`core/funding/funding.c`, `plan_ok`);
+- the signer's adopt check, which requires every other output to be change (`docs/notes/signer.md`, `gz_sg_fund_adopt` step 3).
+
+The wallet's funding builder can already require change (`require_change`). It has no speed-up output yet.
 
 Tested in the Slice 1.5 plan's S7 (PR #99), on regtest at 0.1 and 1 sat/vB floors.
 

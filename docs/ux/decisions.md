@@ -226,4 +226,6 @@ Today's comparison of two Esplora operators stays. This moves compact block filt
    - Members see "The host's funding is waiting; you are released automatically in M blocks", with no button. For later: members could bump through a keyless anchor.
 5. Before mainnet, version 3 for fundings is reconsidered. It would only add zero-fee fundings, which are not needed.
 
-Recorded in `PLAN.md` ("Funding" and the work list) and `SLICES.md` ("A stuck funding"). It answers Q2 of the Slice 1.5 plan (PR #99).
+**Refinement (owner, 2026-11-26): the speed-up output is purely a host setting.** It is not part of the lobby terms, it is not sent to members, and members cannot object: how the host funds is the host's business. The default stays Auto. Members still see the funding-waiting countdown, because it is about their seat, not the funding's shape. The members' checks read only the funding output the tree spends, so an extra change or anchor output never affects their safety rule (`spec/safety-rule.md` C1).
+
+Recorded in `PLAN.md` ("Funding" and the work list), `SLICES.md` ("A stuck funding"), `spec/safety-rule.md` (C1, H16) and `spec/exit.md` (5.7, H16). It answers Q2 of the Slice 1.5 plan (PR #99).
