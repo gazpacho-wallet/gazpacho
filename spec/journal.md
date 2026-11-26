@@ -344,13 +344,14 @@ Numbered after cross-spec review 1, under the same rules: `u32`, the high 16 bit
 
 | Type | Record | Contents | Saved before | Release |
 |---|---|---|---|---|
-| `0x00070002` | `exit_plan` | d; the path's txids in order, which output of each the next spends, anchor output per step; H_leaf; the constants in force; the dates of `spec/exit.md` 4.4; the tip estimate's anchor | The bundle's B4 and B5 are written from it; in the batch that makes the factory live, and again on every date change | Slice 3 |
-| `0x00070004` | `exit_started` | Reason; tip estimate, its anchor and the counted view; chain state; the commitment number chosen | The exit's first broadcast; same batch as the channel engine's stop | Slice 3 |
-| `0x00070006` | `exit_step` | Step index; txid; `sent`, `confirmed` or `buried` with height, time or block hash; the server results | Each step's first broadcast (`sent`) | Slice 3 |
+| `0x00070002` | `exit_plan` | d; the path's txids in order, which output of each the next spends, anchor output per step; H_leaf; the constants in force; the dates of `spec/exit.md` 4.4; the tip estimate's anchor | The bundle's B4 and B5 are written from it; in the batch that makes the factory live, and again on every date change | Slice 1.5 for the tree half (`spec/exit.md` 6.8 gives its fields), Slice 3 in full |
+| `0x00070004` | `exit_started` | Reason; tip estimate, its anchor and the counted view; chain state; the commitment number chosen | The exit's first broadcast; same batch as the channel engine's stop | Slice 1.5 for the tree half (`spec/exit.md` 6.8 gives its fields), Slice 3 in full |
+| `0x00070006` | `exit_step` | Step index; txid; `sent`, `confirmed` or `buried` with height, time or block hash; the server results | Each step's first broadcast (`sent`) | Slice 1.5 for the tree half (`spec/exit.md` 6.8 gives its fields), Slice 3 in full |
 | `0x00070008` | `coin_reserved` | Wallet outpoints used by a child | That child's broadcast | Slice 3 |
 | `0x0007000a` | `fee_child` | Parent txid; child bytes; package rate; fee; which child it replaces | That child's broadcast | Slice 3 |
-| `0x0007000c` | `exit_ended` | `ended_how`; amounts recovered from the confirmed transactions | Nothing | Slice 3 |
+| `0x0007000c` | `exit_ended` | `ended_how`; amounts recovered from the confirmed transactions | Nothing | Slice 1.5 for the tree half (`spec/exit.md` 6.8 gives its fields), Slice 3 in full |
 | `0x0007000e` | `bundle_written` | The bundle counter (storage 8.7.4 rule 4) | Nothing; in the batch that rewrites the bundle | Slice 3 |
+| `0x00070010` | `exit_sweep` | The host's INTERIM timeout sweep as built: its txid, the signed bytes, the tip (`spec/exit.md` 6.8) | Its first broadcast | Slice 1.5 |
 
 **Watch (0x0008)**
 
