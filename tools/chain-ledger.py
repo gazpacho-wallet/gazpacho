@@ -7,8 +7,10 @@ tool links to no Gazpacho code. It has its own transaction parser and asks
 each Esplora server the same questions, refusing any answer two servers
 disagree on.
 
-    python3 -I tools/chain-ledger.py --server URL --server URL [options] TXID ...
-    python3 -I tools/chain-ledger.py --server URL --server URL [options] --follow TXID:VOUT
+    python3 -I tools/chain-ledger.py --server URL --server URL --funding SAT TREE [options] TXID ...
+    python3 -I tools/chain-ledger.py --server URL --server URL --funding SAT TREE [options] --follow TXID:VOUT
+
+    TREE is --tree TXID (repeatable), --tree-file FILE, or --no-tree.
 
 Transactions. Either a list of txids, or --follow TXID:VOUT: that transaction,
 and every confirmed transaction that spends the named output, then every
@@ -23,31 +25,48 @@ For each transaction in the set, from every server:
     the lowest tip any server reports (/blocks/tip/height);
   - each input's previous transaction (/tx/P/hex), checked the same way, for
     the value it spends: the servers' own "prevout" values are never used;
-  - with --follow, each followed output's spender (/tx/T/outspend/N): every
-    server must name the same confirmed spender, or none.
+  - each output's spender (/tx/T/outspend/N): every server must name the
+    same confirmed spender, or none. With --follow the spender joins the set;
+    with a list, an output spent by a transaction outside the list is refused.
 
 Then it prints every input and output, each transaction's fee (inputs less
 outputs) and size, and the totals:
 
-    money in = fees + what is left in each group of outputs
+    funding = money in = fees + what is left in each group of outputs
 
 "Money in" is every input that spends an output outside the set; "left" is
-every output of the set that no transaction of the set spends. Outputs are
-grouped by script: --group NAME=SCRIPT_HEX (repeatable, several scripts may
-share a name); a pay-to-anchor output is in group "anchor" and an OP_RETURN
-output in "data" unless named; any other output is in a group named after
-its script. --expect NAME=SAT checks a group's total, and the names "in" and
-"fees" check money in and the fees; --expect-fee TXID=SAT checks one
-transaction's fee.
+every output of the set that no transaction of the set spends. The second
+equality holds for any set of transactions, so the checks that can fail are
+the ones against what the caller knows without the chain:
+  - --funding SAT (required): the satoshis the set takes from outside, as
+    the test knows them (what it sent, or the host's coin);
+  - every output left must be in a named group: --group NAME=SCRIPT_HEX
+    (repeatable, several scripts may share a name); a pay-to-anchor output
+    is in group "anchor" and an OP_RETURN output in "data" unless named. An
+    output left to any other script is refused, unless --allow-unnamed, when
+    it is counted in a group named after its script;
+  - the host's tree (plan 1.4, steps 2 and 3), the txids it printed at
+    signing: --tree TXID, or --tree-file FILE of its "sweep-tree ... txid=T"
+    lines or bare txids. Each transaction of that set in the set followed
+    must be version 3 with a 240-sat pay-to-anchor output last; one of that
+    set confirmed but not in the set followed is refused; a transaction of
+    the set followed that spends the followed output, or that is version 3
+    with a pay-to-anchor last and spends a non-anchor output of a tree
+    transaction, and is not in the host's set, is refused. --no-tree skips
+    these checks, for a set that is not a factory's.
+--expect NAME=SAT checks a group's total ("in" and "fees" check money in and
+the fees; a name that is neither these, "anchor", "data" nor a --group is a
+usage error); --expect-fee TXID=SAT checks one transaction's fee.
 
 Servers: https:// URLs (http:// only to a loopback address, for a regtest
-shim), or fixture:FILE, a recorded set of answers for tests: a JSON object
-{"paths": {"/tx/T/hex": {"status": 200, "body": "..."}, ...}}; a path not in
-it is answered 404. At least two servers unless --one-server.
+shim; a redirect is refused), or fixture:FILE, a recorded set of answers
+for tests: a JSON object {"paths": {"/tx/T/hex": {"status": 200, "body":
+"..."}, ...}}; a path not in it is answered 404. At least two servers unless --one-server.
 
 Exit codes: 0 every check passed; 1 a check failed (servers disagree, a
 transaction not confirmed or not buried, an answer that is not the
-transaction asked for, an output spent twice, a negative fee, an expected
+transaction asked for, an output spent twice or outside the set, a negative
+fee, the funding not met, an output left unnamed, a tree check, an expected
 total not met); 2 usage; 3 a server could not be read or sent something
 malformed. Read only: it never broadcasts. Standard library only.
 """
@@ -60,7 +79,10 @@ import urllib.parse
 import urllib.request
 
 MAX_BODY = 4 * 1024 * 1024
-MAX_TXS = 2000
+MAX_TXS = 20000                  # the set; 1,000 members make about 2,600 tree transactions and their children
+MAX_FETCHED = 3 * MAX_TXS        # the set and the transactions its inputs spend
+MAX_TREE_FILE = 64 * 1024 * 1024
+ANCHOR_SAT = 240
 MAX_MONEY = 21000000 * 100000000
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 HEXRE = re.compile(r"^[0-9a-f]*$")
@@ -178,6 +200,16 @@ def script_kind(h):
 
 # ---- servers -------------------------------------------------------------
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect is answered as its own status (3xx), so it is refused."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+OPENER = urllib.request.build_opener(NoRedirect)
+
+
 class Server:
     def __init__(self, spec):
         self.spec = spec
@@ -211,7 +243,7 @@ class Server:
             return e["status"], e["body"]
         req = urllib.request.Request(self.base + path, headers={"User-Agent": "chain-ledger"})
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with OPENER.open(req, timeout=30) as resp:
                 body = resp.read(MAX_BODY + 1)
                 status = resp.status
         except urllib.error.HTTPError as e:
@@ -265,6 +297,8 @@ class Chain:
     def tx(self, txid):
         if txid in self.txs:
             return self.txs[txid]
+        if len(self.txs) >= MAX_FETCHED:
+            raise Mismatch("more than %d transactions to read" % MAX_FETCHED)
         raws = []
         for s in self.servers:
             h = s.ok("/tx/%s/hex" % txid).strip().lower()
@@ -302,6 +336,25 @@ class Chain:
         if conf < self.min_conf:
             raise Mismatch("%s has %d confirmations, fewer than %d" % (txid, conf, self.min_conf))
         return height, seen[0][1], conf
+
+    def on_chain(self, txid):
+        """The servers that say txid is confirmed ("not found" counts as no)."""
+        said = []
+        for s in self.servers:
+            code, text = s.get("/tx/%s/status" % txid)
+            if code == 404:
+                continue
+            if code != 200:
+                raise Malformed("%s/tx/%s/status: HTTP %d" % (s.spec, txid, code))
+            try:
+                st = json.loads(text)
+            except ValueError:
+                raise Malformed("%s/tx/%s/status: not JSON" % (s.spec, txid))
+            need(isinstance(st, dict) and isinstance(st.get("confirmed"), bool),
+                 "%s: /tx/%s/status has no confirmed flag" % (s.spec, txid))
+            if st["confirmed"]:
+                said.append(s.spec)
+        return said
 
     def outspend(self, txid, vout, allow_pending):
         """The confirmed spender (txid, vin), or None. A spend still in a mempool is
@@ -364,10 +417,10 @@ def build(chain, txids, follow, allow_pending):
     return order, spent_by
 
 
-def ledger(chain, order, spent_by_follow, groups):
+def ledger(chain, order, spent_by_follow, groups, listed=False, allow_pending=False, allow_unnamed=False):
     inset = set(order)
     used = {}
-    rows, fees, money_in, left = [], {}, 0, {}
+    rows, fees, money_in, left, unnamed = [], {}, 0, {}, []
     for txid in order:
         t = chain.tx(txid)
         height, block, conf = chain.status(txid)
@@ -403,18 +456,57 @@ def ledger(chain, order, spent_by_follow, groups):
             if key in used:
                 o["spent_by"] = "%s:%d" % used[key]
                 continue
+            if listed and key not in spent_by_follow:
+                sp = chain.outspend(key[0], key[1], allow_pending)
+                if sp is not None:
+                    spent_by_follow[key] = sp
             if key in spent_by_follow:
                 raise Mismatch("%s:%d is spent by %s, which is not in the set" % (key[0], key[1], spent_by_follow[key][0]))
             g = groups.get(o["script"])
             if g is None:
-                g = {"p2a": "anchor", "op_return": "data"}.get(o["kind"], "script:" + o["script"])
+                g = {"p2a": "anchor", "op_return": "data"}.get(o["kind"])
+            if g is None:
+                if not allow_unnamed:
+                    unnamed.append("%s:%d %d sat to %s" % (key[0], key[1], o["value"], o["script"]))
+                g = "script:" + o["script"]
             o["group"] = g
             left[g] = left.get(g, 0) + o["value"]
+    if unnamed:
+        raise Mismatch("left to a script in no group (name it with --group, or --allow-unnamed): "
+                       + "; ".join(unnamed[:20]) + ("; and %d more" % (len(unnamed) - 20) if len(unnamed) > 20 else ""))
     total_fees = sum(fees.values())
-    if money_in != total_fees + sum(left.values()):
+    if money_in != total_fees + sum(left.values()):     # cannot happen: every fee is inputs less outputs
         raise Mismatch("money in %d is not fees %d plus outputs left %d" % (money_in, total_fees, sum(left.values())))
     return {"transactions": rows, "money_in": money_in, "fees": total_fees, "groups": left,
             "tip": chain.tip_height()}
+
+
+def tree_checks(chain, order, tree, follow):
+    """Plan 1.4 steps 2 and 3, against the host's printed set of tree txids."""
+    inset = set(order)
+    for txid in order:
+        t = chain.tx(txid)
+        last = t["outputs"][-1]
+        shaped = t["version"] == 3 and last["script"] == P2A.hex()
+        if txid in tree:
+            if not shaped or last["value"] != ANCHOR_SAT:
+                raise Mismatch("%s is in the host's set but is not version 3 with a %d-sat pay-to-anchor output last"
+                               % (txid, ANCHOR_SAT))
+            continue
+        for x in t["inputs"]:
+            key = (x["prev_txid"], x["prev_vout"])
+            if follow and key == tuple(follow):
+                raise Mismatch("the followed output %s:%d is spent by %s, not a tree transaction of the host's set"
+                               % (key[0], key[1], txid))
+            if shaped and x["prev_txid"] in tree:
+                prev = chain.tx(x["prev_txid"])
+                if x["prev_vout"] != len(prev["outputs"]) - 1:
+                    raise Mismatch("%s looks like a tree transaction (version 3, a pay-to-anchor last) and spends "
+                                   "%s:%d, but is not in the host's set" % (txid, key[0], key[1]))
+    for txid in sorted(tree - inset):
+        said = chain.on_chain(txid)
+        if said:
+            raise Mismatch("%s of the host's set is confirmed (%s) but not in the set" % (txid, ", ".join(said)))
 
 
 def check_expectations(result, expect, expect_fee):
@@ -453,13 +545,47 @@ def print_text(result, out):
         out.write("group %s %d\n" % (g, result["groups"][g]))
     parts = ["%d (fees)" % result["fees"]] + ["%d (%s)" % (result["groups"][g], g) for g in sorted(result["groups"])]
     out.write("balance %d = %s\n" % (result["money_in"], " + ".join(parts)))
+    out.write("funding %d = money in\n" % result["funding"])
 
 
 # ---- arguments -----------------------------------------------------------
 
+def read_tree_file(path):
+    """The host's printed tree: "sweep-tree ... txid=T ..." lines, or one txid a line."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read(MAX_TREE_FILE + 1)
+    except OSError:
+        raise Usage("cannot read %s" % path)
+    if len(data) > MAX_TREE_FILE:
+        raise Usage("%s is too long" % path)
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise Usage("%s is not text" % path)
+    tree = set()
+    for line in text.splitlines():
+        w = line.split()
+        if not w or w[0].startswith("#"):
+            continue
+        if w[0] == "sweep-tree":
+            t = [x[5:] for x in w[1:] if x.startswith("txid=")]
+            if len(t) != 1 or not HEX64.match(t[0]):
+                raise Usage("%s: a sweep-tree line without one txid" % path)
+            tree.add(t[0])
+        elif len(w) == 1 and HEX64.match(w[0]):
+            tree.add(w[0])
+    if not tree:
+        raise Usage("%s holds no tree txid" % path)
+    if len(tree) > MAX_TXS:
+        raise Usage("%s holds more than %d txids" % (path, MAX_TXS))
+    return tree
+
+
 def parse_args(argv):
     a = {"servers": [], "txids": [], "follow": None, "groups": {}, "expect": [], "expect_fee": [],
-         "min_conf": 3, "json": False, "one": False, "pending": False}
+         "min_conf": 3, "json": False, "one": False, "pending": False, "funding": None, "tree": None,
+         "tree_txids": [], "tree_file": None, "no_tree": False, "unnamed": False}
     i = 0
 
     def val():
@@ -506,6 +632,19 @@ def parse_args(argv):
             if not v.isdigit() or int(v) < 1 or int(v) > 1000000:
                 raise Usage("--min-conf takes a count of at least 1")
             a["min_conf"] = int(v)
+        elif x == "--funding":
+            a["funding"] = sat(val())
+        elif x == "--tree":
+            t = val()
+            if not HEX64.match(t):
+                raise Usage("--tree takes a txid")
+            a["tree_txids"].append(t)
+        elif x == "--tree-file":
+            a["tree_file"] = val()
+        elif x == "--no-tree":
+            a["no_tree"] = True
+        elif x == "--allow-unnamed":
+            a["unnamed"] = True
         elif x == "--json":
             a["json"] = True
         elif x == "--one-server":
@@ -523,6 +662,20 @@ def parse_args(argv):
         i += 1
     if bool(a["txids"]) == bool(a["follow"]):
         raise Usage("give either txids or --follow TXID:VOUT")
+    if len(a["txids"]) > MAX_TXS:
+        raise Usage("more than %d txids" % MAX_TXS)
+    if a["funding"] is None:
+        raise Usage("give --funding SAT: the satoshis the set takes from outside, as the test knows them")
+    if a["no_tree"] == bool(a["tree_txids"] or a["tree_file"]):
+        raise Usage("give the host's tree (--tree TXID or --tree-file FILE), or --no-tree")
+    if not a["no_tree"]:
+        a["tree"] = set(a["tree_txids"])
+        if a["tree_file"]:
+            a["tree"] |= read_tree_file(a["tree_file"])
+    names = {"in", "fees", "anchor", "data"} | set(a["groups"].values())
+    for name, _ in a["expect"]:
+        if name not in names:
+            raise Usage("--expect %s: no group of that name (give it with --group)" % name)
     if len(a["servers"]) < (1 if a["one"] else 2):
         raise Usage("give at least two --server (or --one-server)")
     return a
@@ -534,11 +687,17 @@ def main(argv):
         servers = [Server(s) for s in a["servers"]]
         chain = Chain(servers, a["min_conf"])
         order, spent_by = build(chain, a["txids"], a["follow"], a["pending"])
-        result = ledger(chain, order, spent_by, a["groups"])
+        if a["tree"] is not None:
+            tree_checks(chain, order, a["tree"], a["follow"])
+        result = ledger(chain, order, spent_by, a["groups"], listed=not a["follow"], allow_pending=a["pending"],
+                        allow_unnamed=a["unnamed"])
+        if result["money_in"] != a["funding"]:
+            raise Mismatch("money in %d is not the funding %d" % (result["money_in"], a["funding"]))
+        result["funding"] = a["funding"]
     except Usage as e:
         if e.args and e.args[0]:
             sys.stderr.write("chain-ledger: %s\n" % e.args[0])
-        sys.stderr.write(__doc__.split("\n\n")[1] + "\n")
+        sys.stderr.write("\n\n".join(__doc__.split("\n\n")[2:4]) + "\n")
         return 2
     except Malformed as e:
         sys.stderr.write("chain-ledger: unreadable answer: %s\n" % e)
