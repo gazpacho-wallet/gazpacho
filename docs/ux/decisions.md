@@ -236,4 +236,6 @@ Today's comparison of two Esplora operators stays. This moves compact block filt
 - **The chain port needs a "current minimum fee" read** (Esplora's fee estimates and mempool information) as part of this feature.
 - All of it is host-only, as before.
 
+**Design correction (review B of #108, 2026-11-26): the speed-up output is a host-keyed anchor, not a keyless P2A.** It is a small P2TR output to a host key, which only the host can spend. The reason: A keyless P2A on a version-2 funding would let anyone pin it with a large, low-fee child, griefing the host's bump and its deadline spend-back (review B of #108, M-1). A TRUC (version 3) funding with a P2A is the alternative, to consider before mainnet. Items 2 to 4 above read "speed-up output" in this sense.
+
 Recorded in `PLAN.md` ("Funding" and the work list), `SLICES.md` ("A stuck funding"), `spec/safety-rule.md` (C1, H16) and `spec/exit.md` (5.7, H16). It answers Q2 of the Slice 1.5 plan (PR #99).

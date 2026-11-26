@@ -82,17 +82,17 @@ The funding's txid is fixed before anything is signed, because the whole tree is
 | Piece | What it does |
 |---|---|
 | Coin selection | Prefers a plan that leaves a change output, adding a small coin if needed |
-| Speed-up output | When no change is possible, the funding preview says so plainly and offers a 240-sat P2A output that anyone can bump from. **A host setting only**, "Speed-up output on fundings": **Auto** (the default: on when the chosen rate is near the relay floor, 0.1 to 1 sat/vB, off otherwise), **Always** or **Never**. It is not in the lobby terms and is not sent to members, and members cannot object to it: how the host funds is the host's business. **Never** is fully allowed: a funding with no change and no anchor is a valid choice |
+| Speed-up output | When no change is possible, the funding preview says so plainly and offers a **host-keyed speed-up anchor**: a small P2TR output to a host key, which only the host can spend, so that nobody can pin it. It is not a keyless P2A: A keyless P2A on a version-2 funding would let anyone pin it with a large, low-fee child, griefing the host's bump and its deadline spend-back (review B of #108, M-1). A TRUC (version 3) funding with a P2A is the alternative, to consider before mainnet. **A host setting only**, "Speed-up output on fundings": **Auto** (the default: on when the chosen rate is near the relay floor, 0.1 to 1 sat/vB, off otherwise), **Always** or **Never**. It is not in the lobby terms and is not sent to members, and members cannot object to it: how the host funds is the host's business. **Never** is fully allowed: a funding with no change and no anchor is a valid choice |
 | Warning (host) | When the funding has no speed-up handle (no change, no anchor) and its rate is within a margin (for example 2×) of the higher of the static relay floor and the current mempool minimum fee (the higher of the two chain servers' answers), the preview says: "This funding can't be sped up if it gets stuck. If it doesn't confirm within M blocks, the lobby ends and the members are released. The coins stay yours." It never blocks; the host can go ahead |
 | Chain port | A "current minimum fee" read, from Esplora's fee estimates and mempool information on each server, taking the higher answer. Part of this feature |
 | "Speed up" (host) | On a funding that is waiting, a button with a preview of the child: what it spends (the change or the speed-up output), its fee and the package rate. It never replaces the funding |
 | Status (host and members) | "Funding not confirmed: waited N blocks; the lobby ends in M blocks if it doesn't confirm", where M counts to the funding deadline (the tip at the acknowledgement plus 36). Amber once the wait is longer than normal; red when M is small (for example 6 or fewer) |
 | Status (members) | "The host's funding is waiting; you are released automatically in M blocks." No button. For later: members could bump through a keyless anchor |
-| Version 3 | Reconsidered before mainnet. It would only add zero-fee fundings, which are not needed |
+| Version 3 | Reconsidered before mainnet. A TRUC funding with a P2A is the alternative to the host-keyed anchor; otherwise it would only add zero-fee fundings, which are not needed |
 
 **Members' safety is unaffected by the funding's shape.** Their checks read only the funding output the tree spends, plus the inputs they watch (`spec/safety-rule.md` C1). An extra change or anchor output never changes their verdict. The countdown is shown to them because it is about their seat.
 
-**Host-side code to change before this is built.** Today two host-side checks would refuse a funding with a P2A output, or one with no change:
+**Host-side code to change before this is built.** Today two host-side checks would refuse a funding with a speed-up anchor, or one with no change:
 - the funding engine's plan check, which requires exactly two outputs, the factory's and a P2TR change at output 1 (`core/funding/funding.c`, `plan_ok`);
 - the signer's adopt check, which requires every other output to be change (`docs/notes/signer.md`, `gz_sg_fund_adopt` step 3).
 
