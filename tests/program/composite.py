@@ -46,6 +46,7 @@ import hashlib
 import os
 import shutil
 import struct
+import subprocess
 import sys
 import time
 
@@ -83,6 +84,18 @@ def append_batch(path, records):
     journal stand-in, under its newest incarnation and the next sequence, as
     an earlier program would have saved it (gzp_harness.parse_journal's
     format)."""
+    folder = os.path.dirname(path)
+    if not os.path.exists(path) and os.path.exists(os.path.join(folder, "journal.gzj")):
+        # The sealed journal: saved through the program (--test-append-batch).
+        from gzp_harness import LAST_TEST_EXE, unlock_args
+        with open(os.path.join(folder, "identity")) as fh:
+            role, network = fh.read().split()
+        hexs = "".join(struct.pack(">II", t, len(b)).hex() + b.hex() for t, b in records)
+        r = subprocess.run(unlock_args([LAST_TEST_EXE, "--data-dir", folder, "--role", role, "--network", network,
+                                        "--no-chain", "--no-interface", "--test-append-batch", hexs]),
+                           capture_output=True, text=True, timeout=120)
+        assert r.returncode == 0, r.stdout + r.stderr
+        return
     with open(path, "rb") as fh:
         data = fh.read()
     inc, seq, off = 0, 0, 16

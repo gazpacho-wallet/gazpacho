@@ -3,8 +3,8 @@
 
     python3 -I tests/program/api_program.py BUILD_DIR
 
-Runs gazpacho-test (with the TEST-ONLY passphrase stand-in) and the release
-gazpacho, each in a fresh data folder, and talks to the API over loopback as
+Runs gazpacho-test and the release gazpacho, each in a fresh data folder,
+their passphrase layer the wallet's encrypted storage (B3), and talks to the API over loopback as
 the interface does (Host, Origin, fetch metadata, the session header):
 
   1. version and network; mainnet refused before anything opens;
@@ -17,12 +17,13 @@ the interface does (Host, Origin, fetch metadata, the session header):
      lobby is 404, an acting call is 501 not_in_this_release with needs;
   5. a wrong passphrase: 401 with retry_after_s and wrong_in_row (open point 42);
   6. lock: the wallet reads locked without a session;
-  7. the release program serves the API too, without the stand-in: sign-in is
-     refused honestly (503, not_built), and its output has no NOTIFY lines;
+  7. the release program serves the API too, and its first run works on the
+     encrypted storage (create gives 24 words, the node then starts), and its
+     output has no NOTIFY lines;
   8. no passphrase and no word of the phrase in any output line; a stop is clean.
 
-The wallet phrase is fixed (review of P5): the data folder gets the stand-in
-seed file before the start, so the 24 words are known. A BIP-39 word that is
+The wallet phrase is fixed (review of P5): gazpacho-test is given the new
+wallet's entropy (--test-entropy-hex), so the 24 words are known. A BIP-39 word that is
 also an ordinary word the program prints or the API answers ("open", "start")
 would make a single-word check fail by chance, so the seed was chosen to give
 24 words outside that vocabulary:
@@ -121,16 +122,15 @@ class Prog:
     def __init__(self, exe, extra=(), seed=None):
         self.dir = tempfile.mkdtemp(prefix="gzapi-")
         self.data = os.path.join(self.dir, "d")
-        if seed is not None:              # the stand-in seed file, as the program writes it (datadir.c)
-            os.mkdir(self.data, 0o700)
-            fd = os.open(os.path.join(self.data, "wallet-seed.standin"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            os.write(fd, (seed.hex() + "\n").encode())
-            os.close(fd)
         self.port = free_port()
         self.listen = free_port()
         args = [exe, "--data-dir", self.data, "--role", "host", "--listen", "127.0.0.1:%d" % self.listen, "--no-chain",
                 "--interface-port", str(self.port), "--name", "h1"] + list(extra)
+        if seed is not None:              # the new wallet's entropy (gazpacho-test)
+            args += ["--test-entropy-hex", seed.hex()]
         env = dict(os.environ, XDG_RUNTIME_DIR=self.dir)
+        # The API's sign-in and set-up, not the tests' passphrase file.
+        env.pop("GZP_TEST_PASSPHRASE_FILE", None)
         self.p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True)
         self.lines = []
         self.t = threading.Thread(target=self._read, daemon=True)
@@ -211,11 +211,14 @@ def main():
     shutil.rmtree(d, ignore_errors=True)
 
     fixed = None if DUMP_FILE or SEED_N is None else phrase_of(seed_of(SEED_N))
-    p = Prog(exe_t, seed=None if fixed is None else seed_of(SEED_N))
+    p = Prog(exe_t, ("--test-kdf-floor",), seed=None if fixed is None else seed_of(SEED_N))
     try:
         m = p.wait_line(r"interface listening http://127\.0\.0\.1:(\d+)/")
         check(m is not None and int(m.group(1)) == p.port, "the program's API server listens", p.lines[-5:])
-        check(p.wait_line(r"unlock stand-in: TEST ONLY") is not None, "the test build says its passphrase layer is a stand-in")
+        check(p.wait_line(r"unlock encrypted-storage") is not None and p.wait_line(r"locked: waiting for the local interface"),
+              "the passphrase layer is the encrypted storage, and the program waits locked for the interface")
+        check(p.wait_line(r"ready incarnation=", timeout=1) is None and not can_connect(p.listen),
+              "locked: no node and no listener before the set-up")
         st, v = p.call("GET", "/version")
         check(st == 200 and v and v.get("network") == "signet" and v.get("api", "").startswith("1."), "version: signet", v)
         st, s = p.call("GET", "/session")
@@ -278,6 +281,17 @@ def main():
         par = (e or {}).get("params", {})
         check(st == 401 and e.get("code") == "wrong_passphrase" and par.get("wrong_in_row") == 1 and par.get("retry_after_s", 0) >= 1,
               "wrong passphrase: retry_after_s and wrong_in_row", e)
+        # One owner of attempts.gza (storage 12.3): the wallet. The API server
+        # keeps no count of its own in it (two writers left a block the
+        # wallet read as running at the next try: review A's re-confirmation
+        # follow-up, run 32).
+        check(not any("wrong passphrase (" in l for l in p.lines),
+              "the API server keeps no attempts count of its own: the wallet's is the one", [l for l in p.lines if "wrong passphrase (" in l][:2])
+        # Obeying retry_after_s exactly, the next try is checked: here, the right
+        # password signs in (the server's view of the delay and the wallet's are one).
+        time.sleep(par.get("retry_after_s", 1) + 0.05)
+        st, s2 = p.call("POST", "/session", {"passphrase": PASS})
+        check(st == 200 and s2 and s2.get("session"), "after retry_after_s the right password is checked and signs in", (st, s2))
         p.session = keep
 
         # 6. lock
@@ -290,6 +304,12 @@ def main():
         # 6b. lock stops the node (unlock.h; local-api.md 4.7): a locked program
         # answers no host, and an unlock starts the node again (review M5)
         check(p.wait_line(r"node-stopped-locked") is not None, "lock stops the node", p.lines[-6:])
+        # The transport's static key (from the seed; the host's long-term key)
+        # goes with the lock and comes back the same at the unlock (review A's
+        # confirmation of PR 54, M-1).
+        hk = p.wait_line(r"host key=([0-9a-f]{66})", timeout=1)
+        check(p.wait_line(r"transport-key wiped zero=1 peers=0", timeout=5) is not None,
+              "lock wipes the transport's static key; no transport holds it")
         check(p.wait_line(r"ready incarnation=1 ") is not None and not can_connect(p.listen),
               "a locked program answers no host: its listener is closed")
         time.sleep(1.2)
@@ -302,6 +322,9 @@ def main():
             time.sleep(0.2)
         check(can_connect(p.listen), "the listener is open again after the unlock")
         check(p.wait_line(r"ready incarnation=2 ") is not None, "the node started as a new incarnation")
+        rk = p.wait_line(r"transport-key restored key=([0-9a-f]{66})", timeout=1)
+        check(hk is not None and rk is not None and rk.group(1) == hk.group(1),
+              "the unlock derives the same transport key again from the seed", (hk and hk.group(1), rk and rk.group(1)))
         st, s = p.call("GET", "/status")
         check(st == 200 and s and s.get("wallet") == "ready", "status after the unlock: ready", s and s.get("wallet"))
     finally:
@@ -348,20 +371,29 @@ def main():
         check(not found, "no word of the 24 in the event stream or in any answer but create's", found)
     shutil.rmtree(p.dir, ignore_errors=True)
 
-    # 7. the release program
+    # 7. the release program: its first run on the encrypted storage
     q = Prog(exe_r)
     try:
         check(q.wait_line(r"interface listening") is not None, "the release program serves the API", q.lines[-5:])
-        check(q.wait_line(r"unlock not-built") is not None, "the release program says sign-in is not built yet")
+        check(q.wait_line(r"unlock encrypted-storage") is not None, "release: the passphrase layer is the encrypted storage")
         st, s = q.call("GET", "/session")
-        check(st == 200 and s and s.get("wallet") == "locked", "release: the wallet reads locked", s)
-        st, e = q.call("POST", "/session", {"passphrase": PASS})
-        check(st in (429, 503), "release: sign-in is refused honestly", (st, e))
-        time.sleep(0.5)
+        check(st == 200 and s and s.get("wallet") == "none", "release: no wallet at first", s)
+        check(q.wait_line(r"ready incarnation=", timeout=1) is None, "release: no node before the set-up")
+        page = open(os.path.join(q.data, "first-run.html")).read()
+        tok = re.search(r"#start=([A-Za-z0-9_-]{43})", page).group(1)
+        st, s = q.call("POST", "/session/start", {"start_token": tok})
+        q.session = s["session"] if s else None
+        st, c = q.call("POST", "/wallet/create", {"confirm": "create_wallet", "passphrase": PASS, "confirm_passphrase": PASS})
+        check(st == 200 and c and len(c.get("words", [])) == 24, "release: create gives the 24 words", st)
+        check(q.wait_line(r"ready incarnation=1 ", timeout=60) is not None, "release: the node starts after the set-up", q.lines[-5:])
+        files = os.listdir(q.data)
+        check(all(f in files for f in ("keys.gzk", "journal.gzj", "starts.gzs", "attempts.gza")) and
+              not any(f.endswith(".standin") for f in files), "release: the encrypted storage's files, no stand-in", files)
     finally:
         q.stop()
     check(not any(l.find("notify code=") >= 0 for l in q.lines), "release: no NOTIFY output lines (N1)")
-    check(not any("TEST ONLY" in l for l in q.lines), "release: no stand-in")
+    check(not any("TEST ONLY" in l for l in q.lines) and not any("TEST ONLY" in l for l in p.lines), "no stand-in in either build")
+    check(PASS not in "\n".join(q.lines), "release: the passphrase is in no output line")
     shutil.rmtree(q.dir, ignore_errors=True)
     DUMP.extend(q.lines)
 

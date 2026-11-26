@@ -484,6 +484,17 @@ int gzp_keys_net_fn(void *ctx, uint32_t epoch, uint32_t index, uint8_t sec[32], 
     return gzp_keys_lobby((const gzp_keys_t *)ctx, epoch, index, sec, pub, NULL);
 }
 
+
+int gzp_keys_member_process(const gzp_keys_t *k, uint8_t sec[32], uint8_t pub[33], gzp_keys_err_t *err)
+{
+    if (!k || k->lobby_branch != GZP_KEYS_BRANCH_LOBBY) {
+        zero_out(sec, pub);
+        set_err(err, GZP_KEYS_BAD_ARGUMENT, 0);
+        return 0;
+    }
+    return lobby_raw(k, 0, 0, sec, pub, err);
+}
+
 #ifdef GZP_TEST_BUILD
 /* The test build's window on the raw derivation, for the vectors and the
  * test engines' single key. Not in the release library. */

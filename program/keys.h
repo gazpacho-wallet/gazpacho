@@ -153,6 +153,14 @@ int gzp_keys_lobby(const gzp_keys_t *k, uint32_t epoch, uint32_t index, uint8_t 
  * be NULL) says which. sec or pub may be NULL. */
 int gzp_keys_host(const gzp_keys_t *k, uint8_t sec[32], uint8_t pub[33], uint32_t *k_out, gzp_keys_err_t *err);
 
+/* A member's process key: the transport's static key on a member, which only a
+ * listener would use and a member never listens (keys.md 4). The lobby key at
+ * m/254315617'/net'/0'/0'/0' (epoch 0, index 0), which the core never
+ * allocates (pairs start at (1, 2)), so it is no lobby's key. The same at
+ * every derivation, whatever the current epoch, so a re-key after a lock gives
+ * the same key back. A host has none (GZP_KEYS_BAD_ARGUMENT). */
+int gzp_keys_member_process(const gzp_keys_t *k, uint8_t sec[32], uint8_t pub[33], gzp_keys_err_t *err);
+
 /* The payout script of receive index j (exit.md 3.4): 51 20 <BIP 86 output
  * key of m/86'/coin'/0'/0/j>, from the account's public key alone. */
 int gzp_keys_payout_script(const gzp_keys_t *k, uint32_t j, uint8_t spk[34], gzp_keys_err_t *err);

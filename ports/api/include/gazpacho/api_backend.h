@@ -72,7 +72,10 @@ enum gz_api_pp_result {
      * and recovery: the change is in force, but a step after it failed
      * (storage GZ_SC_DONE_WITH_FAULT); reason = what (printable, [a-z_]).
      * Answered as done, with a warning; never as a failure. */
-    GZ_API_PPR_DONE_WITH_FAULT
+    GZ_API_PPR_DONE_WITH_FAULT,
+    /* inside the attempts delay: not checked, not counted; a = retry_after_s
+     * (429 rate_limited, as the server's own check before a derivation) */
+    GZ_API_PPR_BUSY
 };
 
 #define GZ_API_WORDS 24

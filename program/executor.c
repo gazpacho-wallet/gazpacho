@@ -28,12 +28,18 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <openssl/crypto.h>
+
 #include <fcntl.h>
 
 #include "gazpacho/command.h"
 #include "gazpacho/envelope.h"
 #include "gazpacho/tree_import.h"
 #include "executor.h"
+#ifdef GZP_TEST_BUILD
+static unsigned test_ok_results; /* commands answered 200 (--test-lock-after-command) */
+#endif
+#include "store_unlock.h"
 #ifdef GZP_TEST_BUILD
 #include "gazpacho/test_engine.h"
 #endif
@@ -372,7 +378,7 @@ static void do_save(gzp_exec_t *ex, const gz_action_t *a)
             gzp_log("restore-guard chain=%s counter=%llu", hex, (unsigned long long)gz_get_u64(r->bytes.data + 40));
         }
     }
-    if (gzp_standin_take_restore_answered(&ex->store)) gzp_log("restore answered: the restore marker is gone");
+    if (gzp_store_take_restore_answered(&ex->store)) gzp_log("restore answered: the restore marker is gone");
 #ifdef GZP_TEST_BUILD
     /* Tests: stop once the K-th batch is durable, before the rest of its list
      * (its sends, timers, notices) is carried out. */
@@ -420,6 +426,9 @@ static void show_notify(uint32_t code, gz_bytes_t b)
             err[w.len] = 0;
         }
         gzp_log("command-result id=%s status=%u error=%s", id, (unsigned)gz_get_u16(v.data), err);
+#ifdef GZP_TEST_BUILD
+        if (gz_get_u16(v.data) == 200) test_ok_results++;
+#endif
     } else if ((code >> 16) == 1 && gz_rec_find(b, GZ_VIEW_REC_ID, &v) == 1 && v.len < 65) {
         char id[70];
         for (i = 0; i < v.len; i++) id[i] = v.data[i] > 32 && v.data[i] < 127 ? (char)v.data[i] : '?';
@@ -891,7 +900,7 @@ static void test_line(gzp_exec_t *ex, char *line)
         gzw_wipe(sk, sizeof sk);
         gzp_log("test-key-secret epoch=%s index=%s ok=%d", a1, a2, ok);
     } else if (!strcmp(w, "sync-fail-ping")) {
-        gzp_standin_fail_next_ping(&ex->store);
+        if (ex->store.ops->test_fail_next_ping) ex->store.ops->test_fail_next_ping(ex->store.ctx);
         gzp_log("test-sync-fail armed for the next ping record");
     } else {
         gzp_log("test-command bad line");
@@ -1098,6 +1107,15 @@ static int turn(gzp_exec_t *ex, struct pollfd *fds, size_t cap, uint64_t until_m
     /* A lock stops the node (unlock.h; local-api.md 4.7): this incarnation ends. */
     if (ex->api && gzp_api_lock_pending(ex->api)) return GZP_RUN_LOCKED;
 #ifdef GZP_TEST_BUILD
+    if (((ex->opt->test_lock_after_drop && ex->net->test_drops > 0) ||
+         (ex->opt->test_lock_after_command && test_ok_results >= (unsigned)ex->opt->test_lock_after_command)) &&
+        !ex->test_locked_once) {
+        ex->test_locked_once = 1;
+        gzp_log("test-lock after-drop");
+        return GZP_RUN_LOCKED;
+    }
+#endif
+#ifdef GZP_TEST_BUILD
     if (fds[1].revents && !ex->fatal) read_commands(ex);
 #endif
     if (until_ms) return ex->fatal ? GZP_RUN_RESTART : -1;
@@ -1147,7 +1165,10 @@ static int turn(gzp_exec_t *ex, struct pollfd *fds, size_t cap, uint64_t until_m
 
 static const char *counter_name(int s)
 {
-    return s == GZP_COUNTER_FOUND ? "found" : s == GZP_COUNTER_CREATED ? "created" : "missing";
+    return s == GZP_COUNTER_FOUND             ? "found"
+         : s == GZP_COUNTER_CREATED           ? "created"
+         : s == GZP_COUNTER_SETUP_INTERRUPTED ? "setup_interrupted"
+                                              : "missing";
 }
 
 /* After the start: what the options ask of the node. A member's --connect
@@ -1210,6 +1231,28 @@ int gzp_exec_wait_unlocked(gzp_exec_t *ex)
     return rc;
 }
 
+int gzp_exec_test_memory_zero(const gzp_exec_t *ex, int *node_zero, int *sign_zero)
+{
+#ifdef GZP_TEST_BUILD
+    (void)test_ok_results;
+#endif
+    const unsigned char *p;
+    unsigned char acc = 0;
+    size_t i;
+    *node_zero = *sign_zero = 1;
+    if (ex->node) {
+        p = (const unsigned char *)ex->node;
+        for (i = 0, acc = 0; i < gz_node_size(); i++) acc |= p[i];
+        *node_zero = acc == 0;
+    }
+    if (ex->sign_mem) {
+        p = (const unsigned char *)ex->sign_mem;
+        for (i = 0, acc = 0; i < gz_node_sign_size(); i++) acc |= p[i];
+        *sign_zero = acc == 0;
+    }
+    return 0;
+}
+
 void gzp_exec_close_storage(gzp_exec_t *ex)
 {
     if (ex->store_open) ex->store.ops->close(ex->store.ctx);
@@ -1225,7 +1268,7 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     struct pollfd *fds;
     size_t cap;
     uint64_t counter = 0;
-    int rc = -1, cstate, restored;
+    int rc = -1, cstate, restored, begun;
 
     ex->number = number;
     ex->incarnation = 0;
@@ -1248,43 +1291,78 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     ex->net->ev = nev;
     gzp_net_queue_begin(ex->net); /* nothing reaches a starting node */
 
+    /* Storage (program.md 2, steps 2 and 3): the store the unlock opened
+     * for this incarnation, or a new one over the unlocked wallet. The
+     * stand-in only for the tests that read its files. */
 #ifdef GZP_TEST_BUILD
-    if (number == 1 && ex->opt->test_restore_from &&
-        gzp_standin_put_restore(ex->dir->dir, ex->opt->test_restore_from, err, sizeof err) != 0) {
-        fprintf(stderr, "gazpacho: %s\n", err);
-        return GZP_RUN_FAILED;
-    }
+    if (ex->opt->test_standin_store) {
+        if (number == 1 && ex->opt->test_restore_from &&
+            gzp_standin_put_restore(ex->dir->dir, ex->opt->test_restore_from, err, sizeof err) != 0) {
+            fprintf(stderr, "gazpacho: %s\n", err);
+            return GZP_RUN_FAILED;
+        }
+        if (gzp_standin_open(&ex->store, ex->dir->dir, err, sizeof err) != 0) {
+            fprintf(stderr, "gazpacho: cannot open storage: %s\n", err);
+            return GZP_RUN_FAILED;
+        }
+        begun = 0;
+    } else
 #endif
-    if (gzp_standin_open(&ex->store, ex->dir->dir, err, sizeof err) != 0) {
+    if (gzp_wallet_take_store(ex->wallet, &ex->store) == 0) {
+        begun = 1; /* the unlock opened it: fence, start rule, incarnation */
+    } else if (gzp_wallet_open_store(ex->wallet, &ex->store, err, sizeof err) != 0) {
         fprintf(stderr, "gazpacho: cannot open storage: %s\n", err);
         return GZP_RUN_FAILED;
+    } else {
+        begun = 0;
     }
     ex->store_open = 1;
 #ifdef GZP_TEST_BUILD
-    if (number == 1 && ex->opt->test_storage_fail_at)
-        gzp_standin_fail_at(&ex->store, (unsigned)ex->opt->test_storage_fail_at);
+    if (number == 1 && ex->opt->test_storage_fail_at && ex->store.ops->test_fail_at)
+        ex->store.ops->test_fail_at(ex->store.ctx, (unsigned)ex->opt->test_storage_fail_at);
+    if (ex->store.ops->test_hooks)
+        ex->store.ops->test_hooks(ex->store.ctx, number == 1 ? (unsigned)ex->opt->test_sync_fail_at : 0u,
+                                  ex->opt->test_cut_fail, number == 1 && ex->opt->test_crash_after_counter,
+                                  ex->opt->name);
 #endif
-#ifdef GZP_TEST_BUILD
-    gzp_standin_test_hooks(&ex->store, number == 1 ? (unsigned)ex->opt->test_sync_fail_at : 0u,
-                           ex->opt->test_cut_fail, number == 1 && ex->opt->test_crash_after_counter,
-                           ex->opt->name);
-#endif
-    if (gzp_standin_cut_bytes(&ex->store))
-        gzp_log("journal-cut torn_bytes=%llu kept=journal.standin.cut-%u",
-                (unsigned long long)gzp_standin_cut_bytes(&ex->store), gzp_standin_cut_kept(&ex->store));
-    restored = ex->store.ops->restored(ex->store.ctx);
     /* The incarnation is durable before the runner exists (runner.h), and
      * above every number this folder has used (the start counter). */
-    if (ex->store.ops->begin(ex->store.ctx, &ex->incarnation, err, sizeof err) != 0 ||
-        gzp_datadir_sync(ex->dir) != 0) {
-        fprintf(stderr, "gazpacho: cannot start storage: %s\n", err);
+    if (!begun) {
+        int br = ex->store.ops->begin(ex->store.ctx, &ex->incarnation, err, sizeof err);
+        if (br == GZP_STORE_BEHIND) {
+            /* Files behind (storage 6.3) found at a restart from storage: the
+             * keys stay, the node does not start; a person decides. */
+            gzp_log("start-refused why=files-behind");
+            gzp_exec_close_storage(ex);
+            return GZP_RUN_FAILED;
+        }
+        if (br != 0) {
+            fprintf(stderr, "gazpacho: cannot start storage: %s\n", err);
+            gzp_log("start-refused why=storage");
+            gzp_exec_close_storage(ex);
+            return GZP_RUN_FAILED;
+        }
+    } else {
+        ex->incarnation = gzp_journal_store_incarnation(&ex->store); /* the unlock's open wrote it */
+    }
+    if (gzp_datadir_sync(ex->dir) != 0) {
+        fprintf(stderr, "gazpacho: cannot sync the data folder\n");
         gzp_log("start-refused why=storage");
         gzp_exec_close_storage(ex);
         return GZP_RUN_FAILED;
     }
-    cstate = gzp_standin_counter_state(&ex->store, &counter);
+    if (gzp_store_cut_bytes(&ex->store))
+        gzp_log("journal-cut torn_bytes=%llu", (unsigned long long)gzp_store_cut_bytes(&ex->store));
+    restored = ex->store.ops->restored(ex->store.ctx);
+    cstate = gzp_store_counter_state(&ex->store, &counter);
     gzp_log("start-counter state=%s incarnation=%llu restored=%d", counter_name(cstate),
             (unsigned long long)ex->incarnation, restored);
+    /* Beside the set-up marker the words are softer, but the person is still
+     * told: the marker is not authenticated, so a planted one could hide a
+     * real removal of a used wallet's records. */
+    if (cstate == GZP_COUNTER_SETUP_INTERRUPTED)
+        gzp_log("start-counter was not found; set-up may have been interrupted: a restore with a new epoch; "
+                "the person is told");
     if (cstate == GZP_COUNTER_MISSING) {
         if (restored)
             gzp_log("restore counter_found=0: the person is told (the restore rests on the epoch's random draw)");
@@ -1335,7 +1413,8 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
         gz_runner_init(&ex->runner, ex->rslots, GZP_RUNNER_SLOTS, ex->rbytes, GZP_RUNNER_BYTES,
                        ex->incarnation, execute, ex) != GZ_OK) {
         gzp_exec_close_storage(ex);
-        return GZP_RUN_FAILED;
+        rc = GZP_RUN_FAILED;
+        goto wipe;
     }
     gz_action_list_init(&ex->list, ex->lslots, GZP_LIST_SLOTS, ex->lbytes, GZP_LIST_BYTES);
 
@@ -1372,14 +1451,15 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     if (rc < 0) start_node(ex);
     ex->starting = 0;
     if (ex->api) gzp_api_node_started(ex->api);
-    if (ex->fatal && gzp_standin_poisoned(&ex->store)) rc = GZP_RUN_RESTART; /* turned into POISONED below */
+    if (ex->fatal && gzp_store_poisoned(&ex->store)) rc = GZP_RUN_RESTART; /* turned into POISONED below */
     if (rc < 0 && !ex->fatal) {
         gzp_log("ready incarnation=%llu resent=%u", (unsigned long long)ex->incarnation, ex->resent);
         /* Only now does the host listen and the member connect. */
         if (gzp_net_open(ex->net) != 0) {
             free(fds);
             gzp_exec_close_storage(ex);
-            return GZP_RUN_FAILED;
+            rc = GZP_RUN_FAILED;
+            goto wipe; /* the node ran: its memory is wiped as at every end */
         }
         if (ex->net->listening) gzp_log("listening address=%s:%u", ex->net->listen_host, (unsigned)ex->net->bound_port);
         /* The node learns the tip at every start (review of PR 27, L4). */
@@ -1398,14 +1478,21 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     }
     while (rc < 0) rc = turn(ex, fds, cap, 0);
     free(fds);
-    if (rc == GZP_RUN_RESTART && ex->fatal_stop && !gzp_standin_poisoned(&ex->store)) {
+    if (rc == GZP_RUN_RESTART && ex->fatal_stop && !gzp_store_poisoned(&ex->store)) {
         gzp_log("stopping why=%s: a restart from storage cannot fix it", ex->fatal_why);
         rc = GZP_RUN_LIMIT;
     }
-    if (rc != GZP_RUN_STOP && gzp_standin_poisoned(&ex->store)) {
+    if (rc != GZP_RUN_STOP && gzp_store_poisoned(&ex->store)) {
         gzp_log("storage poisoned: a failed write could not be undone; not restarting (storage.failed)");
         rc = GZP_RUN_POISONED;
     }
     if (rc != GZP_RUN_STOP) gzp_exec_close_storage(ex);
+    /* The node's memory holds AT_JOIN gate secrets (from the seed) and the
+     * signing engine's any round's secret nonces and keypairs: wiped when the
+     * incarnation ends, on a lock, a restart or a stop (review A of PR 54,
+     * M-2). The next start rebuilds both from the journal. */
+wipe:
+    if (ex->node) OPENSSL_cleanse(ex->node, gz_node_size());
+    if (ex->sign_mem) OPENSSL_cleanse(ex->sign_mem, gz_node_sign_size());
     return rc;
 }

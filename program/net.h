@@ -157,6 +157,7 @@ typedef struct {
     size_t queued_total; /* bytes plus GZP_QUEUE_OVERHEAD per entry */
     /* tests: a kind dropped on receipt (--test-drop-kind), 0 for none */
     unsigned drop_kind;
+    unsigned test_drops;           /* messages dropped by drop_kind (tests) */
     /* counters */
     uint64_t dropped_unconnected, closed_while_starting;
     uint64_t connect_failed;   /* CONNECTs and connection attempts that could not be carried out */
@@ -224,6 +225,13 @@ void gzp_net_dispatch(gzp_net_t *n, const struct pollfd *fds, size_t count, uint
  * events (gz_peers_free), forget the queue and every CONNECT, and make a
  * fresh transport; the next start issues its CONNECTs again. 0 or -1. */
 int gzp_net_reset(gzp_net_t *n);
+/* The lock (review A's confirmation of PR 54, M-1): every connection and the
+ * listener close and the static key is wiped, here and in the transport's
+ * copy (gz_peers_free wipes it). gzp_net_rekey gives the key back, after the
+ * unlock derived it again: refused (-1) unless it is the same key. */
+void gzp_net_forget_key(gzp_net_t *n);
+int gzp_net_rekey(gzp_net_t *n, const uint8_t priv[32]);
+int gzp_net_key_is_zero(const gzp_net_t *n);
 void gzp_net_free(gzp_net_t *n);
 
 #ifdef GZP_TEST_BUILD

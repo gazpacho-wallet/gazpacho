@@ -65,12 +65,28 @@ SEED = R.bip39_seed(R.ART)      # the host's words
 SEED_M = R.bip39_seed(R.VOTE)   # the member's in steps 2 to 5; step 6 shares the host's
 
 
+ENTROPY = {}  # a data folder's path -> the 64 hex digits its wallet is created from
+
+
 def seed_folder(path, byte="00"):
-    os.makedirs(path, mode=0o700, exist_ok=True)
-    os.chmod(path, 0o700)
-    fd = os.open(os.path.join(path, "wallet-seed.standin"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    os.write(fd, byte.encode() * 32 + b"\n")
-    os.close(fd)
+    """The wallet of `path` is made from 32 bytes of `byte` (#54: the sealed
+    storage creates it at the first start, from --test-entropy-hex)."""
+    ENTROPY[os.path.abspath(path)] = byte * 32
+
+
+def entropy_args(path):
+    e = ENTROPY.get(os.path.abspath(path))
+    return ["--test-entropy-hex", e] if e else []
+
+
+_world_start = L.World._start
+
+
+def _start_with_words(self, who, role, extra):
+    return _world_start(self, who, role, list(extra) + entropy_args(os.path.join(self.work, who)))
+
+
+L.World._start = _start_with_words
 
 
 def pub(sec):
@@ -158,7 +174,7 @@ def main():
         t4 = os.path.join(w.work, "host4")
         seed_folder(t4)
         p4 = Proc("host-t4", [exe, "--data-dir", t4, "--role", "host", "--network", "testnet4", "--name", "h4",
-                              "--no-chain", "--no-interface", "--listen", "127.0.0.1:0"], w.logs)
+                              "--no-chain", "--no-interface", "--listen", "127.0.0.1:0"] + entropy_args(t4), w.logs)
         procs.append(p4)
         k4 = p4.wait_for(r"host key=([0-9a-f]{66})")
         check(k4 is not None and k4.group(1) == host_key("testnet4") and k4.group(1) != w.hkey,
@@ -198,11 +214,9 @@ def main():
         m.stop()
         ki = key_index_values(m)
         check(ki[:2] == [2, 4], "2: the member's key_index records say 2, then 4 (%r)" % ki[:4])
-        backup = os.path.join(w.work, "m-backup.journal")
-        for f in os.listdir(os.path.join(w.work, "m")):
-            if f.startswith("journal.standin") and not f.endswith(tuple("-%d" % i for i in range(10))):
-                shutil.copyfile(os.path.join(w.work, "m", f), backup)
-                break
+        backup = os.path.join(w.work, "m-backup.gzj")  # the sealed journal (#54)
+        if os.path.exists(os.path.join(w.work, "m", "journal.gzj")):
+            shutil.copyfile(os.path.join(w.work, "m", "journal.gzj"), backup)
         check(os.path.exists(backup), "2: the member's journal is copied for step 4")
 
         # 3. restarted: the same keys ----------------------------------------
@@ -371,16 +385,16 @@ def main():
             t = L.Terms(w6.hkey, port_tag)
             w6.open(h6, t)
             check(h6.wait_for(r"slot-opened scope=%s .*role=host" % t.tag, timeout=10) is not None, "10: a lobby")
-            p = w6.member(name, "--member-signing", "auto")
+            p = w6.member(name, "--member-signing", "auto", "--test-standin-store")
             procs.append(p)
-            check(L.started(p), "10: an AUTO member starts")
+            check(L.started(p), "10: an AUTO member starts (the plain journal stand-in: the sealed one cannot be forged)")
             w6.join(p, t)
             check(p.wait_for(r"lobby scope=%s role=member .*joined=1" % t.tag, timeout=20) is not None, "10: it joins")
             p.stop()
             check(forge_slot_index(os.path.join(w6.work, name), t.tag, value),
                   "10: its slot_opened record now names key index 0x%08x" % value)
             mk = h6.mark()
-            p = w6.member(name, "--member-signing", "auto")
+            p = w6.member(name, "--member-signing", "auto", "--test-standin-store")
             procs.append(p)
             return t, p, mk
         t10, cj, mk = forged("cj", 607, 0x80000000)

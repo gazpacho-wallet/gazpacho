@@ -371,6 +371,22 @@ int gz_sc_vault_same_msk(const gz_sc_vault_t *v, const uint8_t msk[32])
     return same;
 }
 
+/* 4.6's check without a second derivation (review B of PR 54, M1): the two
+ * vaults hold the same MSK (constant time), the same chain and vault_id. */
+int gz_sc_vault_same(const gz_sc_vault_t *a, const gz_sc_vault_t *b)
+{
+    if (!a || !b)
+        return 0;
+    sodium_mprotect_readonly(a->msk);
+    sodium_mprotect_readonly(b->msk);
+    int same = sodium_memcmp(a->msk, b->msk, 32) == 0;
+    sodium_mprotect_noaccess(a->msk);
+    sodium_mprotect_noaccess(b->msk);
+    same &= memcmp(a->chain, b->chain, 32) == 0 && memcmp(a->vault_id, b->vault_id, 16) == 0;
+    SC_DECLASSIFY(&same, sizeof same);
+    return same;
+}
+
 gz_sc_err_t gz_sc_vault_seed(const gz_sc_vault_t *v, uint8_t seed[64])
 {
     sodium_mprotect_readonly(v->seed);

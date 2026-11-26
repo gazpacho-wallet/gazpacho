@@ -194,6 +194,32 @@ static void networks_and_arguments(const secp256k1_context *secp)
 
 /* K2: one seed as host and as member shares no per-lobby key: a host's own
  * pairs are on 2', a member's on 0'; the host key is the same either way. */
+/* The member's process key (keys.md 4): the lobby key at (0, 0) on the member
+ * branch, the same whatever the epoch, and none on a host. */
+static void process_key(const secp256k1_context *secp)
+{
+    gzp_keys_t k;
+    raw_t r;
+    gzp_keys_err_t e;
+    uint8_t s1[32], p1[33], s2[32], p2[33];
+    CHECK(keys_over(&k, &r, secp, 1, GZW_NET_SIGNET));
+    CHECK(gzp_keys_member_process(&k, s1, p1, &e) && gzp_keys_lobby_raw(&k, 0, 0, s2, p2, &e) &&
+          !memcmp(s1, s2, 32) && !memcmp(p1, p2, 33));
+    gzp_keys_set_epoch(&k, 0x2a5f3c11u);
+    gzp_keys_freeze(&k, 1);
+    CHECK(gzp_keys_member_process(&k, s2, p2, &e) && !memcmp(p1, p2, 33)); /* epoch and freeze do not matter */
+    gzp_keys_freeze(&k, 0);
+    gzp_keys_set_role(&k, 1, 0);
+    memset(s2, 0xaa, 32);
+    memset(p2, 0xaa, 33);
+    CHECK(!gzp_keys_member_process(&k, s2, p2, &e) && e.why == GZP_KEYS_BAD_ARGUMENT && all(s2, 0, 32) && all(p2, 0, 33));
+    CHECK(!gzp_keys_member_process(NULL, s2, p2, &e));
+    gzp_keys_set_role(&k, 0, 1);
+    r.have = 0; /* locked: none */
+    CHECK(!gzp_keys_member_process(&k, s2, NULL, &e) && e.why == GZP_KEYS_NO_SEED);
+    gzp_keys_free(&k);
+}
+
 static void roles(const secp256k1_context *secp)
 {
     gzp_keys_t k;
@@ -557,6 +583,7 @@ int main(void)
     if (!secp) return 2;
     vectors(secp);
     networks_and_arguments(secp);
+    process_key(secp);
     roles(secp);
     epochs(secp);
     ready_gate(secp);

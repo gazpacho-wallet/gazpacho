@@ -232,6 +232,7 @@ struct gz_api_server {
     /* in monotonic milliseconds (gz_mono_ms, review B4); the file keeps wall-clock seconds */
     int64_t att_last_wrong_ms, att_blocked_until_ms;
     int att_loaded;
+    int backend_attempts;       /* gz_api_config.backend_attempts */
     int att_unsaved;                 /* the file could not be written: passphrases refused (F5.1) */
     int token_dir_refused;           /* the socket token folder is not ours (F5.5) */
     uint64_t token_gen;              /* +1 each time the socket token is made or dropped */

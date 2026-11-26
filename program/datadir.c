@@ -140,6 +140,32 @@ int gzp_datadir_open(gzp_datadir_t *d, const char *dir, const char *role, const 
     return 0;
 }
 
+int gzp_datadir_open_readonly(gzp_datadir_t *d, const char *dir, const char *role, const char *network)
+{
+    char path[GZP_PATH_MAX], want[64], have[64];
+    size_t n = 0;
+    struct stat st;
+    memset(d, 0, sizeof *d);
+    d->lock_fd = -1;
+    if (strlen(dir) >= GZP_PATH_MAX - 32 || stat(dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        fprintf(stderr, "gazpacho: %s is not a folder\n", dir);
+        return GZP_EXIT_DATA;
+    }
+    strcpy(d->dir, dir);
+    snprintf(want, sizeof want, "%s %s\n", role, network);
+    gzp_datadir_path(d, "identity", path);
+    if (read_small(path, have, sizeof have - 1, &n) != 0) {
+        fprintf(stderr, "gazpacho: cannot read %s\n", path);
+        return GZP_EXIT_DATA;
+    }
+    have[n] = 0;
+    if (strcmp(have, want)) {
+        fprintf(stderr, "gazpacho: the data folder %s is not a %s %s\n", dir, role, network);
+        return GZP_EXIT_DATA;
+    }
+    return 0;
+}
+
 void gzp_datadir_close(gzp_datadir_t *d)
 {
     if (d->lock_fd >= 0) close(d->lock_fd); /* releases the lock */
