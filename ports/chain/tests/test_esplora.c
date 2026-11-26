@@ -952,6 +952,38 @@ static void test_rate_limit(test_state *T) {
   fx_close(&x);
 }
 
+/* A public server's throttle (signet run 2, mempool.space: 429 after about 27 requests at the
+ * wallet scan's pace). A 429 is waited out, 2 s first and twice as long each time (to 30 s), up
+ * to six times, none of them counted as one of max_attempts; and the client then keeps its
+ * requests at least 1 s apart. A server that never stops refusing still ends: unreachable. */
+static void test_throttle_waited_out(test_state *T) {
+  fixture x;
+  uint8_t h[GZ_HASH_LEN];
+  fx_open(&x);
+  const char *url = BASE "/block-height/329438";
+  fake_once(&x.fake, false, url, GZ_HTTP_OK, 429, "Too Many Requests", 4);
+  size_t s0 = x.fake.n_sleeps;
+  CHECK_RESULT(gz_chain_block_hash(&x.chain, 329438, h), GZ_CHAIN_OK);
+  CHECK(x.fake.requests == 5);
+  {
+    uint32_t want[4] = {2000, 4000, 8000, 16000};
+    size_t k = 0;
+    for (size_t i = s0; i < x.fake.n_sleeps && i < FAKE_MAX_SLEEPS; i++)
+      if (x.fake.sleeps[i] >= 2000 && k < 4) CHECK(x.fake.sleeps[i] == want[k++]);
+    CHECK(k == 4);
+  }
+  /* after a throttle, no two requests start less than 1 s apart */
+  unsigned r0 = x.fake.requests;
+  for (int i = 0; i < 3; i++) CHECK_RESULT(gz_chain_block_hash(&x.chain, 329438, h), GZ_CHAIN_OK);
+  for (unsigned i = r0; i < x.fake.requests; i++) CHECK(x.fake.starts[i] - x.fake.starts[i - 1] >= 1000);
+  /* a server that keeps refusing: six waits, seven requests, then unreachable */
+  fake_once(&x.fake, false, url, GZ_HTTP_OK, 429, "Too Many Requests", 50);
+  x.fake.requests = 0;
+  CHECK_RESULT(gz_chain_block_hash(&x.chain, 329438, h), GZ_CHAIN_UNREACHABLE);
+  CHECK(x.fake.requests == 7);
+  fx_close(&x);
+}
+
 static void test_time_limit_on_every_request(test_state *T) {
   fixture x;
   gz_chain_tip tip;
@@ -1878,6 +1910,7 @@ int main(void) {
   RUN(test_fee_estimates);
   RUN(test_retries_and_backoff);
   RUN(test_rate_limit);
+  RUN(test_throttle_waited_out);
   RUN(test_time_limit_on_every_request);
   RUN(test_size_caps);
   RUN(test_small_buffer);
