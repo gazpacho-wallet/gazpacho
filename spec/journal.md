@@ -344,7 +344,7 @@ Numbered after cross-spec review 1, under the same rules: `u32`, the high 16 bit
 
 | Type | Record | Contents | Saved before | Release |
 |---|---|---|---|---|
-| `0x00070002` | `exit_plan` | d; the path's txids in order, which output of each the next spends, anchor output per step; H_leaf; the constants in force; the dates of `spec/exit.md` 4.4; the tip estimate's anchor | The bundle's B4 and B5 are written from it; in the batch that makes the factory live, and again on every date change | Slice 1.5 for the tree half (`spec/exit.md` 6.8 gives its fields), Slice 3 in full |
+| `0x00070002` | `exit_plan` | d; the path's txids in order, which output of each the next spends, anchor output per step; H_leaf; the constants in force; the dates of `spec/exit.md` 4.4; the tip estimate's anchor | The bundle's B4 and B5 are written from it; in the batch that makes the factory live, and again on every change (a date; the host's owed list) until `exit_started`, each replacing the last; fixed from `exit_started` on (`spec/exit.md` 6.8) | Slice 1.5 for the tree half (`spec/exit.md` 6.8 gives its fields), Slice 3 in full |
 | `0x00070004` | `exit_started` | Reason; tip estimate, its anchor and the counted view; chain state; the commitment number chosen | The exit's first broadcast; same batch as the channel engine's stop | Slice 1.5 for the tree half (`spec/exit.md` 6.8 gives its fields), Slice 3 in full |
 | `0x00070006` | `exit_step` | Step index; txid; `sent`, `confirmed` or `buried` with height, time or block hash; the server results | Each step's first broadcast (`sent`) | Slice 1.5 for the tree half (`spec/exit.md` 6.8 gives its fields), Slice 3 in full |
 | `0x00070008` | `coin_reserved` | Wallet outpoints used by a child | That child's broadcast | Slice 3 |
@@ -352,6 +352,7 @@ Numbered after cross-spec review 1, under the same rules: `u32`, the high 16 bit
 | `0x0007000c` | `exit_ended` | `ended_how`; amounts recovered from the confirmed transactions | Nothing | Slice 1.5 for the tree half (`spec/exit.md` 6.8 gives its fields), Slice 3 in full |
 | `0x0007000e` | `bundle_written` | The bundle counter (storage 8.7.4 rule 4) | Nothing; in the batch that rewrites the bundle | Slice 3 |
 | `0x00070010` | `exit_sweep` | The host's INTERIM timeout sweep as built: its txid, the signed bytes, the tip (`spec/exit.md` 6.8) | Its first broadcast | Slice 1.5 |
+| `0x00070012` | `exit_sweep_done` | A sweep settled, dead or retired: its txid, how, the tip (`spec/exit.md` 6.8) | Its inputs are offered again | Slice 1.5 |
 
 **Watch (0x0008)**
 
@@ -360,7 +361,7 @@ Numbered after cross-spec review 1, under the same rules: `u32`, the high 16 bit
 | `0x00080002` | `spend_seen` | Outpoint; spender txid; classification (`spec/exit.md` section 8) | Any response | Slice 3 (Slice 1.5 for the tree's outputs) |
 | `0x00080004` | `response_sent` | Trigger txid; response bytes; deadline | The response's broadcast | Slice 3 |
 
-`exit_plan`, `exit_started`, `exit_step`, `coin_reserved`, `fee_child`, `spend_seen` and `response_sent` are never compacted while their factory is not `ended` or `dead` (`spec/exit.md` 10.3).
+`exit_plan`, `exit_started`, `exit_step`, `exit_sweep`, `exit_sweep_done`, `exit_ended`, `coin_reserved`, `fee_child`, `spend_seen` and `response_sent` are never compacted while their factory is not `ended` or `dead` (`spec/exit.md` 10.3).
 
 **Local API (0x000d)** (`spec/local-api.md` 7.5, which gives each record's contents and the batch it is saved with)
 
