@@ -47,12 +47,13 @@ on:
 permissions:
   contents: read
 
-# One run at a time per ref, suite and pattern: a newer one cancels the one it
-# makes stale, so runners are not held by runs on superseded commits. A run
-# pinned to a commit id has a group of its own and is never cancelled by a
-# later push to the branch.
+# One run at a time per exact set of inputs (and workflow branch): a newer
+# identical dispatch cancels the stale one, so runners are not held by runs on
+# superseded commits. Runs that differ in any input never cancel each other.
+# A run pinned to a commit id has a group of its own. The separator is ':',
+# which a branch name cannot contain; the free-text inputs come last.
 concurrency:
-  group: agent-run-${{ inputs.ref }}-${{ inputs.suite }}-${{ inputs.regex }}-${{ inputs.sanitizer }}
+  group: agent-run:${{ github.ref }}:${{ inputs.ref }}:${{ inputs.suite }}:${{ inputs.sanitizer }}:${{ inputs.build_type }}:${{ inputs.mutants }}:${{ inputs.exclude }}:${{ inputs.regex }}
   cancel-in-progress: true
 
 jobs:
