@@ -27,7 +27,29 @@ add_test(NAME exit_isolation
 # The engine over T1 trees at depths 1, 2 and 3, through the real runner,
 # against a pretend chain and chain view (the trees are built with the test
 # keys through the crypto provider, hence the import library).
-add_executable(test_exit_engine ${GZ_EXIT_TESTS}/test_exit_engine.c)
+# The test is an object library too, so the mutation run links it again
+# with each mutated engine.
+add_library(test_exit_engine_obj OBJECT ${GZ_EXIT_TESTS}/test_exit_engine.c)
+target_link_libraries(test_exit_engine_obj PRIVATE gazpacho_exit gazpacho_tree_import)
+target_compile_options(test_exit_engine_obj PRIVATE ${GZ_NEW_CODE_WARNINGS})
+add_executable(test_exit_engine $<TARGET_OBJECTS:test_exit_engine_obj>)
 target_link_libraries(test_exit_engine PRIVATE gazpacho_exit gazpacho_tree_import)
-target_compile_options(test_exit_engine PRIVATE ${GZ_NEW_CODE_WARNINGS})
 add_test(NAME exit_engine COMMAND test_exit_engine)
+
+# The mutants of tests/exit/exit_mutants.txt (reviews A and B of #104), each
+# compiled into the engine alone and linked with what the build made; every
+# one must be killed by exit_engine. Plain builds on Linux only: a sanitizer
+# or fuzzer build would need its runtime on the link line too.
+if(GZ_PYTHON3 AND NOT GZ_SANITIZE AND NOT GZ_LIBFUZZER AND CMAKE_SYSTEM_NAME STREQUAL "Linux"
+   AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+  string(REPLACE " " ";" GZ_EXIT_MUT_FLAGS "${CMAKE_C_FLAGS} ${CMAKE_C_FLAGS_${GZ_BUILD_TYPE_UPPER}}")
+  file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/exit_mutants.cfg CONTENT
+"cc=${CMAKE_C_COMPILER}
+flags=${GZ_EXIT_MUT_FLAGS}
+obj=$<JOIN:$<TARGET_OBJECTS:test_exit_engine_obj>,;>
+lib=$<TARGET_LINKER_FILE:gazpacho_tree_import>;$<TARGET_LINKER_FILE:gazpacho_superscalar>;$<TARGET_LINKER_FILE:gazpacho_tree>;$<TARGET_LINKER_FILE:gazpacho_core>;$<TARGET_LINKER_FILE:secp256k1>;$<TARGET_LINKER_FILE:OpenSSL::Crypto>
+")
+  add_test(NAME exit_mutants
+    COMMAND ${GZ_PYTHON3} -I ${PROJECT_SOURCE_DIR}/tools/mutate-exit.py --cfg ${CMAKE_CURRENT_BINARY_DIR}/exit_mutants.cfg)
+  set_tests_properties(exit_mutants PROPERTIES TIMEOUT 1200)
+endif()

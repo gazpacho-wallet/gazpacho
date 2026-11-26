@@ -1365,7 +1365,11 @@ static void test_host_s4(uint32_t n, uint8_t d, int owe)
     memcpy(own, MEM[m], 33);
     CHECK(gz_xe_plan_member(&in, (uint32_t)m, own, &MPLAN) == GZ_XE_PLAN_OK);
     memset(owed, 0, sizeof owed);
-    if (owe) owed[m / 8] |= (uint8_t)(1u << (m % 8));          /* T1: the member whose leaf is on chain */
+    int other = m == 0 ? (int)NMEM - 1 : 0;                     /* a member whose subtree stays untouched */
+    if (owe) {
+        owed[m / 8] |= (uint8_t)(1u << (m % 8));               /* T1: the member whose leaf is on chain */
+        owed[other / 8] |= (uint8_t)(1u << (other % 8));
+    }
     host_plan(n, owe ? owed : NULL);
     confirm_steps(&MPLAN, MPLAN.n_steps);                       /* the member's path on chain first */
     tip_events();
@@ -1398,6 +1402,7 @@ static void test_host_s4(uint32_t n, uint8_t d, int owe)
             if (s->what == GZ_XE_OUT_INPUT) {
                 CHECK(s->lock == nd->cltv && CALLS[c].tip == nd->cltv);
                 CHECK(!(owe && (uint32_t)m >= nd->first && (uint32_t)m < (uint32_t)nd->first + nd->count));
+                CHECK(!(owe && (uint32_t)other >= nd->first && (uint32_t)other < (uint32_t)nd->first + nd->count));
             } else if (s->what == GZ_XE_OUT_CHANNEL) {
                 CHECK(!owe);                                         /* T1: never, even after H_leaf + 200 */
                 CHECK(memcmp(s->outpoint.txid, leaf_txid, 32) == 0 && s->outpoint.vout == 0);
@@ -1725,6 +1730,7 @@ static void test_port(void)
         begin(GZ_XE_WHY_HOST_RECOVER);
         MODE = mode;
         while (TIP < END - 5) block();
+        chain_ev(GZ_CHAIN_TIP_SYNCED, TIP, NULL, NULL, 0);          /* another decision, the same tip */
         CHECK(NCALL == 1 && CALLS[0].n >= 2);
         CHECK(X.port_refused == 1);
         if (X.port_refused != 1) printf("port mode %d not refused\n", mode);
@@ -1831,6 +1837,11 @@ static void test_dead_sweep(void)
         input_op(&MPLAN, 1, &k1);
         CHECK(NCALL == 1);
         CHECK(!offered(&k1));
+        /* It vanishes unreported: asked about again after its stale tips, then swept (L2). */
+        chain_vanish(HOLD);
+        HOLD_ON = 0;
+        for (unsigned i = 0; i < GZ_XE_STALE_TIPS + 2; i++) block();
+        CHECK(offered(&k1));
     }
 }
 
