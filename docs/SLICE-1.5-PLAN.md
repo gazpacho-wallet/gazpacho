@@ -1,6 +1,13 @@
 # Slice 1.5: every path a tree can take, tested end to end
 
-**Plan, draft 1, 2026-11-25. Not reviewed.** Design and planning only: nothing in it is built yet. Implementation starts after Slice 1 closes (section 4 says what can start earlier).
+**Plan, draft 2, 2026-11-26. Not reviewed.** Design and planning only: nothing in it is built yet. Implementation starts after Slice 1 closes (section 4 says what can start earlier).
+
+**Draft 2** takes in the owner's answers of 2026-11-26 to section 7:
+- Q1 A: the milestone capital is moved only when the set is ready, at 0.1 sat/vB after checking mempool rates.
+- Q3 A: the regtest suite becomes a required check after seven consecutive green runs; R1 and R2 stay on the roadmap.
+- Q4 A: P5 is the recover call with a preview the host confirms, plus the automatic recovery of H15.
+
+Q2 is still open. The coordinator's proposed middle path is written into 2.7 and section 7.
 
 Slice 1.5 runs every path a factory can take *without* the channel engine, with the Slice 1 programs: the 13 signet tests S1 to S13 that `spec/exit.md` 11.2 adopted from the exit-path audit of 2026-11-14, plus the controlled-chain tests that used to wait for "a node of our own". Members are owed nothing in every test (no channels yet), so the INTERIM spend rules of `spec/exit.md` 3.2 and 4.5 apply throughout.
 
@@ -18,7 +25,7 @@ Marks, as in the specifications: **[C]** read in code (file and line on the name
 3. New pieces to build, in order, one pull request each
 4. What can start before Slice 1 is done
 5. Tonight: run 1's recovery as the first S1
-6. Order, parallelism and the signet milestone set
+6. Order, parallelism, the signet milestone set and the roadmap
 7. Questions for the owner
 8. What this plan did not check
 
@@ -69,7 +76,8 @@ What regtest adds over signet: instant blocks (`generatetoaddress`), reorganisat
 - **Core:** downloaded, never built: an **exact pinned version**, its `SHA256SUMS` checked against at least 3 pinned builder signatures and its tarball against the pinned hash, as #57 already does for 29.1.0. Two versions: **29.1.0** (floor 0.1 sat/vB) for every test, and **29.0** (floor 1 sat/vB, incremental relay 1 sat/vB) for S7, S12 and R8, which depend on the floor. (Core 30.0 moved the same defaults to 0.1 sat/vB [S: Bitcoin Core 30.0 release notes]; add it when a third pin is worth its time.)
 - **When:** nightly on `main` (with #57's other suites) and **on every push to `integration-slice1`**, because the programs that run S1 to S13 live there until Slice 1 merges. On pull requests that touch `core/tree`, the exit engine, the sweep, `ports/chain` or `tests/program`, a smoke set (S1, S2 at depth 2, S5) on demand (`workflow_dispatch`).
 - **Shape:** one job per test group, `max-parallel` as #57 sets it (the 20 runners are shared with CI). Each job uploads the nodes' logs, the programs' logs and the ledger check's JSON as artifacts.
-- **Not a required check at first.** It becomes required on `main` when Slice 1.5's pieces merge there and it has been green for seven nights (`docs/TESTING.md`, "Before a release candidate").
+- **Required after seven consecutive green runs** (owner, 2026-11-26, Q3 A). Once Slice 1.5's pieces are on `main`, the suite becomes a required check there after **seven green runs in a row**. Since regtest runs accelerated, the seven may be dispatched back to back (`workflow_dispatch`); they need not be seven nights. A red run starts the count again.
+- **Reorganisations stay on the roadmap explicitly.** R1 (the funding reorganised out before burial) and R2 (after burial, with a double spend) are in the suite from its first version. They are not dropped to make the seven runs pass (6.4).
 - **Gates:** `permissions: contents: read`, no secrets, actions pinned by full SHA, as #57. Regtest nodes listen on loopback only with `-listen=0`.
 
 ### 1.4 The independent coin-total check
@@ -201,6 +209,15 @@ Steps:
 Ledger: positive half: the funding's txid is the one every member signed for; the child spends only the change.
 
 Regtest: on 29.1 and 29.0 nodes, a minute each. Signet: not in the milestone set; S12 decides whether it is worth one run there.
+
+**Open with the owner (Q2).** The funding cannot be replaced by fee: the tree is pre-signed against its txid, so a replacement kills it (C-7, H16). A stuck funding can only be bumped by a child.
+
+**The coordinator's proposed middle path, pending the owner's decision:** keep the funding at version 2, but always give it an output the host can bump from. That is the host's change when there is change, or a non-dust 240-sat P2A output when change would be dust. S7's positive half then also covers the P2A case: a funding with no change, bumped by a child on its P2A.
+
+If adopted, it changes:
+- the wallet's funding builder (`wallet/tx/src/funding.c`);
+- H16's wording (`spec/safety-rule.md`, `spec/exit.md` 5.7);
+- the funding's size and fee vectors.
 
 ### 2.8 S8: the host replaces the funding by fee (C-7, negative)
 
@@ -350,11 +367,34 @@ Each is one pull request, test first (the failing test is the first commit). "Sp
 - Tests first: `tests/program/leave_alone.py` on regtest (S2, S3 shapes), and the API test for 16.3's errors (`host_factory`, `already_exiting`, `preview_expired`, `confirm_mismatch`, `chain_in_doubt`).
 - Depends on: P2, P3; **#54** (the sealed journal, where the member's held tree and the exit records live); **#55** (view objects for `exit_progress`); **#53** only for the kind-A confirmation's real unlock (the anchor-only children need no key); the integration branch's wiring.
 
-### P5. The host's "sweep by timeout", promoted from the test tool to a command (integration)
-- Spec: `exit.md` 3.2, 7.2 E-5 (INTERIM), 7.4 H-2 and H-3, 9 H7 and H15; `safety-rule.md` 12 value 2; `local-api.md` (a new host call, section 7 Q4).
-- What: the planning moves into the core (the host's side of the exit engine): every output of the factory whose parent is confirmed and whose host-only timeout has passed, and every confirmed leaf's spare liquidity after its delay, each refused if a member below it is owed (H15). The program builds, signs with the host's per-lobby factory key, broadcasts through the chain port (P2 where needed) to the host wallet's next receive address, and journals it. Exposed as `POST /api/v1/factories/{id}/recover` with a preview, and run on its own by the host at each height while the factory owes nobody (H15 is the host's schedule). **It refuses a tree that carries payouts** (design 2, after #508: no timeout to recover by, `exit.md` E-5).
-- Tests first: `program_sweep`'s checks moved to the command (refused at tip L − 1, accepted at tip L, owed outputs refused, every satoshi accounted with P1); new: deeper outputs on a published branch at E − 15 and H_leaf, the spare liquidity at 143 and 144 blocks, a design-2 tree refused.
-- Depends on: **#54** (sealed journal), **#53** (the real host factory key; the tool finds it today by searching epochs and indices), **the integration branch hosting from its own wallet** (the wallet port: destination and fee coins), P2 for packages.
+### P5. The host's recovery: a recover call with a preview, and the automatic sweep by timeout (integration)
+
+**Definition (owner, 2026-11-26, Q4 A).** Two ways in, one engine:
+1. **A local-API recover call with a preview, which the host confirms.**
+   - `POST /api/v1/factories/{id}/recover/preview` answers with everything that would be broadcast: each transaction (its txid, which outputs it spends, the height from which it is valid, its size), the amounts in and out, each fee and the rate it pays, the total coming back, and the destination (the host wallet's next receive address).
+   - `POST /api/v1/factories/{id}/recover` with the `preview_id` and `"confirm": "recover"` broadcasts exactly what was previewed.
+   - `GET` shows progress, with `local-api.md` 16.3's step states.
+   - Errors: `preview_expired`, `nothing_to_recover`, `not_yet` (with the first valid height), `member_owed` (H15), `payout_tree` (design 2), `chain_in_doubt`.
+2. **The host doing it automatically after each timeout, while no member below the output is owed** (H15, INTERIM). When an output's timeout height is reached, the host's engine builds the same transactions the preview would show, broadcasts them without asking, and records each in the journal and in the factory's history.
+
+Both pay the tree rate, 0.1 sat/vB (the owner's preference), and bump through a child only when a step has not confirmed by its date.
+
+- **Spec:** `exit.md` 3.2, 7.2 E-5 (INTERIM), 7.4 H-2 and H-3, 9 H7 and H15; `safety-rule.md` 12 value 2; `local-api.md`, new: the recover calls above and `ended_how = host_timeout_recovered`.
+- **What it recovers.** The engine is the host's side of the exit engine, in the core. It covers every output of the factory whose parent is confirmed and whose host-only timeout has passed, and the spare liquidity of every confirmed leaf after its delay. It refuses an output with an owed member below it (H15).
+- **What the program does.** It builds each transaction, signs it with the host's per-lobby factory key, broadcasts it through the chain port (P2 where a package is needed) and journals it.
+- **It refuses a tree that carries payouts** (design 2, after #508: there is no timeout to recover by, `exit.md` E-5).
+- **Tests first:**
+  - `program_sweep`'s checks move to the command: refused at tip L − 1, accepted at tip L, owed outputs refused, every satoshi accounted for with P1.
+  - The preview matches what is broadcast, byte for byte; a stale preview is refused.
+  - The automatic path fires at each timeout height, and never for an owed output.
+  - New heights: deeper outputs on a published branch at E − 15 and H_leaf, and the spare liquidity at 143 and 144 blocks.
+  - A design-2 tree is refused.
+- **Depends on:**
+  - **#54** (the sealed journal);
+  - **#53** (the real host factory key; the test tool finds it today by searching epochs and indices);
+  - **the integration branch hosting from its own wallet** (the wallet port: destination and fee coins);
+  - P2, for packages;
+  - **#55** (the preview and progress views).
 
 ### P6. The fault switches, one pull request each (integration)
 
@@ -444,6 +484,8 @@ Signet milestone set, run in parallel from one start:
 | H3 (`--test-never-fund`) | S5 twice | the planned coin only, never committed | ≈ 7 h |
 | H4 | S12 probe and package step | one small coin | < 1 h |
 
+**Capital (owner, 2026-11-26, Q1 A).** It is moved from the test wallets only when the set is ready to run, at 0.1 sat/vB, after checking the signet mempool's rates at the time. If 0.1 sat/vB would not confirm within a few blocks then, the move waits.
+
 About 0.6 to 0.9 million sat in flight for the first round of runs, about 7,500 sat spent over both rounds [R]; the second runs follow the first in the same folders. The program host wallet holds about 99,700 sat after tonight's recovery; the rest has to come from the test wallets in the funds record, which needs the owner's go-ahead.
 
 ### 6.3 The signet milestone set
@@ -456,19 +498,25 @@ Its record, with every txid, is the public proof the audit proposed (a page of s
 
 ---
 
+### 6.4 On the roadmap (owner, 2026-11-26)
+
+- **P5, the host's recovery** (definition in section 3): the recover call with its preview and confirmation, and the automatic sweep by timeout while no member is owed. It is built after P2 and before the signet milestone set, which uses it for S1 and the full life.
+- **Reorganisation handling, R1 and R2.** Both stay in the regtest suite from its first version, and in its required set.
+- **The regtest suite as a required check on `main`**, after seven consecutive green runs (1.3).
+
 ## 7. Questions for the owner
 
-Short, each with a recommendation.
+**Answered 2026-11-26:**
+- **Q1, A.** The milestone capital is moved only when the set is ready, at 0.1 sat/vB, after checking mempool rates at the time (6.2).
+- **Q3, A.** The suite becomes required after seven consecutive green runs, which may be dispatched back to back. R1 and R2 stay on the roadmap (1.3, 6.4).
+- **Q4, A.** P5 is the local-API recover call with a preview of the transactions, amounts, fees and destination, which the host confirms, plus the automatic recovery after each timeout while no member is owed (H15). It is on the roadmap (P5, 6.4).
 
-**Q1. Funding for the signet milestone set.** It needs about 0.6 to 0.9 million sat in flight for about 31 hours, from the test wallets. A: move it when the set is ready to run (recommended). B: run the set one factory at a time from the program host's 99,700 sat (about four days).
+**Still open:**
 
-**Q2. S7 reworded.** Our funding is version 2, so it cannot be rescued below the floor by a child. A: test the two halves of 2.7 (recommended). B: make the funding TRUC with its own anchor, which changes H16 and the wallet's funding builder.
-
-**Q3. Regtest suite as a required check.** A: required on `main` after seven green nights (recommended). B: never required; nightly only.
-
-**Q4. The host's recover command.** A: a local-API call with a preview, plus the host doing it on its own while nobody is owed (recommended; H15 is already its schedule). B: the call only.
-
----
+**Q2. S7 and the funding's bump.** Our funding is version 2 and cannot be replaced by fee, because the tree is signed against its txid. So it can only be bumped by a child, and a version-2 parent below the floor cannot be rescued that way.
+- A: test the two halves of 2.7 as they stand.
+- B: make the funding TRUC with its own anchor, which changes H16 and the wallet's funding builder.
+- **Proposed by the coordinator, pending the owner:** keep the funding at version 2, but always give it a bumpable output: the host's change, or a non-dust 240-sat P2A when change would be dust (2.7).
 
 ## 8. What this plan did not check
 
