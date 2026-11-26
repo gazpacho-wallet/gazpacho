@@ -425,3 +425,5 @@ drop-scope-empty	core/signing/signing.c	        wipe_secrets(r);                
 drop-exposure-kept	core/signing/signing.c	                e->exposed[k].state = GZ_SIGN_ROUND_ABANDONED;                   /* RULE:STALE_EXPOSURE_ABANDONED */	                (void)0;
 # untested drop-scope-not-called: no node unit test holds a real-engine round across a restart; program_partials_hold case 2 (a member restored from its words mid-round) kills it
 drop-scope-not-called	core/node/composite.c	                    if (c->sign_on && c->sign) gz_sign_drop_scope(c->sign, c->slots[i].scope);	
+# untested keys-before-restore: no node unit test loads a real-engine round from a restored journal; program_partials_hold case 2 (a member restored from its words mid-round) kills it
+keys-before-restore	core/node/signslot.c	    if (!host && c->restored && !c->resume_restore_done) return 0;	    if (0) return 0;
