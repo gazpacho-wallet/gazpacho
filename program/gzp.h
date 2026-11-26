@@ -113,6 +113,7 @@ typedef struct {
     unsigned test_crash_after_record; /* exit once a batch holding a record of this type is durable */
     int test_sign_outcome;         /* the signing stand-in's outcome: 1 funding, 2 retry, 3 failed, 4 unfinished */
     int test_funds;                /* can_plan overridden: 0 the host's own wallet answers, 1 short, 2 cannot tell */
+    int test_never_fund;           /* host: the funding and its spend-backs are never broadcast (faults.h) */
     int test_sign_delay_ms;        /* ... reported this long after the hand-off */
     int test_ready_cap;            /* a member's ready built in this many bytes (an over-limit ready: K1) */
     int test_sign_tick_ms;         /* the signing engine's tick (0: its own, 1 s) */

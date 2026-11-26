@@ -794,7 +794,8 @@ int main(int argc, char **argv)
             goto out;
         }
         if (opt.test_spend_coin) {
-            gzp_spend_in_t sp = {&unlock_tab, secp, wnet, opt.test_spend_coin, to, to_len, 100};
+            gzp_spend_in_t sp = {&unlock_tab, secp, wnet, opt.test_spend_coin, to, to_len, 100,
+                                 opt.test_never_fund ? &chain : NULL};
             rc = gzp_spend_coin(&sp);
             goto out;
         }

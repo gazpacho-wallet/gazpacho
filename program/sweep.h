@@ -45,7 +45,9 @@ int gzp_sweep_run(const gzp_sweep_in_t *in);
  * wallet (found among its first 300 receive and change outputs by the script
  * it pays) spent whole, by key path, to `to_script` at `feerate` sat/kvB.
  * Prints "spend-coin change=C index=I amount=A" and "spend-tx ... tx=HEX", or
- * spend-refused / spend-error. Never broadcasts. */
+ * spend-refused / spend-error. Broadcasts it only when `send` is given
+ * (--test-never-fund, faults.h): then "spend-coin-broadcast ..." too. */
+#include "pchain.h"
 #include "unlock.h"
 #include "gazpacho/wallet_keys.h"
 typedef struct {
@@ -56,6 +58,7 @@ typedef struct {
     const uint8_t *to_script;
     size_t to_len;
     uint64_t feerate;
+    gzp_chain_t *send;    /* broadcast the spend through this chain (test build, --test-never-fund), or NULL */
 } gzp_spend_in_t;
 
 int gzp_spend_coin(const gzp_spend_in_t *in);

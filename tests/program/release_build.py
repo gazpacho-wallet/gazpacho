@@ -44,7 +44,11 @@ TEST_STRINGS = (b"--test-pings", b"--test-ready-cap", b"--test-timer-ms", b"--te
                 b"--test-sweep", b"--test-sweep-force", b"--test-sweep-to", b"--test-owed",
                 b"--test-spend-coin", b"sweep-spend", b"spend-coin",
                 b"--test-lock-after-drop", b"--test-lock-after-command", b"locked-memory node-zero",
-                b"test-key-secret epoch=", b"--test-node-error-on-command")  # P8: the key port's position check, gazpacho-test only
+                b"test-key-secret epoch=", b"--test-node-error-on-command",  # P8: the key port's position check, gazpacho-test only
+                # Slice 1.5 P6, the host's funding fault switches (program/faults.c)
+                b"--test-never-fund", b"test-never-fund held")
+# Each fault switch (Slice 1.5 P6), by name, with its value if it takes one: the release build refuses it.
+FAULT_SWITCHES = (("--test-never-fund",),)
 # In both builds: the key port's command gate runs on every USER_COMMAND (review of PR 53, H1).
 BOTH_STRINGS = (b"key-scope-open scope=", b"key-join-armed scope=", b"key-scope-closed scope=")
 
@@ -129,6 +133,11 @@ def main():
                         "--test-pings", "1")
         check(code == 2 and "only in the test build" in out and not os.path.exists(os.path.join(work, "x")),
               "the release build refuses --test-* (exit %s)" % code)
+        for sw in FAULT_SWITCHES:
+            code, out = run(rel, "--data-dir", os.path.join(work, "x"), "--role", "host", "--no-chain", *sw)
+            check(code == 2 and ("%s exists only in the test build" % sw[0]) in out and
+                  not os.path.exists(os.path.join(work, "x")),
+                  "the release build refuses %s (exit %s)" % (sw[0], code))
 
         # The release host: its first run through the local API (B3).
         pf = os.environ.get("GZP_TEST_PASSPHRASE_FILE")

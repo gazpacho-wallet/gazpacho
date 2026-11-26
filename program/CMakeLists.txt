@@ -10,7 +10,7 @@
 # The release binary's symbols are checked (program_release_build, T12).
 
 set(GZP_SOURCES options.c datadir.c store_journal.c store_unlock.c keys.c net.c pchain.c notify.c executor.c testping.c
-                view.c api.c api_lobby.c api_calls.c wport.c sweep.c)
+                view.c api.c api_lobby.c api_calls.c wport.c sweep.c faults.c)
 
 foreach(variant release test)
   if(variant STREQUAL "release")
@@ -257,6 +257,11 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME program_sweep
     COMMAND ${GZP_PY} ${GZP_T}/sweep.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/sweep)
   set_tests_properties(program_sweep PROPERTIES TIMEOUT 1200 SKIP_RETURN_CODE 77)
+  # Slice 1.5 P6a, S5's program half: --test-never-fund holds the funding and its spend-backs;
+  # members are abandoned at their deadline, and dead once the test's spend of the input is buried.
+  add_test(NAME program_never_fund
+    COMMAND ${GZP_PY} ${GZP_T}/never_fund.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/never_fund)
+  set_tests_properties(program_never_fund PROPERTIES TIMEOUT 900 SKIP_RETURN_CODE 77)
   # B16 (review B of PR 52, M1): a member restarted between its partial signatures and
   # round_complete judges its ack at its real depth in the tree.
   add_test(NAME program_ack_depth

@@ -35,6 +35,7 @@
 #include "unlock.h"
 #include "gazpacho/wallet_keys.h"
 #include "gazpacho/wallet_tx.h"
+#include "faults.h"
 
 #define SW_MAX 8
 #define SW_LOBBY_OPENED   0x00010002u   /* journal.md 9: lobby_opened (2 scope, 4 outer) */
@@ -491,6 +492,7 @@ int gzp_spend_coin(const gzp_spend_in_t *in)
     hex(raw, raw_len);
     printf("\n");
     fflush(stdout);
+    if (in->send) gzp_fault_send_now(in->send, "spend-coin", raw, raw_len);   /* --test-never-fund (S5) */
     return 0;
 }
 #else

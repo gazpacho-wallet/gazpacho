@@ -43,6 +43,7 @@ static unsigned test_ok_results; /* commands answered 200 (--test-lock-after-com
 #include "store_unlock.h"
 #ifdef GZP_TEST_BUILD
 #include "gazpacho/test_engine.h"
+#include "faults.h"
 #endif
 
 /* ---- ports -------------------------------------------------------------- */
@@ -515,6 +516,10 @@ static void execute(void *ctx, const gz_action_t *a)
                 a->u.set_seated.seated);
         break;
     case GZ_ACTION_BROADCAST:
+#ifdef GZP_TEST_BUILD
+        /* The host's funding fault switches (faults.h): a broadcast they hold is not sent. */
+        if (gzp_fault_broadcast(ex->chain, ex->opt, a->u.broadcast.tx.data, a->u.broadcast.tx.len)) break;
+#endif
         chain_answer(ex, gzp_chain_broadcast(ex->chain, a->u.broadcast.tx.data, a->u.broadcast.tx.len),
                      "chain-backlog-full");
         break;
@@ -1473,8 +1478,10 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     cfg.test_ready_cap = (uint32_t)ex->opt->test_ready_cap;
     cfg.sign_tick_ms = (uint32_t)ex->opt->test_sign_tick_ms;
     cfg.test_engines = (uint32_t)ex->opt->test_engines;
+    /* The fault switches that must know the fundings (faults.h) see what sign_plan returns. */
+    if (ex->wallet_port) cfg.wallet = gzp_fault_port(ex->opt, (const gz_wallet_port_t *)ex->wallet_port);
     if (ex->opt->test_funds && ex->wallet_port) {   /* --test-funds short|unknown */
-        TEST_WALLET = *(const gz_wallet_port_t *)ex->wallet_port;
+        TEST_WALLET = *(const gz_wallet_port_t *)cfg.wallet;
         TEST_WALLET.can_plan = port_can_plan;
         TEST_WALLET_EX = ex;
         cfg.wallet = &TEST_WALLET;
