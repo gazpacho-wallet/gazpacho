@@ -164,9 +164,9 @@ A request is safe to sign only if all of these hold. Each is evaluated on data t
 **Only that output is the member's concern** (owner decision 17c, 2026-11-26). The member's checks read three things from the funding transaction:
 - its txid;
 - the one output the funding outpoint names (its index, amount and script);
-- its inputs, which it watches for C4(d).
+- the outpoints of its first two inputs (`GZ_FUND_WATCH_INPUTS`), which it watches for C4(d).
 
-Nothing else in it is checked [C: `core/tree/checks.c`, `check_funding`]. Any other output, whether the host's change, a speed-up P2A or none at all, is the host's business. It never changes the member's verdict under this rule, and a member never refuses a funding because of it.
+Nothing else in it is judged [C: `core/tree/checks.c`, `check_funding`; `core/funding/funding.c`]. Any other output, whether the host's change, a speed-up P2A or none at all, is the host's business. It never changes the member's verdict under this rule, and a member never refuses a funding because of it.
 
 **C2. Own outputs are recognised by own keys.** The member's software identifies its outputs by deriving the scripts from its own keys, never from labels, indexes or positions in the request. This includes any output of the distribution transaction, which the import pays to the member's factory key [C at `50f7fa13`: `factory.h:1456-1465`]; under design 2 every payout and the distribution transaction pay instead the member's own payout script, a 34-byte P2TR script from its BIP 86 receive chain at an index given to that factory only (`exit.md` 3.4), and the member refuses a proposal carrying any other script for itself.
 
@@ -176,7 +176,7 @@ Nothing else in it is checked [C: `core/tree/checks.c`, `check_funding`]. Any ot
 - **(a) Harmless:** if it is published, the member still reaches at least what it is owed from its held set.
 - **(b) Revoked:** the member holds a secret or a signed transaction that lets it take the funds if this appears, within a stated window W.
 - **(c) Outraced:** the member must get a specific transaction buried within R blocks of a specific on-chain event, and has the means to. The module states R.
-- **(d) Dead:** an input it spends has been spent by a different transaction that is buried. For a creation round this includes any input of the funding transaction: once one is spent by another buried transaction, the funding output can never exist. Seeing this needs a watch on each input outpoint of the funding transaction, whose scripts the member does not know (`signing-round.md` section 12.1). A dead record stays in the journal and is no longer consulted.
+- **(d) Dead:** an input it spends has been spent by a different transaction that is buried. For a creation round this includes any input of the funding transaction: once one is spent by another buried transaction, the funding output can never exist. Seeing this needs a watch on the input outpoints of the funding transaction, whose scripts the member does not know (`signing-round.md` section 12.1). The member watches the **first two** (`GZ_FUND_WATCH_INPUTS` [C: `core/funding/include/gazpacho/funding.h`]). The host's spend-back and H11's reused input are input 0. This is fail-safe: if an input beyond the first two is spent elsewhere, the creation stays Abandoned rather than becoming Dead. Its record is then kept and consulted longer than necessary, which blocks nothing (C10) and loses nothing. A dead record stays in the journal and is no longer consulted.
 
 **C5. Time, from the scripts.** For every output on the member's exit path, the module lists every way that output can be spent, from the script of the transaction it built. The recognised ways are:
 
@@ -413,7 +413,16 @@ The host's software runs the same module with the roles exchanged, plus:
 
 - **H14.** The host watches every member's channel output and answers a member's revoked commitment with the penalty by `penalty_send_by`, at its own constants.
 - **H15.** The host's sweeps of outputs it may take alone follow a schedule; it never sweeps an unpublished tree output with an owed member below it.
-- **H16.** The host never replaces the funding transaction by fee; it bumps it only by a child on its own change output, or on a 240-sat P2A "speed-up output" of the funding's own. Its software arranges one of the two by the host setting of owner decision 17c (default Auto: the P2A is added near the relay floor, 0.1 to 1 sat/vB, when no change is possible). This is the host's own discipline: the setting is not in the lobby terms, is not sent to members, and a member does not check for either output (C1). The setting's "Never" is allowed. A funding with neither output cannot be bumped, so it confirms at its own rate or the lobby ends at the funding deadline. The host is warned, never blocked, when that rate is close to what may not get through (decision 17c). **The one exception is abandoning** (`docs/notes/composite-node.md` 14.3; `exit.md` C-5): at the host's funding deadline, a funding not yet buried is replaced on purpose by the **spend-back**, which spends one funding input back to the host's own wallet, pays nothing to the factory, and pays the smallest fee that replaces the funding and any child of it (the evicted package's fee plus the incremental relay fee on its own size). Once it is buried every member's records for the factory end under C4(d).
+- **H16.** The host never replaces the funding transaction by fee. **Today** the host's funding always has a change output (the funding engine refuses any other shape [C: `core/funding/funding.c`, `plan_ok`]), and the host bumps a stuck funding only by a child spending that change. Members do not check the change or its absence (C1).
+  **Planned (owner decision 17c, piece P9 of the Slice 1.5 plan; not current rules):**
+  - a 240-sat P2A "speed-up output" on the funding, added by a host-only setting (Auto, Always, Never; Auto adds it near the relay floor, 0.1 to 1 sat/vB, when no change is possible);
+  - fundings with no change;
+  - "Never", with neither output, allowed;
+  - a warning that never blocks, when such a funding's rate is near what may not get through.
+
+  None of these will change a member's checks.
+
+  **The one exception to "never replaces" is abandoning** (`docs/notes/composite-node.md` 14.3; `exit.md` C-5): at the host's funding deadline, a funding not yet buried is replaced on purpose by the **spend-back**, which spends one funding input back to the host's own wallet, pays nothing to the factory, and pays the smallest fee that replaces the funding and any child of it (the evicted package's fee plus the incremental relay fee on its own size). Once it is buried every member's records for the factory end under C4(d).
 - **H17.** **INTERIM** (while the import has host-only timeouts and no payouts: Slices 1, 1.5 and 2; replaced by H6 under design 2). The host's software never takes a member's balance through a timeout: it forces a silent owed member out with its own latest commitment by `host_force_by` (`exit.md` 4.5). A policy of honest host software, not a protection.
 - **H18.** The host's expiry delta toward a factory member, and its go-on-chain height for each payment it offers that member, cover that member's whole path, its own commitment and its HTLC-timeout transaction: (n + 1)·A + (B − 1) + M_host with n = d + 3.
 
