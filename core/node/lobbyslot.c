@@ -214,6 +214,7 @@ int gz_ls_init(gz_node_t *c, int i)
     gz_lobby_signing_t sg;
     uint8_t ck[33], fk[33];
     s->node = c;
+    memset(&cr, 0, sizeof cr);                        /* every hook not set below is none (factory_pub: host) */
     cr.verify = ls_verify;
     cr.point_ok = ls_point_ok;
     cr.sign = ls_sign;
@@ -1105,7 +1106,8 @@ gz_status_t gz_ls_stale_out(gz_node_t *c, int i, gz_action_list_t *out)
     s->state = SLOT_LEFT_OUT;
     s->stale = 1;
     c->np.skipped_slots++;
-    return gz_ls_left_out_note(c, i, out);
+    (void)out;                                        /* the person is told at the slot's own resume step */
+    return GZ_OK;
 }
 
 /* The stale slot `i` ends as the person joins its lobby again: slot_closed (state 6, Cancelled for this
