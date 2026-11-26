@@ -47,11 +47,14 @@ on:
 permissions:
   contents: read
 
-# One run at a time per ref and suite: a newer one waits for the running one
-# (and replaces an older one still waiting).
+# One run at a time per exact set of inputs (and workflow branch): a newer
+# identical dispatch cancels the stale one, so runners are not held by runs on
+# superseded commits. Runs that differ in any input never cancel each other.
+# A run pinned to a commit id has a group of its own. The separator is ':',
+# which a branch name cannot contain; the free-text inputs come last.
 concurrency:
-  group: agent-run-${{ inputs.ref }}-${{ inputs.suite }}
-  cancel-in-progress: false
+  group: agent-run:${{ github.ref }}:${{ inputs.ref }}:${{ inputs.suite }}:${{ inputs.sanitizer }}:${{ inputs.build_type }}:${{ inputs.mutants }}:${{ inputs.exclude }}:${{ inputs.regex }}
+  cancel-in-progress: true
 
 jobs:
   plan:
@@ -187,6 +190,7 @@ jobs:
             .github/actions
             tools/ci-summary.py
             tools/ci-valgrind.py
+            tools/valgrind-tests.py
           sparse-checkout-cone-mode: false
       - name: Keep the tools' copy out of the tested tree
         # tools/mutate-node.py copies untracked files too (git ls-files -o

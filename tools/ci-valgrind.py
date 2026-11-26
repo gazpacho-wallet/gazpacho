@@ -34,7 +34,7 @@ ARGS = [
     "node_fuzz=300", "node_hostile=6 400", "sim_profile_6=25 300 1 6",
     "node_lobby=1500 1", "lobby_hostile=3000 2",
     "chain_fuzz_parse=20000", "chain_fuzz_watch=1500",
-    "journal_fuzz_sealed=300", "storage_fuzz_sc_counter=2000",   # integration: #54's sealed journal
+    "journal_fuzz_sealed=300", "storage_fuzz_sc_counter=2000",
     "signing_blocks=blocks tiny", "signing_decoders=decoders tiny",
     "signing_golden=golden tiny", "signing_model=model tiny",
     "signing_faults=faults tiny", "signing_honest=honest tiny",

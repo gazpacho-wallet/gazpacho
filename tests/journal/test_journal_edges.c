@@ -73,7 +73,11 @@ static void test_constants(void)
         0x00040002, 0x00040004, 0x00040006, 0x0004000a, 0x00010002, 0x00010004, 0x00010006,
         0x00010008, 0x0001000a, 0x0001000c, 0x0001000e, 0x00010010, 0x00010012, 0x00010014,
         0x00010016, 0x00020002, 0x00020004, 0x00020006, 0x00020008, 0x0002000a, 0x0002000c,
-        0x0002000e, 0x00030002, 0x00030004, 0x00030006, 0x0004000c, 0x0004000e, 0x00010018};
+        0x0002000e, 0x00030002, 0x00030004, 0x00030006, 0x0004000c, 0x0004000e, 0x00010018,
+        /* K1 (#95): the member's seat_key, saved before its first ready (core/lobby, GZ_REC_SEAT_KEY). */
+        0x0001001c,
+        /* Local API, area 0x000d (journal.md 9): the Slice 1 rows (F6). */
+        0x000d0002, 0x000d0004, 0x000d0006, 0x000d0008, 0x000d000a, 0x000d000c, 0x000d000e, 0x000d0010, 0x000d0012, 0x000d0014, 0x000d0016, 0x000d0024};
     for (size_t i = 0; i < sizeof known / sizeof known[0]; i++)
         CHECK(gz_journal_type_known(known[i]) == 1 && gz_journal_type_known(known[i] + 1) == 0);
     CHECK(gz_journal_type_known(0x00040008) == 0 && gz_journal_type_known(0x0001001a) == 0 &&

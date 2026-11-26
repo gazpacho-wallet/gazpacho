@@ -160,6 +160,7 @@ gz_api_server *gz_api_server_new(const gz_api_config *cfg, const char **err)
     defaults(&srv->lim);
     srv->be = cfg->backend;
     srv->bectx = cfg->backend_ctx;
+    srv->backend_attempts = cfg->backend_attempts;
     srv->wake[0] = srv->wake[1] = srv->done_pipe[0] = srv->done_pipe[1] = -1;
     for (i = 0; i < 3; i++) srv->lfd[i] = -1;
     srv->expect_uid = cfg->override_uid ? cfg->expect_uid : (int64_t)geteuid();
@@ -210,7 +211,7 @@ gz_api_server *gz_api_server_new(const gz_api_config *cfg, const char **err)
     } else {
         unlink(srv->redirect_path);
         srv->first_run_closed = 1;
-        gz_attempts_load(srv);
+        if (!srv->backend_attempts) gz_attempts_load(srv);
     }
     if (srv->be->wallet_state(srv->bectx) == GZ_API_WALLET_UNLOCKED) gz_socket_token_make(srv);
     return srv;

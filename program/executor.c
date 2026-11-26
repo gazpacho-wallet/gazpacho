@@ -28,6 +28,8 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <openssl/crypto.h>
+
 #include <fcntl.h>
 
 #include "gazpacho/command.h"
@@ -35,6 +37,9 @@
 #include "gazpacho/funding.h"
 #include "gazpacho/tree_import.h"
 #include "executor.h"
+#ifdef GZP_TEST_BUILD
+static unsigned test_ok_results; /* commands answered 200 (--test-lock-after-command) */
+#endif
 #include "store_unlock.h"
 #ifdef GZP_TEST_BUILD
 #include "gazpacho/test_engine.h"
@@ -442,6 +447,9 @@ static void show_notify(uint32_t code, gz_bytes_t b)
             err[w.len] = 0;
         }
         gzp_log("command-result id=%s status=%u error=%s", id, (unsigned)gz_get_u16(v.data), err);
+#ifdef GZP_TEST_BUILD
+        if (gz_get_u16(v.data) == 200) test_ok_results++;
+#endif
     } else if ((code >> 16) == 1 && gz_rec_find(b, GZ_VIEW_REC_ID, &v) == 1 && v.len < 65) {
         char id[70];
         for (i = 0; i < v.len; i++) id[i] = v.data[i] > 32 && v.data[i] < 127 ? (char)v.data[i] : '?';
@@ -1160,6 +1168,15 @@ static int turn(gzp_exec_t *ex, struct pollfd *fds, size_t cap, uint64_t until_m
     /* A lock stops the node (unlock.h; local-api.md 4.7): this incarnation ends. */
     if (ex->api && gzp_api_lock_pending(ex->api)) return GZP_RUN_LOCKED;
 #ifdef GZP_TEST_BUILD
+    if (((ex->opt->test_lock_after_drop && ex->net->test_drops > 0) ||
+         (ex->opt->test_lock_after_command && test_ok_results >= (unsigned)ex->opt->test_lock_after_command)) &&
+        !ex->test_locked_once) {
+        ex->test_locked_once = 1;
+        gzp_log("test-lock after-drop");
+        return GZP_RUN_LOCKED;
+    }
+#endif
+#ifdef GZP_TEST_BUILD
     if (fds[1].revents && !ex->fatal) read_commands(ex);
 #endif
     if (until_ms) return ex->fatal ? GZP_RUN_RESTART : -1;
@@ -1273,6 +1290,28 @@ int gzp_exec_wait_unlocked(gzp_exec_t *ex)
     free(fds);
     if (rc == GZP_RUN_RESTART) gzp_log("node-starting-unlocked");
     return rc;
+}
+
+int gzp_exec_test_memory_zero(const gzp_exec_t *ex, int *node_zero, int *sign_zero)
+{
+#ifdef GZP_TEST_BUILD
+    (void)test_ok_results;
+#endif
+    const unsigned char *p;
+    unsigned char acc = 0;
+    size_t i;
+    *node_zero = *sign_zero = 1;
+    if (ex->node) {
+        p = (const unsigned char *)ex->node;
+        for (i = 0, acc = 0; i < gz_node_size(); i++) acc |= p[i];
+        *node_zero = acc == 0;
+    }
+    if (ex->sign_mem) {
+        p = (const unsigned char *)ex->sign_mem;
+        for (i = 0, acc = 0; i < gz_node_sign_size(); i++) acc |= p[i];
+        *sign_zero = acc == 0;
+    }
+    return 0;
 }
 
 void gzp_exec_close_storage(gzp_exec_t *ex)
@@ -1431,6 +1470,7 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
 #ifdef GZP_TEST_BUILD
     cfg.test_sign_outcome = (uint32_t)ex->opt->test_sign_outcome;
     cfg.test_sign_delay_ms = (uint32_t)ex->opt->test_sign_delay_ms;
+    cfg.test_ready_cap = (uint32_t)ex->opt->test_ready_cap;
     cfg.sign_tick_ms = (uint32_t)ex->opt->test_sign_tick_ms;
     cfg.test_engines = (uint32_t)ex->opt->test_engines;
     if (ex->opt->test_funds && ex->wallet_port) {   /* --test-funds short|unknown */
@@ -1445,7 +1485,8 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
         gz_runner_init(&ex->runner, ex->rslots, GZP_RUNNER_SLOTS, ex->rbytes, GZP_RUNNER_BYTES,
                        ex->incarnation, execute, ex) != GZ_OK) {
         gzp_exec_close_storage(ex);
-        return GZP_RUN_FAILED;
+        rc = GZP_RUN_FAILED;
+        goto wipe;
     }
     gz_action_list_init(&ex->list, ex->lslots, GZP_LIST_SLOTS, ex->lbytes, GZP_LIST_BYTES);
 
@@ -1489,7 +1530,8 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
         if (gzp_net_open(ex->net) != 0) {
             free(fds);
             gzp_exec_close_storage(ex);
-            return GZP_RUN_FAILED;
+            rc = GZP_RUN_FAILED;
+            goto wipe; /* the node ran: its memory is wiped as at every end */
         }
         if (ex->net->listening) gzp_log("listening address=%s:%u", ex->net->listen_host, (unsigned)ex->net->bound_port);
         /* The node learns the tip at every start (review of PR 27, L4). */
@@ -1517,5 +1559,12 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
         rc = GZP_RUN_POISONED;
     }
     if (rc != GZP_RUN_STOP) gzp_exec_close_storage(ex);
+    /* The node's memory holds AT_JOIN gate secrets (from the seed) and the
+     * signing engine's any round's secret nonces and keypairs: wiped when the
+     * incarnation ends, on a lock, a restart or a stop (review A of PR 54,
+     * M-2). The next start rebuilds both from the journal. */
+wipe:
+    if (ex->node) OPENSSL_cleanse(ex->node, gz_node_size());
+    if (ex->sign_mem) OPENSSL_cleanse(ex->sign_mem, gz_node_sign_size());
     return rc;
 }

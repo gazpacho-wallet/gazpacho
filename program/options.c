@@ -130,6 +130,7 @@ void gzp_usage(void)
         "  --test-start-delay-ms MS      keep the start open (inputs queued) this long\n"
         "  --test-listen-during-start    host: listen before the start completes\n"
         "  --test-restore-from FILE      put FILE in place as the journal, as a restore\n"
+        "  --test-entropy-hex HEX        a new wallet's 256 bits of entropy (64 hex digits)\n"
         "  --test-sync-fail-at K [--test-cut-fail]   the K-th batch's sync fails (and its undo)\n"
         "  --test-crash-after-counter    exit between the start counter and the incarnation entry\n"
         "  --test-timer-ms MS            a test timer in the executor's table\n"
@@ -157,10 +158,14 @@ void gzp_usage(void)
         "  --test-check-forged           CHECK against a key file forged with this wallet's ids\n"
         "  --test-plan-once SAT          host: one plan of SAT to the first address, printed, then stop\n"
         "  --test-cut-after-mark         a power cut once a change mark is kept\n"
+        "  --test-start-as-restore       files behind at the unlock: start as a restore\n"
+        "  --test-cut-after-derive       a power cut when the derivation says wrong\n"
         "  --test-kill-at K              SIGKILL before the K-th storage write, sync or rename\n"
         "  --test-power-cut-at K         the same, what a power cut loses dropped first\n"
         "  --test-append-batch HEX       save one batch of records (type, length, bytes ...), then stop\n"
         "  --test-drop-kind K            drop every received message of kind K\n"
+        "  --test-lock-after-drop        lock once after the first dropped message, then unlock again\n"
+        "  --test-lock-after-command N   lock once after the N-th command answered 200, then unlock again\n"
         "  --test-commands               read test commands from standard input\n"
         "  --test-big-reply BYTES        pad every test reply with BYTES\n"
         "  --test-crash-after-save K     exit once the K-th batch is durable\n"
@@ -168,6 +173,7 @@ void gzp_usage(void)
         "  --test-funds ok|short|unknown  the funds check answers short or cannot tell (else the host's own wallet)\n"
         "  --test-sign-outcome funding|retry|failed|unfinished   what the signing stand-in reports\n"
         "  --test-sign-delay-ms MS       ... this long after the hand-off\n"
+        "  --test-ready-cap N            build a member's ready in N bytes (an over-limit ready is a node error)\n"
         "  --test-crash-before-confirm K exit just before the K-th confirmation\n"
         "  --test-exit-after-send        exit once the first test ping has left\n"
         "  --test-drop-view KIND         view objects of this kind never reach the API\n");
@@ -264,6 +270,8 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--test-seed-check")) { o->test_seed_check = 1; takes = 0; }
         else if (!strcmp(a, "--test-check-forged")) { o->test_check_forged = 1; takes = 0; }
         else if (!strcmp(a, "--test-cut-after-mark")) { o->test_cut_after_mark = 1; takes = 0; }
+        else if (!strcmp(a, "--test-start-as-restore")) { o->test_start_as_restore = 1; takes = 0; }
+        else if (!strcmp(a, "--test-cut-after-derive")) { o->test_cut_after_derive = 1; takes = 0; }
         else if (!strcmp(a, "--test-commands")) { o->test_commands = 1; takes = 0; }
         else if (!strcmp(a, "--test-exit-after-send")) { o->test_exit_after_send = 1; takes = 0; }
 #endif
@@ -321,6 +329,7 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--test-storage-fail-at")) { ok = num(val, 1, 1000000, &v); o->test_storage_fail_at = (int)v; }
         else if (!strcmp(a, "--test-start-delay-ms")) { ok = num(val, 0, 600000, &v); o->test_start_delay_ms = (int)v; }
         else if (!strcmp(a, "--test-restore-from")) o->test_restore_from = val;
+        else if (!strcmp(a, "--test-entropy-hex")) o->test_entropy_hex = val;
         else if (!strcmp(a, "--test-passphrase-file")) o->test_passphrase_file = val;
         else if (!strcmp(a, "--test-append-batch")) o->test_append_batch = val;
         else if (!strcmp(a, "--test-sweep")) { ok = num(val, 1, 100000000, &v); o->test_sweep = v; }
@@ -361,6 +370,8 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
             else if (!strcmp(val, "unknown")) o->test_funds = 2;
             else ok = 0;
         }
+        else if (!strcmp(a, "--test-lock-after-drop")) { o->test_lock_after_drop = 1; takes = 0; }
+        else if (!strcmp(a, "--test-lock-after-command")) { ok = num(val, 1, 1000, &v); o->test_lock_after_command = (int)v; }
         else if (!strcmp(a, "--test-sign-outcome")) {
             if (!strcmp(val, "funding")) o->test_sign_outcome = 1;
             else if (!strcmp(val, "retry")) o->test_sign_outcome = 2;
@@ -373,6 +384,7 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
             ok = o->test_crash_after_record != 0;
         }
         else if (!strcmp(a, "--test-sign-delay-ms")) { ok = num(val, 0, 600000, &v); o->test_sign_delay_ms = (int)v; }
+        else if (!strcmp(a, "--test-ready-cap")) { ok = num(val, 1, 100000, &v); o->test_ready_cap = (int)v; }
         else if (!strcmp(a, "--test-big-reply")) { ok = num(val, 1, 60000, &v); o->test_big_reply = (int)v; }
         else if (!strcmp(a, "--test-crash-after-save")) { ok = num(val, 1, 1000000, &v); o->test_crash_after_save = (int)v; }
         else if (!strcmp(a, "--test-crash-before-confirm")) { ok = num(val, 1, 1000000, &v); o->test_crash_before_confirm = (int)v; }

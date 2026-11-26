@@ -466,6 +466,9 @@ int gz_sc_attempts_decode(const uint8_t chain[32], const uint8_t *data, size_t l
 uint64_t gz_sc_attempts_wait(const gz_sc_attempts_t *a, uint64_t now_s); /* 0: may try now */
 void gz_sc_attempts_wrong(gz_sc_attempts_t *a, uint64_t now_s);
 void gz_sc_attempts_right(gz_sc_attempts_t *a, uint64_t now_s);
+/* An attempt counted before its check turned out wrong: its delay runs from
+ * now, the larger of the two kept (12.3). */
+void gz_sc_attempts_rearm(gz_sc_attempts_t *a, uint64_t now_s);
 
 /* ---- the socket token folder (12.2) -------------------------------------- */
 /* gazpacho-<first 16 hex digits of SHA-256(data_dir)> under $XDG_RUNTIME_DIR,

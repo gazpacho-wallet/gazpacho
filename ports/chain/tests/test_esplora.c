@@ -27,6 +27,24 @@ static void fx_open(fixture *x) {
   }
 }
 
+/* A backend with a pacer; with `shared`, on that fixture's transport and clock instead of a new one. */
+static void fx_open_paced(fixture *x, gz_esplora_pacer *p, fake_http *shared) {
+  gz_esplora_config cfg;
+  gz_http http;
+  if (!shared) {
+    fake_init(&x->fake);
+    fake_load_honest(&x->fake, BASE, false);
+  }
+  http = fake_transport(shared ? shared : &x->fake);
+  gz_esplora_config_default(&cfg);
+  cfg.base_url = BASE;
+  cfg.pacer = p;
+  if (gz_esplora_create(&cfg, &http, &x->chain) != GZ_CHAIN_OK) {
+    fprintf(stderr, "cannot create backend\n");
+    exit(2);
+  }
+}
+
 static void fx_close(fixture *x) {
   gz_chain_destroy(&x->chain);
   fake_free(&x->fake);
@@ -950,6 +968,59 @@ static void test_rate_limit(test_state *T) {
   CHECK_RESULT(gz_chain_block_hash(&x.chain, 329438, h), GZ_CHAIN_OK);
   CHECK(x.fake.n_sleeps == sleeps);
   fx_close(&x);
+}
+
+/* A public server's throttle (signet run 2, mempool.space: 429 after about 27 requests at the
+ * wallet scan's pace). A 429 is waited out, 2 s first and twice as long each time (to 30 s), up
+ * to six times, none of them counted as one of max_attempts; and the client then keeps its
+ * requests at least 1 s apart. A server that never stops refusing still ends: unreachable. */
+static void test_throttle_waited_out(test_state *T) {
+  fixture x;
+  uint8_t h[GZ_HASH_LEN];
+  fx_open(&x);
+  const char *url = BASE "/block-height/329438";
+  fake_once(&x.fake, false, url, GZ_HTTP_OK, 429, "Too Many Requests", 4);
+  size_t s0 = x.fake.n_sleeps;
+  CHECK_RESULT(gz_chain_block_hash(&x.chain, 329438, h), GZ_CHAIN_OK);
+  CHECK(x.fake.requests == 5);
+  {
+    uint32_t want[4] = {2000, 4000, 8000, 16000};
+    size_t k = 0;
+    for (size_t i = s0; i < x.fake.n_sleeps && i < FAKE_MAX_SLEEPS; i++)
+      if (x.fake.sleeps[i] >= 2000 && k < 4) CHECK(x.fake.sleeps[i] == want[k++]);
+    CHECK(k == 4);
+  }
+  /* after a throttle, no two requests start less than 1 s apart */
+  unsigned r0 = x.fake.requests;
+  for (int i = 0; i < 3; i++) CHECK_RESULT(gz_chain_block_hash(&x.chain, 329438, h), GZ_CHAIN_OK);
+  for (unsigned i = r0; i < x.fake.requests; i++) CHECK(x.fake.starts[i] - x.fake.starts[i - 1] >= 1000);
+  /* a server that keeps refusing: six waits, seven requests, then unreachable */
+  fake_once(&x.fake, false, url, GZ_HTTP_OK, 429, "Too Many Requests", 50);
+  x.fake.requests = 0;
+  CHECK_RESULT(gz_chain_block_hash(&x.chain, 329438, h), GZ_CHAIN_UNREACHABLE);
+  CHECK(x.fake.requests == 7);
+  fx_close(&x);
+}
+
+/* Two clients of one server share a pacer (one program's worker and wallet scan): their
+ * requests, taken in turns, start at least the pacer's interval apart, though each client's
+ * own min_interval_ms (250) would allow four a second. */
+static void test_shared_pacer(test_state *T) {
+  fixture x, y;
+  uint8_t h[GZ_HASH_LEN];
+  gz_esplora_pacer p;
+  CHECK(gz_esplora_pacer_init(&p, 1000));
+  fx_open_paced(&x, &p, NULL);
+  fx_open_paced(&y, &p, &x.fake);   /* one transport and one clock for both */
+  for (int i = 0; i < 4; i++) {
+    CHECK_RESULT(gz_chain_block_hash(&x.chain, 329438, h), GZ_CHAIN_OK);
+    CHECK_RESULT(gz_chain_block_hash(&y.chain, 329438, h), GZ_CHAIN_OK);
+  }
+  CHECK(x.fake.requests == 8);
+  for (unsigned i = 1; i < x.fake.requests; i++) CHECK(x.fake.starts[i] - x.fake.starts[i - 1] >= 1000);
+  gz_chain_destroy(&y.chain);
+  fx_close(&x);
+  gz_esplora_pacer_destroy(&p);
 }
 
 static void test_time_limit_on_every_request(test_state *T) {
@@ -1878,6 +1949,8 @@ int main(void) {
   RUN(test_fee_estimates);
   RUN(test_retries_and_backoff);
   RUN(test_rate_limit);
+  RUN(test_throttle_waited_out);
+  RUN(test_shared_pacer);
   RUN(test_time_limit_on_every_request);
   RUN(test_size_caps);
   RUN(test_small_buffer);

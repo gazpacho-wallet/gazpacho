@@ -25,7 +25,10 @@
    the storage key, not the key file's public ids (storage 4.6; review B of
    PR 54, M1): a key file forged with this wallet's vault_id and another
    passphrase answers wrong, and is counted (two wrong in a row after one
-   wrong check), never resetting the count.
+   wrong check), never resetting the count; the right passphrase passes CHECK.
+10. The attempt is counted before the passphrase is checked (storage 12.3):
+   a power cut right after each of three wrong guesses (before anything
+   else could be written) still leaves them counted.
 """
 import os
 import re
@@ -131,6 +134,20 @@ def main():
               "2: the count starts again after a right one (%s)" % (m.group(0) if m else None))
         time.sleep(1.2)
 
+        # 10. A power cut after each wrong guess: still counted.
+        for i in range(3):
+            p, _ = start("--test-passphrase-file", wrong, "--test-kdf-floor", "--test-cut-after-derive")
+            cm = p.wait_for(r"test-cut after-derive|unlock op=\w+ status=\w+.*", timeout=60)
+            check(cm is not None and cm.group(0).startswith("test-cut"),
+                  "10: guess %d cut after the derivation (%s)" % (i + 1, cm.group(0) if cm else None))
+            p.exit_code(timeout=30)
+            time.sleep(1.2)
+        code, m = attempt(wrong)
+        check(code == 8 and m is not None and m.group(1) == "wrong" and int(m.group(2)) == 5,
+              "10: three guesses cut by power are still counted (wrong_in_row %s, 5 expected)" %
+              (m.group(2) if m else None))
+        time.sleep(1.2)
+
         # 3. A missing attempts file is the strictest state.
         os.unlink(os.path.join(folder, "attempts.gza"))
         code, m = attempt(_pass_file())
@@ -185,11 +202,39 @@ def main():
         p, _ = start("--test-passphrase-file", _pass_file(), "--test-kdf-floor", "--test-check-forged")
         fg = p.wait_for(r"test-check forged status=(\S+) wrong_in_row=(\d+)", timeout=90)
         wr = p.find(r"test-check wrong status=(\S+)")[1]
+        rt = p.find(r"test-check right status=(\S+) wrong_in_row=(\d+)")[1]
+        bd = p.wait_for(r"test-begin-in-delay status=(\S+) before=(\d+) after=(\d+)", timeout=60)
+        df = p.wait_for(r"test-deferred-finish right status=(\S+)", timeout=30)
+        check(df is not None and df.group(1) == "ok",
+              "9: a wrong answer's delay runs from the answer, not from a late finish: the next try is checked (%s)"
+              % (df.group(0) if df else None))
+        check(bd is not None and bd.group(1) == "busy" and bd.group(2) == bd.group(3) and bd.group(2) != "0",
+              "9: begin itself refuses a try inside the delay, not counted (review A's L3; %s)" % (bd.group(0) if bd else None))
+        check(rt is not None and rt.group(1) == "ok" and rt.group(2) == "0",
+              "9: the right passphrase passes CHECK and clears the count (%s)" % (rt.group(0) if rt else None))
         check(wr is not None and wr.group(1) == "wrong", "9: a wrong passphrase: CHECK says wrong")
         check(fg is not None and fg.group(1) == "wrong",
               "9: a forged key file with this wallet's vault_id: CHECK says wrong (%s)" % (fg.group(0) if fg else None))
         check(fg is not None and fg.group(2) == "2", "9: and it is counted, not reset (%s)" % (fg.group(0) if fg else None))
         p.stop()
+
+        # 11. An incarnation that fails after its node started (the listen port is
+        #     taken, so the network does not open) still wipes the node's and the
+        #     signing engine's memory (review A of PR 54, the Low on 1867a7c).
+        import socket
+        taken = socket.socket()
+        taken.bind(("127.0.0.1", 0))
+        taken.listen(1)
+        q = Proc("listen-taken", [exe, "--data-dir", os.path.join(work, "listen-taken"), "--role", "host", "--name", "h",
+                                  "--listen", "127.0.0.1:%d" % taken.getsockname()[1], "--no-chain", "--no-interface",
+                                  "--test-passphrase-file", _pass_file(), "--test-kdf-floor"], logs)
+        procs.append(q)
+        ie = q.wait_for(r"incarnation-end rc=(-?\d+) node-zero=(\d) sign-zero=(\d)", timeout=90)
+        check(q.find(r"ready incarnation=")[0] is not None and ie is not None and ie.group(2) == "1" and ie.group(3) == "1",
+              "11: the network fails to open after the node started: its memory is wiped all the same (%s)"
+              % (ie.group(0) if ie else None))
+        q.exit_code(timeout=30)
+        taken.close()
 
         # 5. The release program stays locked without the local interface.
         if release:

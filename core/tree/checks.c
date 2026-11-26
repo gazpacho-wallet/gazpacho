@@ -159,8 +159,8 @@ static int check_participants(const gz_tree_member_in_t *in, const gz_tree_propo
     return 1;
 }
 
-/* messages.md 6.3: binding = TH("gazpacho/bind", scope || factory key || contribution key),
- * signed by both keys. */
+/* messages.md 6.3: binding = TH("gazpacho/bind", scope || factory key || contribution key), signed by the
+ * contribution key (K1: the factory key signs no binding). */
 static int check_bindings(const gz_tree_member_in_t *in, const gz_tree_proposal_t *p, gz_tree_verdict_t *v)
 {
     size_t i;
@@ -173,8 +173,7 @@ static int check_bindings(const gz_tree_member_in_t *in, const gz_tree_proposal_
         tr_sha256_write(&s, q->factory_key, 33);
         tr_sha256_write(&s, q->contribution_key, 33);
         tr_sha256_done(&s, h);
-        if (!in->crypto->verify(in->crypto->ctx, h, q->factory_key, q->bind_by_factory)
-            || !in->crypto->verify(in->crypto->ctx, h, q->contribution_key, q->bind_by_contribution))
+        if (!in->crypto->verify(in->crypto->ctx, h, q->contribution_key, q->bind_by_contribution))
             return fail(v, GZ_CHK_BINDING, (int32_t)i);
     }
     return 1;

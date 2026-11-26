@@ -34,14 +34,7 @@ foreach(variant release test)
     add_library(${lib} STATIC ${GZP_SOURCES} journal_standin.c store_powercut.c keys_standin.c)
   endif()
   target_include_directories(${lib} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-  target_link_libraries(${lib} PUBLIC ${node} ${net} gazpacho_wallet_keys gazpacho_chain gazpacho_api gazpacho_tree_import gazpacho_journal ${sc} gazpacho_wallet_tx gazpacho_funding OpenSSL::Crypto)
-  # The passphrase layer (unlock.h): the TEST-ONLY stand-in in gazpacho-test,
-  # none in the release program until encrypted storage is wired in.
-  if(variant STREQUAL "test")
-    target_sources(${lib} PRIVATE unlock_standin.c)
-  else()
-    target_sources(${lib} PRIVATE unlock_none.c)
-  endif()
+  target_link_libraries(${lib} PUBLIC ${node} ${net} gazpacho_wallet_keys gazpacho_chain gazpacho_journal ${sc} gazpacho_api gazpacho_tree_import gazpacho_wallet_tx gazpacho_funding OpenSSL::Crypto)
   target_compile_options(${lib} PRIVATE ${GZ_NEW_CODE_WARNINGS})
   if(variant STREQUAL "test")
     target_compile_definitions(${lib} PUBLIC GZP_TEST_BUILD=1)
@@ -73,6 +66,8 @@ target_compile_options(gzp_silent_peer PRIVATE ${GZ_NEW_CODE_WARNINGS})
 gz_add_test(program_store ${CMAKE_SOURCE_DIR}/tests/program/test_store.c gazpacho_program_test)
 gz_add_test(program_options ${CMAKE_SOURCE_DIR}/tests/program/test_options.c gazpacho_program_test)
 gz_add_test(program_net ${CMAKE_SOURCE_DIR}/tests/program/test_net.c gazpacho_program_test)
+# One pace per chain server for all the program's clients (signet run 2's preparation).
+gz_add_test(program_chain_pace ${CMAKE_SOURCE_DIR}/tests/program/test_chain_pace.c gazpacho_program_test)
 # The funding engine's wallet port (wport.c): holds across a publish, change
 # only once buried, can_plan as plan does (review of PR 80, N-1).
 gz_add_test(program_wport ${CMAKE_SOURCE_DIR}/tests/program/test_wport.c gazpacho_program_test)
@@ -277,6 +272,10 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME program_host_funds
     COMMAND ${GZP_PY} ${GZP_T}/host_funds.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/host_funds)
   set_tests_properties(program_host_funds PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77)
+  # B22, F22: a chain server that throttles (429, as public servers do) still gives the host its coins.
+  add_test(NAME program_chain_throttle
+    COMMAND ${GZP_PY} ${GZP_T}/chain_throttle.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/chain_throttle)
+  set_tests_properties(program_chain_throttle PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
   # F13 (H3): the key routing follows the signing setting in force, not --member-signing; real signing.
   add_test(NAME program_keys_setting
     COMMAND ${GZP_PY} ${GZP_T}/keys_setting.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/keys_setting)

@@ -30,6 +30,7 @@
 #include <stdint.h>
 
 #include "gazpacho/chain.h"
+#include "gazpacho/chain_esplora.h"
 #include "gazpacho/chain_watch.h"
 #include "gazpacho/event.h"
 #ifdef GZP_HAVE_CURL
@@ -141,5 +142,14 @@ int gzp_chain_show_outputs(gzp_chain_t *c, const uint8_t *script, size_t len);
 void gzp_chain_restart(gzp_chain_t *c);
 /* Stops and joins the worker, then frees the backends and the transport. */
 void gzp_chain_close(gzp_chain_t *c);
+
+/* The pace of the chain server at `url`, one for every client of the program that asks it
+ * (the worker's, the loop's lookups, the wallet's scan): at most one request every two seconds
+ * to a public server (mempool.space, measured: about 33 requests at four a second, or 38 at one
+ * a second, and it answers nothing for minutes; 73 of 75 answered at one every two seconds). NULL, no shared pace (each client keeps its own, four a second), for the local
+ * test chain (`local`: regtest) and a server on this machine (a plain http:// address, which
+ * the chain port takes only for this machine); also for no URL or a full table. Made on first
+ * use, kept until the program ends. */
+gz_esplora_pacer *gzp_chain_pacer(const char *url, int local);
 
 #endif
