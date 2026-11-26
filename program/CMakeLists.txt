@@ -276,6 +276,13 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME program_chain_throttle
     COMMAND ${GZP_PY} ${GZP_T}/chain_throttle.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/chain_throttle)
   set_tests_properties(program_chain_throttle PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+  # Slice 1.5 plan, P7: the regtest helpers (peered nodes at chosen floors and Core versions,
+  # reorganisations, the mempool filler, the look-alike's package, hide, freeze and minimum
+  # options, operator names) each do what they claim. Core versions from GZ_BITCOIN_BIN and
+  # GZ_BITCOIN_BIN_<version>; skipped with none.
+  add_test(NAME program_regtest_helpers
+    COMMAND ${GZP_PY} ${GZP_T}/regtest_helpers.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/regtest_helpers)
+  set_tests_properties(program_regtest_helpers PROPERTIES TIMEOUT 900 SKIP_RETURN_CODE 77)
   # F13 (H3): the key routing follows the signing setting in force, not --member-signing; real signing.
   add_test(NAME program_keys_setting
     COMMAND ${GZP_PY} ${GZP_T}/keys_setting.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/keys_setting)
