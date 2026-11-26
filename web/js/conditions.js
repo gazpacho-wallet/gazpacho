@@ -55,7 +55,7 @@
             });
             if (loosens.length) {
               warn.appendChild(ui.notice("", "This loosens: " + loosens.map(function (f) { return W.known(W.conditionNames, f).toLowerCase(); }).join(", ") + ".",
-                "It widens what the app signs without asking, so saving asks for your passphrase. It applies to lobbies you join from now on, not to ones you are in."));
+                "It widens what the app signs without asking, so saving asks for your password. It applies to lobbies you join from now on, not to ones you are in."));
             }
             (p.problems || []).forEach(function (pr) { warn.appendChild(ui.notice("bad", "A value is not accepted.", String(pr.field) + ": " + String(pr.code))); });
             save.disabled = !c.editable;
@@ -123,7 +123,7 @@
               return ask.then(function (yes) {
                 if (!yes) throw { code: "cancelled" };
                 return api.act("PUT", "/conditions", { conditions: now, based_on_version: c.version, preset: preset, confirm_loosens: list },
-              { why: "This loosens: " + names + ". It lets the app sign more than before, so it asks for your passphrase." }).then(function (r) {
+              { why: "This loosens: " + names + ". It lets the app sign more than before, so it asks for your password." }).then(function (r) {
               var left = r.left_lobbies || [];
               ui.toast(left.length ? "Saved. The app left " + u.count(left.length, "lobby", "lobbies") + " that no longer fit." : "Saved.");
               gz.app.refreshStatus(false);

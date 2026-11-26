@@ -4,10 +4,10 @@ TEST ONLY. These Playwright tests drive the interface (`web/`) in a real browser
 
 | File | What it covers |
 |---|---|
-| `first-run.spec.mjs` | The start link and its token; create a wallet with the six suggested words; the 24 words (shown on request, hidden with the tab, gone after Done, after leaving and on `pagehide`); the backup check and a failed check; restore, a wrong word, a weak passphrase; no start link; the hijack warning |
-| `signin.spec.mjs` | A wrong passphrase and the delay; sign-out against lock; lock during a call; idle sign-out with events flowing; a fresh sign-in on demand; a second tab |
-| `flows.spec.mjs` | Add a host by address; terms and fit; join; the waiting view; the signing moment; a refusal at the app's own check; signing that did not finish; funding; the live factory; conditions (tighten, loosen); several lobbies; pause; host a lobby (preview, open with the passphrase, seats, removal, a member seen to leave at its check, early start, funding by itself, live); cancel; node busy; the chain view in doubt; the event stream dropping and resuming; the program not answering |
-| `signing.spec.mjs` | Draft 5: the passphrase with a ready under `at_join`, a locked seat after a restart and "Mark ready in all", the signing setting saved for the next start, Slice 1 accountability, the host's locked seats, a junk start token |
+| `first-run.spec.mjs` | The start link and its token; create a wallet with the six suggested words; the 24 words (shown on request, hidden with the tab, gone after Done, after leaving and on `pagehide`); the backup check and a failed check; restore, a wrong word, a weak password; no start link; the hijack warning |
+| `signin.spec.mjs` | A wrong password and the delay; sign-out against lock; lock during a call; idle sign-out with events flowing; a fresh sign-in on demand; a second tab |
+| `flows.spec.mjs` | Add a host by address; terms and fit; join; the waiting view; the signing moment; a refusal at the app's own check; signing that did not finish; funding; the live factory; conditions (tighten, loosen); several lobbies; pause; host a lobby (preview, open with the password, seats, removal, a member seen to leave at its check, early start, funding by itself, live); cancel; node busy; the chain view in doubt; the event stream dropping and resuming; the program not answering |
+| `signing.spec.mjs` | Draft 5: the password with a ready under `at_join`, a locked seat after a restart and "Mark ready in all", the signing setting saved for the next start, Slice 1 accountability, the host's locked seats, a junk start token |
 | `multiprocess.spec.mjs` | A host and two members, real `gazpacho-test` processes through their own interfaces: one lobby opened, joined and readied up to the ready check, a refusal seen by the host. Needs `GZ_PROGRAM`; fixme until P6a (`GZ_P6A`) |
 | `tabs.spec.mjs` | Three tabs on one session: the third, over the stream cap, follows relayed events and takes over when a streaming tab closes, or after 30 s when the streaming tabs crash during the signing moment |
 | `quality.spec.mjs` | The headers the files are served with; no request to any other host; mainnet refused; unknown states; keyboard; labels; phone width; contrast in light and dark |
@@ -31,4 +31,4 @@ To click through the screens yourself against the fake, with the story moving on
 
     ./build/ports/api/gz-api-fake --data-dir ./gz-demo-data --story --auto-ms 3000
 
-and open the file it names. The sign-in passphrase of a `--locked` run is the fixture in `ports/api/fake/fake_backend.h`.
+and open the file it names. The sign-in password of a `--locked` run is the fixture in `ports/api/fake/fake_backend.h`.

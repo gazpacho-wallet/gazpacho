@@ -132,6 +132,10 @@ typedef struct {
     int (*point_ok)(void *ctx, const uint8_t pub[33]);
     /* BIP 340 signature of `msg` by key `which`; 1 on success. */
     int (*sign)(void *ctx, uint32_t which, const uint8_t msg[32], uint8_t sig[64]);
+    /* Member, K1 stage 3: the seat's factory public key, derived when the seat's first ready is built and
+     * never before (1, or 0: the port cannot give it now, and no ready is made). NULL: the config's
+     * factory_key is the seat's (tests). */
+    int (*factory_pub)(void *ctx, uint8_t pub[33]);
     void *ctx;
 } gz_lobby_crypto_t;
 
@@ -368,6 +372,7 @@ typedef struct {
     uint8_t n_changes, changes_at;
     int answered;                    /* answered the open check */
     int chosen;                      /* chosen in the start of the current check */
+    uint8_t bad_readies;             /* readies refused as invalid, for the lobby's life (memory; B's L-2 of #95) */
     /* The seat said `unready` reason 3 (its signing gate is closed). Its next
      * `ready` is not counted against the change limit, once per check window
      * (`free_window` is the window that used it, plus one). Memory only. */
@@ -604,6 +609,7 @@ typedef struct {
     int sent_here;                   /* the join was already sent on this connection */
     uint32_t test_ready_cap;         /* tests only: the ready's buffer, shrunk (0: the whole) */
     int seat_key_saved;              /* the seat's factory key is saved (K1: before the first ready) */
+    int factory_fresh;               /* the factory key was derived in this run, at the first ready (the node logs it) */
     uint8_t seat_bind_c[64];         /* seat_key field 10: the first ready's bind_by_contribution, sent in every
                                       * later ready byte for byte (BD3, review H1) */
     uint32_t max_tree_nodes;         /* the config's (M2) */

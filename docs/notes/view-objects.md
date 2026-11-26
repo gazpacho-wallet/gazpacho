@@ -82,7 +82,9 @@ This note says, for each field of the answers the API server builds from the vie
 
 ## 5. `attention[]`: kind 7
 
-Each item is one object; `gone` removes it. Records: 6 code, 8 the lobby's local id, 10 `since_at`, 14 count. Codes: 1 `unlock_to_take_part` (a member's seat is locked by its gate, 14.3 rule 4), 2 `lobby_left_out` (keys not given at this start), 3 `member_refused` (a host: the number of refused seats).
+Each item is one object; `gone` removes it. Records: 6 code, 8 the lobby's local id, 10 `since_at`, 14 count, 16 and 18 `need_sat` and `have_sat`, 20 the lobby's role (1 `joined`, 2 `hosted`). Codes: 1 `unlock_to_take_part` (a member's seat is locked by its gate, 14.3 rule 4), 2 `lobby_left_out` (keys not given at this start), 3 `member_refused` (a host: the number of refused seats), 4 `host_funds_short` (a host: the automatic start waits for funds).
+
+- **`GET /api/v1/status`'s `attention`** (11.4) is built from these items by the program (`gzp_view_attention`, program/view.c): the code's name, `lobby_id`, `lobby_role` (record 20; else the lobby's own view kind), and `params` with `lobby_id` and `lobby_role`, plus `need_sat` and `have_sat` for `host_funds_short` and `count` for `member_refused`. Oldest first; the server orders them by tier. An item of an unknown code, or with no role, is left out.
 
 - **No fingerprint** (7.3: never in an event). An item's id is `att_` and the lobby's local id after its `lob_` (section 1); field 12 is not used. Every lobby slot has a local id: from its open, or, for a slot opened before the engine, one made and saved at the start that finds it without one.
 

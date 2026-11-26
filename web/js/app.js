@@ -359,7 +359,7 @@
     var btn = this, on = btn.getAttribute("data-state") !== "on";
     ui.run(btn, document.getElementById("alerts"), function () {
       return api.act("PUT", "/pause", on ? { on: true } : { on: false, confirm: "resume" },
-        { why: "Resuming lets Gazpacho join and sign again, so it asks for your passphrase first." }).then(function (r) {
+        { why: "Resuming lets Gazpacho join and sign again, so it asks for your password first." }).then(function (r) {
         if (r && r.left_lobbies && r.left_lobbies.length) ui.toast("Paused. Gazpacho left " + u.plural(r.left_lobbies.length, "lobby").replace("lobbys", "lobbies") + " that had not started.");
         else if (r && r.held_lobby) ui.toast("Pause pressed. It takes effect when signing ends.");
         else ui.toast(on ? "Paused." : "Resumed.");

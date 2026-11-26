@@ -6502,6 +6502,13 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <td>How a member's choice of signing mode reaches the core, and when</td>
 <td>Keep #52's immediate switch as the public command (and make it versioned), or keep both with one documented as the API's</td>
 </tr>
+<tr>
+<td>K35</td>
+<td><strong><code>lobby_left_out</code> is an attention item, tier <code>important</code>.</strong> A person whose seat was left out at a start (its keys could not be given) should see it, but it is not urgent</td>
+<td><code>spec/local-api.md</code> 11.4</td>
+<td>The attention list of a wallet restarted locked or without its signer</td>
+<td>It would be <code>heads_up</code> (told once), or not shown</td>
+</tr>
 </tbody>
 </table></div></div></details>
 <details id="c21-1a-conflicts-with-owner-decision-16h-lis"><summary>1a. Conflicts with owner decision 16h (listed, not resolved)</summary><div class="body"><p>Found by the deviation audit of 2026-11-18 (<code>reviews/deviation-audit-2026-11-18.md</code>, item 8e and the "related drift" note under item 8). Both come from the penalty recommendations of PR #61 (K18). Nothing is written into <code>channel.md</code> until the owner answers.</p>

@@ -9,19 +9,19 @@
   /* 14.3, interface rules 3 to 5: what each signing setting does, in the words the person reads */
   var LOCKED_SEAT = "Not taking part until you mark ready again: your app told the host this seat is locked.";
   var signing = {
-    at_join: "Gazpacho asks for your passphrase when you mark ready in a lobby. Only then does it make that lobby's signing key, and only for the terms you readied for; it forgets the key when that check ends. While Gazpacho is unlocked it still holds your wallet's seed, so this stops signing you did not mean, not someone who controls this computer.",
+    at_join: "Gazpacho asks for your password when you mark ready in a lobby. Only then does it make that lobby's signing key, and only for the terms you readied for; it forgets the key when that check ends. While Gazpacho is unlocked it still holds your wallet's seed, so this stops signing you did not mean, not someone who controls this computer.",
     auto: "Gazpacho signs in every lobby you are ready in, by itself, whenever it is unlocked."
   };
-  var signingNames = { at_join: "Ask for my passphrase when I mark ready", auto: "Sign by itself in every lobby I am ready in", when_unlocked: "Sign while signing is unlocked" };
+  var signingNames = { at_join: "Ask for my password when I mark ready", auto: "Sign by itself in every lobby I am ready in", when_unlocked: "Sign while signing is unlocked" };
   var SIGNING_SAVED = "Saved. This takes effect the next time Gazpacho starts; until then it keeps signing as it does now.";
 
   var errors = {
     unreachable: "Gazpacho is not answering. Check that the program is still running on this computer.",
-    not_signed_in: "You are signed out. Type your passphrase to go on.",
-    wallet_locked: "The wallet is locked. Type your passphrase to unlock it.",
-    wrong_passphrase: "That passphrase is not right. Nothing was done.",
-    passphrase_not_checked: "Gazpacho could not check the passphrase just now. It was not counted as wrong. Try again.",
-    passphrases_differ: "The two passphrases are not the same. Type them again.",
+    not_signed_in: "You are signed out. Type your password to go on.",
+    wallet_locked: "The wallet is locked. Type your password to unlock it.",
+    wrong_passphrase: "That password is not right. Nothing was done.",
+    passphrase_not_checked: "Gazpacho could not check the password just now. It was not counted as wrong. Try again.",
+    passphrases_differ: "The two passwords are not the same. Type them again.",
     no_wallet: "There is no wallet here yet.",
     wallet_exists: "A wallet already exists here.",
     wallet_restoring: "This wallet is still being restored. Wait until it has current data.",
@@ -29,7 +29,7 @@
     code_expired: "That code is more than 10 minutes old. Ask the program for a new one.",
     too_many_attempts: "Too many wrong codes. Every unused code was cancelled. Ask the program for a new one.",
     token_used: "This start link was already used.",
-    fresh_sign_in_needed: "Gazpacho needs your passphrase again for this.",
+    fresh_sign_in_needed: "Gazpacho needs your password again for this.",
     confirm_mismatch: "What this page showed you no longer matches what Gazpacho would do. Nothing was done. Look again and repeat it.",
     request_id_reused: "The page repeated an old request by mistake. Nothing was done. Try again.",
     changed_elsewhere: "This was changed in another window. Nothing was saved. The page shows the newer values now.",
@@ -75,7 +75,7 @@
     below_minimum: "Fewer members are ready than the lobby's minimum, so it cannot start yet.",
     frozen: "The ready check has run. Nothing about the seats can change now.",
     not_host: "This lobby is not one you host.",
-    weak_passphrase: "This passphrase is not strong enough."
+    weak_passphrase: "This password is not strong enough."
   };
 
   function errorText(e) {
@@ -86,11 +86,11 @@
         : "Too many tries. Wait a moment and try again.";
     }
     if (code === "weak_passphrase") {
-      if (p.reason === "too_short") return "This passphrase is too short (" + u.number(p.length) + " of " + u.number(p.minimum) + " characters).";
-      if (p.reason === "too_long") return "This passphrase is too long.";
-      if (p.reason === "too_common") return "This passphrase is too common. Choose another.";
-      if (p.reason === "names_the_wallet") return "This passphrase names the wallet. Choose another.";
-      if (p.reason === "uses_the_words") return "This passphrase uses your 24 words. Choose another.";
+      if (p.reason === "too_short") return "This password is too short (" + u.number(p.length) + " of " + u.number(p.minimum) + " characters).";
+      if (p.reason === "too_long") return "This password is too long.";
+      if (p.reason === "too_common") return "This password is too common. Choose another.";
+      if (p.reason === "names_the_wallet") return "This password names the wallet. Choose another.";
+      if (p.reason === "uses_the_words") return "This password uses your 24 words. Choose another.";
     }
     if (code === "bad_words") {
       if (typeof p.position === "number") return "Word " + p.position + " is not in the word list. Check the spelling on your paper.";
@@ -199,7 +199,7 @@
   };
   var watching = {
     this_app: "this app, while it runs",
-    watcher_locked: "this app, locked: it watches, but cannot finish leaving a factory without your passphrase",
+    watcher_locked: "this app, locked: it watches, but cannot finish leaving a factory without your password",
     nobody_locked: "nobody is watching while Gazpacho is locked",
     nobody_restoring: "nobody is watching the factories this wallet may have been in",
     nobody_offline: "nobody is watching",
@@ -237,9 +237,11 @@
     storage_nearly_full: "Gazpacho's storage is nearly full.",
     terms_changed: "A host moved a value in a lobby you are in.",
     refused_to_sign: "The app refused to sign for a lobby. Nothing was signed. Nothing moved.",
-    unlock_to_take_part: "A seat of yours is locked: it does not take part until you mark ready again with your passphrase.",
+    unlock_to_take_part: "A seat of yours is locked: it does not take part until you mark ready again with your password.",
     host_can_start: "Enough members are ready in a lobby you host: you can start it now.",
-    host_funds_short: "A lobby you host needs more coins than this wallet has free."
+    host_funds_short: "A lobby you host needs more coins than this wallet has free.",
+    member_refused: "A member of a lobby you host refused its values. Open the lobby to see which.",
+    lobby_left_out: "A lobby you are in is waiting: this start could not get its keys. Nothing is signed or sent for it until it can."
   };
   var tiers = { at_risk: "At risk", act_now: "Act now", important: "Important", recommended: "Recommended", heads_up: "Heads-up", record: "Record" };
   var activityKinds = {
@@ -280,16 +282,16 @@
     },
     nobody_watching_locked: "Gazpacho is locked, and nobody watches your factories while it is locked. Unlock to watch them.",
     nobody_watching_at_risk: "Locked. Nothing is watched. Unlock, or a factory balance is at risk.",
-    unlock_before: "Locked. Gazpacho is still watching. Unlock soon: leaving a factory alone needs your passphrase for its last step.",
+    unlock_before: "Locked. Gazpacho is still watching. Unlock soon: leaving a factory alone needs your password for its last step.",
     past_unlock_by: "Unlock at once. It may already be too late to leave a factory in time.",
     deadline_passed_while_locked: "Unlock. A factory's deadline passed while Gazpacho was locked; it will check what happened.",
-    waiting_for_unlock: "Unlock now. Only the last step of leaving a factory is left, and it needs your passphrase.",
-    publishing_tree_steps: "Locked and leaving a factory alone. The last step needs your passphrase. Unlock soon.",
+    waiting_for_unlock: "Unlock now. Only the last step of leaving a factory is left, and it needs your password.",
+    publishing_tree_steps: "Locked and leaving a factory alone. The last step needs your password. Unlock soon.",
     tree_step_late: "Unlock now. Leaving a factory is behind and needs a higher fee, which Gazpacho can only pay once unlocked.",
     penalty_file_short: "Unlock now. Some of Gazpacho's answers to your host's old states are missing from this computer.",
     old_state_answered: "Locked. The host published an old state and Gazpacho answered it. Unlock to see.",
     host_closed: "The host closed this channel. Your balance waits for you; unlock to collect it.",
-    second_stage_after_breach: "Unlock now. The host published an old state; answering it fully needs your passphrase.",
+    second_stage_after_breach: "Unlock now. The host published an old state; answering it fully needs your password.",
     payment_secret_released: "Unlock now, or a payment you received may be lost."
   };
 

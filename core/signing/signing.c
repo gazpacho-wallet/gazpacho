@@ -2887,6 +2887,18 @@ void gz_sign_forget_scope(gz_sign_t *e, const uint8_t scope[32])
         if (e->kept[k].used && same(e->kept[k].scope, scope, 32)) memset(&e->kept[k], 0, sizeof e->kept[k]);
 }
 
+void gz_sign_drop_scope(gz_sign_t *e, const uint8_t scope[32])
+{
+    if (!e || !scope || e->cfg.host) return;
+    for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++) {
+        gz_sign_round_t *r = &e->rounds[i];
+        if (r->state == GZ_SIGN_ROUND_FREE || !same(r->def.outer_digest, scope, 32)) continue;
+        wipe_secrets(r);                                                   /* RULE:STALE_SCOPE_DROPPED */
+        memset(r, 0, sizeof *r);
+    }
+    gz_sign_forget_scope(e, scope);
+}
+
 void gz_sign_forget_kept_unless(gz_sign_t *e, int (*keep)(void *ctx, const uint8_t scope[32]), void *ctx)
 {
     if (!e || !keep) return;

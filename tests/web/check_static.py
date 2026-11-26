@@ -13,6 +13,11 @@ Fails if any file under web/:
     the console, or page storage beyond the two allowed uses (the session
     token in sessionStorage, in js/api.js; the theme choice in localStorage);
   - says "staking" (the project's wording rule), comments included;
+  - shows the word "passphrase" (owner, 2026-11-25: the person's secret is a
+    password; in Bitcoin a passphrase is the BIP39 seed extension, which
+    Gazpacho does not use): in any string or HTML text outside comments,
+    except identifier-shaped strings (lower case, digits, "_" and "/" only:
+    the API's field names, error codes and paths, which are protocol);
 and if index.html loads a file the server does not embed, the server embeds
 a file index.html does not load, or the word lists differ from the program's.
 Standard library only.
@@ -37,6 +42,8 @@ SCHEME = re.compile(r"(?i)\b(?:https?|wss?|ftp)://|\b(?:javascript|data|blob):[^
 PROTO_RELATIVE = re.compile(r"[\"'(=]\s*//[A-Za-z0-9]")
 BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.S)
 LINE_COMMENT = re.compile(r"(?<![:\\])//.*")
+STRING = re.compile(r'"(?:[^"\\\n]|\\.)*"' + r"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`")
+PROTOCOL_NAME = re.compile(r"[a-z0-9_/]+")
 
 
 def code_only(text):
@@ -77,6 +84,13 @@ def main():
                 bad.append("%s: sessionStorage outside js/api.js" % where)
             if "localStorage" in line and "gz-theme" not in line:
                 bad.append("%s: localStorage for anything but the theme" % where)
+            if rel.endswith(".html"):
+                if re.search(r"(?i)passphrase", line):
+                    bad.append("%s: the word passphrase in the page (say password)" % where)
+            else:
+                for s in STRING.findall(line):
+                    if re.search(r"(?i)passphrase", s) and not PROTOCOL_NAME.fullmatch(s[1:-1]):
+                        bad.append("%s: the word passphrase in shown text (say password): %s" % (where, s[:60]))
             if rel.endswith(".html"):
                 if re.search(r"(?i)\son[a-z]+\s*=", line):
                     bad.append("%s: an inline event handler" % where)

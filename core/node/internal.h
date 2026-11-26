@@ -409,6 +409,8 @@ typedef struct {
     int gate_derive;                /* member: a join ready's factory key, derived once its terms check */
     uint32_t cond_seen;             /* member: the saved conditions' version when it joined (slot_opened 24) */
     int set_aside_known;
+    int stale;                      /* member: left out as a seat of an older epoch (BD2): nothing is sent for it */
+    int bd5_mismatch;               /* member: the key hook found the factory key unlike seat_key (BD5); unready at the next step */
 } slot_t;
 
 _Static_assert(SLOT_MAX_SEATS >= GZ_LOBBY_MAX_SEATS, "a slot notes every seat its lobby can mark (T-P42-2)");
@@ -602,6 +604,7 @@ struct gz_node {
     int fenced, loaded, started, restored;
     gz_batch_id_t fence;
     int resume_at, resume_restore_done;
+    int stale_marked;                  /* BD2: the stale seats were left out before the signing resume */
     int resumed[ENG_N];
     uint32_t held[ENG_N];           /* confirmations held for an engine not yet resumed (7.5) */
 
@@ -821,6 +824,9 @@ gz_status_t gz_api_after(gz_node_t *c, gz_bytes_t cmd, size_t from, gz_action_li
 gz_status_t gz_api_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action_list_t *out);
 size_t gz_api_loosens(const gz_lobby_conditions_t *from, const gz_lobby_conditions_t *to, uint8_t *l);
 gz_status_t gz_ls_left_out_note(gz_node_t *c, int i, gz_action_list_t *out);
+#define GZ_LS_CLOSED_STALE 0x0bd2u          /* slot_closed reason: a seat of an older epoch given up at a rejoin (BD2) */
+int gz_ls_stale(const gz_node_t *c, int i);
+gz_status_t gz_ls_stale_out(gz_node_t *c, int i, gz_action_list_t *out);
 gz_status_t gz_c_slot_bracket(gz_node_t *c, int eng, gz_status_t (*fn)(gz_node_t *, int, gz_action_list_t *),
                               gz_action_list_t *out);
 /* signslot.c */
