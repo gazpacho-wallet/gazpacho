@@ -887,7 +887,7 @@ static gz_xe_sweep_t *sweep_slot(gz_xe_t *x)
     for (size_t k = 0; k < GZ_XE_MAX_SWEEPS; k++)
         if (!x->sweep[k].used) return &x->sweep[k];
     for (size_t k = 0; k < GZ_XE_MAX_SWEEPS; k++)
-        if (x->sweep[k].settled) return &x->sweep[k];
+        if (x->sweep[k].sighted) return &x->sweep[k];
     return NULL;
 }
 
