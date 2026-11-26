@@ -179,7 +179,7 @@ def main():
             good = good and ('"spent":true' in r.replace(" ", "")) and spenders.get(int(k["vout"]), "?") in r
         check(good, "each root output is spent by the host's timeout spend, nothing else")
 
-        # 5. The funding's change (the wallet's change at index 100), spent whole to the first address.
+        # 5. The funding's change (the wallet's first change, index 0 since #91), spent whole to the first address.
         ftx = slice1.chain_tx(rt, funding_txid) if funding_txid else {}
         ch = [v for v in ftx.get("vout", []) if v["n"] != 0]
         if check(len(ch) == 1, "the funding has one change output"):
@@ -190,8 +190,8 @@ def main():
             a += ["--test-spend-coin", spec, "--test-passphrase-file", passphrase_file(), "--test-kdf-floor"]
             r = subprocess.run(a, capture_output=True, text=True, timeout=120)
             m = re.search(r"spend-coin change=(\d+) index=(\d+)", r.stdout)
-            check(m is not None and m.group(1) == "1" and m.group(2) == "100",
-                  "the tool finds the coin at change index 100 (%s)" % (m.group(0) if m else r.stdout[-200:]))
+            check(m is not None and m.group(1) == "1" and m.group(2) == "0",
+                  "the tool finds the coin at change index 0 (%s)" % (m.group(0) if m else r.stdout[-200:]))
             m = re.search(r"spend-tx amount=(\d+) fee=(\d+) out=(\d+) vsize=(\d+) tx=([0-9a-f]+)", r.stdout)
             if check(m is not None, "and builds the spend"):
                 amt, fee, out, vs, txh = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4)), m.group(5)
