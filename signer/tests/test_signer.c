@@ -297,7 +297,11 @@ static void test_tables(void)
     CHECK(!gz_sg_may_sign_tag(GZ_SG_ROLE_HOST, GZ_SG_KEY_CONTRIBUTION, "gazpacho/msg"));
     CHECK(!gz_sg_may_sign_tag(GZ_SG_ROLE_HOST, GZ_SG_KEY_FACTORY, "gazpacho/msg"));
     CHECK(!gz_sg_may_sign_tag(GZ_SG_ROLE_MEMBER, GZ_SG_KEY_FACTORY, "gazpacho/msg"));
-    CHECK(gz_sg_may_sign_tag(GZ_SG_ROLE_MEMBER, GZ_SG_KEY_FACTORY, "gazpacho/bind"));   /* until S6 */
+    /* S6 (PR #59's code, BD): the factory key signs no binding, on either side; it makes MuSig2 partials only */
+    CHECK(!gz_sg_may_sign_tag(GZ_SG_ROLE_MEMBER, GZ_SG_KEY_FACTORY, "gazpacho/bind"));
+    CHECK(!gz_sg_may_sign_tag(GZ_SG_ROLE_HOST, GZ_SG_KEY_FACTORY, "gazpacho/bind"));
+    CHECK(gz_sg_may_sign_tag(GZ_SG_ROLE_MEMBER, GZ_SG_KEY_CONTRIBUTION, "gazpacho/bind"));
+    CHECK(gz_sg_may_sign_tag(GZ_SG_ROLE_HOST, GZ_SG_KEY_HOST, "gazpacho/bind"));
     CHECK(!gz_sg_may_sign_tag(GZ_SG_ROLE_HOST, GZ_SG_KEY_WALLET, "gazpacho/msg"));
     CHECK(!gz_sg_may_sign_tag(GZ_SG_ROLE_HOST, GZ_SG_KEY_HOST, "gazpacho" "/msgx"));
     CHECK(!gz_sg_may_sign_tag(GZ_SG_ROLE_HOST, GZ_SG_KEY_HOST, "gazpacho" "/ms"));

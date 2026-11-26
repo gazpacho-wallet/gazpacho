@@ -240,6 +240,17 @@ static gz_status_t resume_step(gz_node_t *c, gz_action_list_t *out, int *finishe
         c->resume_at = R_SIGN;
         return GZ_OK;
     case R_SIGN:
+        /* BD2 (review A of #98, M1): the seats of an older epoch are left out before the signing engine
+         * resumes, and their rounds dropped from it, so that none of them derives, makes or sends anything
+         * under the old epoch. Once, before the first round. */
+        if (!c->stale_marked) {
+            c->stale_marked = 1;
+            for (int i = 0; i < GZ_NODE_MAX_SLOTS; i++)
+                if (gz_ls_stale(c, i)) {
+                    if (c->sign_on && c->sign) gz_sign_drop_scope(c->sign, c->slots[i].scope);
+                    if ((st = gz_ls_stale_out(c, i, out)) != GZ_OK) return st;
+                }
+        }
         /* Signing before the lobbies (10): an attempt found unfinished is
          * failed first, so its lobby hands nothing over again; a member
          * answers per item (S2). One round a call. In test builds the

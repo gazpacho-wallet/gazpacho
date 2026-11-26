@@ -97,7 +97,7 @@
 
   function askPassphrase(o) {
     return new Promise(function (resolve, reject) {
-      var f = passField("Wallet passphrase", false);
+      var f = passField("Password", false);
       var msg = h("div", {});
       var go = h("button", { class: "btn primary", type: "submit" }, o.button || "Continue");
       var cancel = button("Cancel", function () { finish(); reject({ code: "cancelled" }); });
@@ -118,7 +118,7 @@
         ev.preventDefault();
         f.input.value = "";
         u.clear(msg);
-        if (!pass) { u.add(msg, notice("warn", "Type your passphrase first.")); f.input.focus(); return; }
+        if (!pass) { u.add(msg, notice("warn", "Enter your password.")); f.input.focus(); return; }
         go.disabled = true;
         u.add(msg, h("p", { role: "status" }, "Checking…"));
         Promise.resolve().then(function () { return o.run(pass); }).then(function (r) {

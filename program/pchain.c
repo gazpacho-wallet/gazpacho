@@ -16,6 +16,7 @@
 #include "pchain.h"
 
 #define GZP_PACERS 8
+#define GZP_THROTTLE_WAITS 6u   /* the program waits out a server's 429 (B22, F22) */
 #define GZP_PACE_PUBLIC_MS 2000u   /* a public server: at most one request every two seconds */
 static struct {
     char url[GZ_ESPLORA_URL_MAX + 1];
@@ -421,6 +422,7 @@ static int client_open(gzp_chain_client_t *k, const char *const *urls, const cha
         cfg.base_url = urls[i];
         /* one pace per server for all the program's clients of it (signet run 2) */
         cfg.pacer = gzp_chain_pacer(urls[i], network == GZ_NET_REGTEST);
+        cfg.throttle_waits = GZP_THROTTLE_WAITS;   /* a 429 waited out (B22, F22) */
         if (operators && operators[i]) {
             /* Named by the user: two servers on one machine (or two names
              * of one provider) can be told apart, or put together. */

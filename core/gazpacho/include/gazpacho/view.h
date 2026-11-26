@@ -179,6 +179,7 @@
 #define GZ_ATT_HOST_FUNDS_SHORT    4   /* 11.4: the automatic start waits for the host's funds */
 #define GZ_VAT_NEED                16  /* u64: host_funds_short, what the funding needs */
 #define GZ_VAT_HAVE                18  /* u64: ... what the wallet holds for it */
+#define GZ_VAT_ROLE                20  /* u8: GZ_ROLE_JOINED or GZ_ROLE_HOSTED (11.4: every lobby item names its role) */
 
 /* ---- the local-API engine (area 0x000d) --------------------------------- */
 /* Commands (command.h; arguments from type 10). */

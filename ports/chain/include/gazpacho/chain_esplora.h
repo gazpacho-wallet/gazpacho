@@ -63,6 +63,11 @@ typedef struct gz_esplora_config {
   uint32_t backoff_ms;
   /* Least time between the starts of two requests to this server. */
   uint32_t min_interval_ms;
+  /* How many times a 429 (the server's throttle) is waited out per request: 2 s first, twice
+   * as long each time to 30 s, none counted as one of max_attempts, and the client then keeps
+   * its requests at least 1 s apart. 0 (the default): a 429 is one of max_attempts, retried
+   * after backoff_ms like any failure, for a caller with retries of its own. At most 16. */
+  uint32_t throttle_waits;
   /* Optional: the server's pace shared with the program's other clients of it (above).
    * NULL: this client's own min_interval_ms alone. Not copied: it must outlive the client. */
   gz_esplora_pacer *pacer;
@@ -88,6 +93,44 @@ void gz_esplora_config_default(gz_esplora_config *cfg);
  */
 gz_chain_result gz_esplora_create(const gz_esplora_config *cfg, const gz_http *http,
                                   gz_chain *out);
+
+/*
+ * The package-endpoint probe (plan S12, step 1). Sends GZ_ESPLORA_PROBE_BODY,
+ * an empty JSON array: valid JSON, but no package (Bitcoin Core takes 2 to
+ * 25 transactions), so nothing can be broadcast. First to
+ * GZ_ESPLORA_PROBE_CONTROL_PATH, a path no server has, which must answer 404
+ * or 405: some web frameworks read a body before they route it and answer
+ * 400 on any path, and a 400 at the package path proves nothing from them.
+ * Then to the package paths: a server with the endpoint refuses `[]` with
+ * 400; one without answers 404 (or 405).
+ */
+#define GZ_ESPLORA_PROBE_BODY "[]"
+#define GZ_ESPLORA_PROBE_CONTROL_PATH "/txs/gazpacho-probe-no-such-path"
+#define GZ_ESPLORA_PROBE_PATH_MAX 40
+
+typedef struct gz_package_probe {
+  /* GZ_CHAIN_OK: the endpoint is there (400 to the probe), at `path`.
+   * GZ_CHAIN_UNSUPPORTED: 404 or 405 at every path tried.
+   * GZ_CHAIN_REJECTED: cannot tell: the control path did not answer 404 or
+   *   405 (`path` is the control path), or a package path answered another
+   *   4xx. The words are in `reason`.
+   * GZ_CHAIN_MALFORMED: a 2xx or other status to a body that is no package.
+   * GZ_CHAIN_UNREACHABLE, GZ_CHAIN_TOO_LARGE: as for any request. */
+  gz_chain_result result;
+  long server_status; /* HTTP status of the last answer, or 0 if not reached */
+  char path[GZ_ESPLORA_PROBE_PATH_MAX]; /* the path of the last answer, e.g. "/txs/package" */
+  /* The server's words, printable ASCII, zero-terminated. */
+  char reason[GZ_REASON_MAX];
+} gz_package_probe;
+
+/* Probes one Esplora backend made by gz_esplora_create (anything else is
+ * GZ_CHAIN_INVALID_ARG and nothing is sent). After the control path, tries
+ * the same paths, in the
+ * same order and with the same rule against sending twice after a time-out,
+ * as gz_chain_broadcast_package. `out` is filled whatever the
+ * result and out->result equals the return value. Safe on every network:
+ * the body is never a transaction. */
+gz_chain_result gz_esplora_probe_package(const gz_chain *c, gz_package_probe *out);
 
 #ifdef __cplusplus
 }

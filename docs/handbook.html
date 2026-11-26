@@ -166,9 +166,12 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="ch" href="#c10">Vertical slices</a>
 <a class="sec" href="#c10-rules-for-every-slice" title="Rules for every slice">Rules for every slice</a>
 <a class="sec" href="#c10-slice-1-form-a-factory" title="Slice 1: form a factory">Slice 1: form a factory</a>
+<a class="sec" href="#c10-right-after-slice-1-the-idle-lock-owner-" title="Right after Slice 1: the idle lock (owner, 2026-11-26)">Right after Slice 1: the idle lock (owner, 2026-11-26)</a>
 <a class="sec" href="#c10-slice-2-a-payment" title="Slice 2: a payment">Slice 2: a payment</a>
 <a class="sec" href="#c10-slice-3-leaving-alone" title="Slice 3: leaving alone">Slice 3: leaving alone</a>
 <a class="sec" href="#c10-later-slices" title="Later slices">Later slices</a>
+<a class="sec" href="#c10-a-stuck-funding-owner-2026-11-26" title="A stuck funding (owner, 2026-11-26)">A stuck funding (owner, 2026-11-26)</a>
+<a class="sec" href="#c10-chain-sources-owner-2026-11-26" title="Chain sources (owner, 2026-11-26)">Chain sources (owner, 2026-11-26)</a>
 <a class="sec" href="#c10-where-slices-run" title="Where slices run">Where slices run</a>
 <a class="sec" href="#c10-what-slices-do-not-replace" title="What slices do not replace">What slices do not replace</a>
 <a class="ch" href="#c11">Slice 1 board</a>
@@ -358,7 +361,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="sec" href="#c27-rough-totals" title="Rough totals">Rough totals</a>
 <a class="sec" href="#c27-biggest-unknowns" title="Biggest unknowns">Biggest unknowns</a></nav>
 <main>
-<p class="lead">Every project document in one file. Closed, it is a list of contents; open a line to read that part, or use "Open all" for the complete text. Built on 2026-11-25 from the repository's documents. The illustrated summary with diagrams is <a href="design.html">design.html</a>.</p>
+<p class="lead">Every project document in one file. Closed, it is a list of contents; open a line to read that part, or use "Open all" for the complete text. Built on 2026-11-26 from the repository's documents. The illustrated summary with diagrams is <a href="design.html">design.html</a>.</p>
 <section class="chapter" id="c1"><h2>Start here</h2><p class="desc">Terms, facts, decisions in force, and how sure we are of each claim.</p><p class="file">Gazpacho knowledge base · <code>docs/KNOWLEDGE-BASE.md</code></p>
 <div class="intro"><p>The single place to start. It gathers what has been learned and decided, says how sure we are of each thing, and points to the document that holds the detail. Updated 2026-11-12. Update it whenever a decision is made or a fact is checked.</p></div>
 <details id="c1-1-where-everything-is"><summary>1. Where everything is</summary><div class="body"><div class="tw"><table>
@@ -797,7 +800,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>Funding</td>
-<td>One funder per factory, the host, who signs funding only after the whole tree is signed. Members start at zero. Funding is automatic and on by default: once H1 passes, the host broadcasts without asking; consent is at opening the lobby and at the start. Before real money it becomes a setting that still defaults to automatic (owner decision 16a, 2026-11-13)</td>
+<td>One funder per factory, the host, who signs funding only after the whole tree is signed. Members start at zero. Funding is automatic and on by default: once H1 passes, the host broadcasts without asking; consent is at opening the lobby and at the start. Before real money it becomes a setting that still defaults to automatic (owner decision 16a, 2026-11-13). A stuck funding is bumped by a child on its change (today), or on a planned host-keyed speed-up anchor, never replaced, since the tree is signed against its txid. The speed-up output is a host setting only: not in the terms, not sent to members, not checked by them. The funding stays version 2 (owner, 2026-11-26, decision 17c; <code>SLICES.md</code>, "A stuck funding")</td>
 </tr>
 <tr>
 <td>Lobbies per wallet</td>
@@ -813,7 +816,15 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>Privacy</td>
-<td>Slice 1: a generic user agent, an explicit chain proxy, no addresses in logs. 1.0.0: one Tor setting (<code>socks5h</code> only, no silent clearnet fallback), onion-service hosts, the chain server over Tor or your own node, block-based chain lookups. Later: built-in Tor and a compact block filter client (owner decision 16g)</td>
+<td>Slice 1: a generic user agent, an explicit chain proxy, no addresses in logs. 1.0.0: one Tor setting (<code>socks5h</code> only, no silent clearnet fallback), onion-service hosts, the chain server over Tor or your own node, block-based chain lookups. Later: built-in Tor (owner decision 16g). Compact block filters move earlier: before mainnet, as the default private light mode (owner, 2026-11-26; row "Chain sources")</td>
+</tr>
+<tr>
+<td>Idle lock</td>
+<td>The wallet locks itself after N minutes without use. N is a setting. The lock wipes keys from memory as the manual lock of #54 does. It goes in the slice right after Slice 1 (owner, 2026-11-26: "right after, get it on the roadmap for the next slice"). Then, to cut key exposure further: keys unlocked for one lobby only, before Slice 2; a separate signer process, before 1.0.0 (<code>SLICES.md</code>, "Key exposure")</td>
+</tr>
+<tr>
+<td>Chain sources</td>
+<td>All the options covered (owner, 2026-11-26: "we need all the options covered"), in this order: Electrum-protocol servers (Fulcrum, ElectrumX, electrs); the person's own Bitcoin node over RPC, pruned nodes included; compact block filters (BIP 157/158) as the default private light mode before mainnet. Today's comparison of two Esplora operators stays. Trust and privacy of each: <code>SLICES.md</code>, "Chain sources"</td>
 </tr>
 <tr>
 <td>Messages</td>
@@ -925,7 +936,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>M5</td>
-<td>Hardening of storage, transport and chain view; Electrum backend; a node of our own for controlled-chain tests</td>
+<td>Hardening of storage, transport and chain view; the Electrum-protocol backend (Fulcrum, ElectrumX, electrs); the person's own node over RPC, pruned included; a node of our own for controlled-chain tests</td>
 <td></td>
 </tr>
 <tr>
@@ -954,7 +965,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <tbody>
 <tr>
 <td>1.0.0</td>
-<td>The milestones above. One member per leaf. Fees (proposed, owner to confirm): per payment, and an optional joining fee from the first payment received. Payout to one wallet. No on-chain reserve. Host accountability: signed seat receipts, the signer-choice rule in the terms, signed removals, signed counts. Member signing modes A to C. Understudies: standby seats that answered the ready check are swapped in automatically, at the ready check for a no-show or mid-signing for a member who drops, as a new attempt with fresh nonces and every member's limits re-checked (owner decision 16e). One Tor setting, onion-service hosts, the chain server over Tor or your own node, block-based chain lookups (owner decision 16)</td>
+<td>The milestones above. One member per leaf. Fees (proposed, owner to confirm): per payment, and an optional joining fee from the first payment received. Payout to one wallet. No on-chain reserve. Host accountability: signed seat receipts, the signer-choice rule in the terms, signed removals, signed counts. Member signing modes A to C. Understudies: standby seats that answered the ready check are swapped in automatically, at the ready check for a no-show or mid-signing for a member who drops, as a new attempt with fresh nonces and every member's limits re-checked (owner decision 16e). One Tor setting, onion-service hosts, the chain server over Tor or your own node, block-based chain lookups (owner decision 16). Compact block filters (BIP 157/158) as the default private light mode, the two-Esplora comparison kept beside them (owner, 2026-11-26)</td>
 </tr>
 <tr>
 <td>1.1.0</td>
@@ -962,7 +973,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>Later</td>
-<td>Payout to an outside or cold wallet. Closing into the next factory; the reference's key-hand-over rotation; swap-out as a fallback; a companion device for unattended moves. Built-in Tor (for example Arti), a BIP 157/158 compact block filter light client, automatic onion creation and DNS-name hosts (owner decision 16g). Accountability proofs published to Nostr from fresh keys after a lobby ends. After 1.2.0: mode D, watchtower services, as the fourth way to take part: D2 first, then D1 (opt-in, at least two services, built-in watcher stays on); D3 off by default; D4 never offered (decision 16h)</td>
+<td>Payout to an outside or cold wallet. Closing into the next factory; the reference's key-hand-over rotation; swap-out as a fallback; a companion device for unattended moves. Built-in Tor (for example Arti), automatic onion creation and DNS-name hosts (owner decision 16g). Accountability proofs published to Nostr from fresh keys after a lobby ends. After 1.2.0: mode D, watchtower services, as the fourth way to take part: D2 first, then D1 (opt-in, at least two services, built-in watcher stays on); D3 off by default; D4 never offered (decision 16h)</td>
 </tr>
 </tbody>
 </table></div></div></details>
@@ -1010,6 +1021,22 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <tr>
 <td>Lift the one-lobby limit in <code>spec/local-api.md</code> (open point 9, <code>already_in_lobby</code>, <code>already_hosting</code>) and <code>MULTI-FACTORY.md</code>: several lobbies at once from Slice 1</td>
 <td>Decision 16b</td>
+</tr>
+<tr>
+<td>Idle auto-lock: lock after N minutes without use, a setting, wiping keys as the manual lock does (#54). In the slice right after Slice 1</td>
+<td>Owner, 2026-11-26</td>
+</tr>
+<tr>
+<td>Keys unlocked for one lobby only (the rest stay sealed), before Slice 2; a separate signer process, before 1.0.0</td>
+<td>Owner, 2026-11-26 (follow-ons of the idle lock)</td>
+</tr>
+<tr>
+<td>A stuck funding (decision 17c): coin selection that prefers leaving change; the host-keyed speed-up anchor (a small P2TR output only the host can spend; not a keyless P2A, which anyone could pin) when no change is possible (setting Auto, Always, Never; Auto turns it on near the relay floor, 0.1 to 1 sat/vB); "Never" (no change, no anchor) fully allowed, with a non-blocking warning when the rate is within a margin (for example 2×) of the higher of the relay floor and the servers' current mempool minimum; the chain port's "current minimum fee" read for it; the host's "Speed up" button with a preview (CPFP only); the waiting status for host and members, with amber and red; version 3 for fundings reconsidered before mainnet</td>
+<td>Owner, 2026-11-26</td>
+</tr>
+<tr>
+<td>Chain sources, in order: Electrum-protocol servers; the person's own node over RPC, pruned included; compact block filters as the default light mode before mainnet. Each closes the host wallet's single-server scan gap (<code>THREAT-MODEL.md</code> 2.4 on <code>integration-slice1</code>, from #97) as <code>SLICES.md</code> says</td>
+<td>Owner, 2026-11-26</td>
 </tr>
 <tr>
 <td>Measure on signet: route timelock totals for moves across hosts, funding burial times, and the lead times for "move by" and "give up by"</td>
@@ -1879,13 +1906,21 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </table></div></div></details>
 <details id="c4-3-the-checks"><summary>3. The checks</summary><div class="body"><p>A request is safe to sign only if all of these hold. Each is evaluated on data the member's software built or stored itself.</p>
 <p><strong>C1. Rebuilt, not received.</strong> The member's software constructs every transaction in the request itself, from its own stored state, the host's terms and the proposal's parameters, and signs only digests it computed. Every setting that changes the transactions' bytes is set explicitly, never left to a default of the imported code (<code>signing-round.md</code> section 4.1). Every item is signed in one fixed way: a 64-byte signature, the default hash type, no annex, and a stated mode (key path with a stated tweak, or script path with a stated leaf). No item uses a hash type that lets inputs be added. A participant list containing the same key twice is refused. <strong>The funding output's script is checked:</strong> it must be the BIP 86 key of the MuSig2 aggregate of the participant keys in order, read from the output of the funding transaction that the outpoint names. The first import's <code>factory_set_funding</code> took the script on trust [C: <code>src/factory.c:1214-1228</code>]; at <code>50f7fa13</code> the import refuses one that is not the root's key [C: <code>src/factory.c:2415-2425</code>], and this check stays the member's own.</p>
+<p><strong>Only that output is the member's concern</strong> (owner decision 17c, 2026-11-26). The member's checks read three things from the funding transaction:
+- its txid;
+- the one output the funding outpoint names (its index, amount and script);
+- the outpoints of its first two inputs (<code>GZ_FUND_WATCH_INPUTS</code>), which it watches for C4(d).</p>
+<p>Nothing else in it is judged [C: <code>core/tree/checks.c</code>, <code>check_funding</code>; <code>core/funding/funding.c</code>]. Any other output, whether the host's change, a planned host-keyed speed-up anchor or none at all, is the host's business. It never changes the member's verdict under this rule, and a member never refuses a funding because of it.</p>
+<p>This rests on two assumptions, both enforced elsewhere in this rule:
+- the member's money enters only once that exact txid is buried (C11);
+- any other spend of a watched input ends the creation as Dead (C4(d)).</p>
 <p><strong>C2. Own outputs are recognised by own keys.</strong> The member's software identifies its outputs by deriving the scripts from its own keys, never from labels, indexes or positions in the request. This includes any output of the distribution transaction, which the import pays to the member's factory key [C at <code>50f7fa13</code>: <code>factory.h:1456-1465</code>]; under design 2 every payout and the distribution transaction pay instead the member's own payout script, a 34-byte P2TR script from its BIP 86 receive chain at an index given to that factory only (<code>exit.md</code> 3.4), and the member refuses a proposal carrying any other script for itself.</p>
 <p><strong>C3. Value.</strong> The exit value after the request is at least the amount owed after the request. The adversary draws from the exposed set; the member draws from the held set, and may rely only on responses it can make within its maximum safe absence and with fee funds it actually has. In 1.0.0 a member is not expected to hold on-chain coins (owner decision 6, <code>docs/ux/decisions.md</code>), so a response that needs a fee beyond what is built into the transaction counts as unavailable unless the member has the coins. Two import facts bear on this: the leaf chain transactions after the first carry no anchor output [C: <code>src/factory.c:2776-2779</code>], so they confirm only at their built-in fee; and the distribution transaction gets no anchor when the fee estimator reports below 1 sat/vB [C: <code>src/fee.c:90-97</code>, <code>src/factory.c:4532-4539</code>].</p>
 <p><strong>C4. Every exposed transaction is accounted for.</strong> For every transaction in the exposed set after the request, the module names which of these applies, and refuses if none does:
 - <strong>(a) Harmless:</strong> if it is published, the member still reaches at least what it is owed from its held set.
 - <strong>(b) Revoked:</strong> the member holds a secret or a signed transaction that lets it take the funds if this appears, within a stated window W.
 - <strong>(c) Outraced:</strong> the member must get a specific transaction buried within R blocks of a specific on-chain event, and has the means to. The module states R.
-- <strong>(d) Dead:</strong> an input it spends has been spent by a different transaction that is buried. For a creation round this includes any input of the funding transaction: once one is spent by another buried transaction, the funding output can never exist. Seeing this needs a watch on each input outpoint of the funding transaction, whose scripts the member does not know (<code>signing-round.md</code> section 12.1). A dead record stays in the journal and is no longer consulted.</p>
+- <strong>(d) Dead:</strong> an input it spends has been spent by a different transaction that is buried. For a creation round this includes any input of the funding transaction: once one is spent by another buried transaction, the funding output can never exist. Seeing this needs a watch on the input outpoints of the funding transaction, whose scripts the member does not know (<code>signing-round.md</code> section 12.1). The member watches the <strong>first two</strong> (<code>GZ_FUND_WATCH_INPUTS</code> [C: <code>core/funding/include/gazpacho/funding.h</code>]). H11's reused input is input 0, and the spend-back spends input 0, unless input 0 holds 1,000 sat or less, in which case it spends the largest input [C: <code>core/funding/funding.c</code>, <code>sb_input</code>]. So when input 0 is small, the spend-back can be an input the member does not watch. This is fail-safe: if an input beyond the first two is spent elsewhere, the creation stays Abandoned rather than becoming Dead. Its record is then kept and consulted longer than necessary, which blocks nothing (C10) and loses nothing. A hostile host that puts the conflicting input at index 2 or later leaves the members unresolved until their funding deadline (36 blocks after the acknowledgement): the same bound as a host that never funds (C-4). A dead record stays in the journal and is no longer consulted.</p>
 <p><strong>C5. Time, from the scripts.</strong> For every output on the member's exit path, the module lists every way that output can be spent, from the script of the transaction it built. The recognised ways are:</p>
 <div class="tw"><table>
 <thead>
@@ -2179,10 +2214,17 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <ul>
 <li><strong>H14.</strong> The host watches every member's channel output and answers a member's revoked commitment with the penalty by <code>penalty_send_by</code>, at its own constants.</li>
 <li><strong>H15.</strong> The host's sweeps of outputs it may take alone follow a schedule; it never sweeps an unpublished tree output with an owed member below it.</li>
-<li><strong>H16.</strong> The host never replaces the funding transaction by fee; it bumps it only by a child on its own change output (or a P2A of the funding's own), which the funding must therefore have. <strong>The one exception is abandoning</strong> (<code>docs/notes/composite-node.md</code> 14.3; <code>exit.md</code> C-5): at the host's funding deadline, a funding not yet buried is replaced on purpose by the <strong>spend-back</strong>, which spends one funding input back to the host's own wallet, pays nothing to the factory, and pays the smallest fee that replaces the funding and any child of it (the evicted package's fee plus the incremental relay fee on its own size). Once it is buried every member's records for the factory end under C4(d).</li>
-<li><strong>H17.</strong> <strong>INTERIM</strong> (while the import has host-only timeouts and no payouts: Slices 1, 1.5 and 2; replaced by H6 under design 2). The host's software never takes a member's balance through a timeout: it forces a silent owed member out with its own latest commitment by <code>host_force_by</code> (<code>exit.md</code> 4.5). A policy of honest host software, not a protection.</li>
-<li><strong>H18.</strong> The host's expiry delta toward a factory member, and its go-on-chain height for each payment it offers that member, cover that member's whole path, its own commitment and its HTLC-timeout transaction: (n + 1)·A + (B − 1) + M_host with n = d + 3.</li>
-</ul></div></details>
+<li><strong>H16.</strong> The host never replaces the funding transaction by fee. <strong>Today</strong> the host's funding always has a change output (the funding engine refuses any other shape [C: <code>core/funding/funding.c</code>, <code>plan_ok</code>]), and the host bumps a stuck funding only by a child spending that change. Members do not check the change or its absence (C1).
+  <strong>Planned (owner decision 17c, piece P9 of the Slice 1.5 plan; not current rules):</strong></li>
+<li>a <strong>host-keyed speed-up anchor</strong> on the funding: a small P2TR output to a host key, spendable only by the host, so that nobody else can pin it. It is added by a host-only setting (Auto, Always, Never; Auto adds it near the relay floor, 0.1 to 1 sat/vB, when no change is possible). Not a keyless P2A: A keyless P2A on a version-2 funding would let anyone pin it with a large, low-fee child, griefing the host's bump and its deadline spend-back (review B of #108, M-1). The alternative, a TRUC (version 3) funding with a P2A, is to be considered before mainnet;</li>
+<li>fundings with no change;</li>
+<li>"Never", with neither output, allowed;</li>
+<li>a warning that never blocks, when such a funding's rate is near what may not get through.</li>
+</ul>
+<p>None of these will change a member's checks.</p>
+<p><strong>The one exception to "never replaces" is abandoning</strong> (<code>docs/notes/composite-node.md</code> 14.3; <code>exit.md</code> C-5): at the host's funding deadline, a funding not yet buried is replaced on purpose by the <strong>spend-back</strong>, which spends one funding input back to the host's own wallet (input 0, unless it holds 1,000 sat or less, then the largest; C4(d)), pays nothing to the factory, and pays the smallest fee that replaces the funding and any child of it (the evicted package's fee plus the incremental relay fee on its own size). Once it is buried every member's records for the factory end under C4(d).
+- <strong>H17.</strong> <strong>INTERIM</strong> (while the import has host-only timeouts and no payouts: Slices 1, 1.5 and 2; replaced by H6 under design 2). The host's software never takes a member's balance through a timeout: it forces a silent owed member out with its own latest commitment by <code>host_force_by</code> (<code>exit.md</code> 4.5). A policy of honest host software, not a protection.
+- <strong>H18.</strong> The host's expiry delta toward a factory member, and its go-on-chain height for each payment it offers that member, cover that member's whole path, its own commitment and its HTLC-timeout transaction: (n + 1)·A + (B − 1) + M_host with n = d + 3.</p></div></details>
 <details id="c4-11-what-this-rule-does-not-protect-again"><summary>11. What this rule does not protect against</summary><div class="body"><ul>
 <li><strong>Being ignored.</strong> A host can refuse service. The remedy is to leave.</li>
 <li><strong>A withheld or lost round result.</strong> The member stays paused on the affected channels and must exit after its unfinished deadline, at its own cost in fees and time (section 4.1 rule 5).</li>
@@ -3987,6 +4029,16 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <p><strong>Not in slice 1:</strong> payments, liquidity changes, rotation, exits, the host's Lightning node, Nostr listings (the member is given the host's address directly), invitations, profiles beyond Standard.</p>
 <p><strong>Through the interface</strong> (owner decision 11, 2026-11-12, <code>ux/decisions.md</code>): Slice 1 ships with the local web interface in place, and every Slice 1 action is done through it: creating or restoring a wallet, the backup check of the 24 words, conditions, finding and joining a lobby, hosting a lobby, the signing moment and refusals, and the live factory. The command line is for start-up and diagnostics. The calls are in <code>spec/local-api.md</code>, section 2.1.</p>
 <p><strong>Done when:</strong> one host and at least three members on separate processes form a factory on signet from a clean start, twice in a row, by following the walkthrough <strong>in the interface</strong>; the automated run does the same through the same local API; and a member whose conditions are not met is seen to refuse, on the screen.</p></div></details>
+<details id="c10-right-after-slice-1-the-idle-lock-owner-"><summary>Right after Slice 1: the idle lock (owner, 2026-11-26)</summary><div class="body"><p>The owner: "right after, get it on the roadmap for the next slice". It goes in the slice that follows Slice 1, which is Slice 1.5 if the plan in PR #99 is adopted, and Slice 2 otherwise.</p>
+<p><strong>What you see:</strong> a setting, "Lock after N minutes without use". When the time passes with no request from the person, the wallet locks itself. That lock is the one the person can choose by hand (#54): keys are wiped from memory, the sign-in page comes back, and the locked wallet does what a locked wallet does (<code>spec/local-api.md</code> 4.7).</p>
+<p><strong>Still to specify</strong> (in <code>spec/local-api.md</code> and <code>spec/storage-encryption.md</code>, before it is built): the default N, and whether "never" is offered; what counts as use (a request from the interface counts; the engines' own background work does not); what happens if the time runs out during a signing round whose partial signatures are out. Since #81, leaving is refused then, so the lock should probably wait for the round to end. The specification pass decides.</p>
+<p><strong>Done when:</strong> a wallet left alone for N minutes is locked, with its key material wiped, as the lock's own test shows for the manual lock; a request just before the limit resets the timer; and the setting survives a restart.</p>
+<h4>Key exposure, next steps (owner, 2026-11-26)</h4>
+<p>The idle lock shortens how long keys sit in memory. These follow it, in order:</p>
+<ol>
+<li><strong>Keys for one lobby only, before Slice 2.</strong> An unlock opens the keys of the lobby that needs them, not the whole wallet's.</li>
+<li><strong>A separate signer, before 1.0.0.</strong> Signing keys live in their own process, and the program never holds them. The signer boundary check (<code>tools/check-signer-boundary.sh</code>) already keeps secret-key symbols inside <code>signer/</code>.</li>
+</ol></div></details>
 <details id="c10-slice-2-a-payment"><summary>Slice 2: a payment</summary><div class="body"><p><strong>What you see:</strong> one member pays another through the host, and both balances change on the screen.</p>
 <p>Needs the channel engine on Lightning's standard taproot format and the payment engine (M2).</p>
 <p><strong>Done when:</strong> payments in both directions succeed, a payment with too little time before its deadline is refused, and killing either program in the middle of a payment loses nothing after restart.</p></div></details>
@@ -3995,6 +4047,102 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <p><strong>Done when:</strong> the exit completes with the host gone, the amount equals what the member was owed, and the screen showed the dates correctly beforehand.</p></div></details>
 <details id="c10-later-slices"><summary>Later slices</summary><div class="body"><p>Rotation into the next factory (M4); paying and being paid across the wider Lightning network through the host's node; finding hosts through discovery (<code>spec/discovery.md</code>). Liquidity changes and timed levels are 1.1.0 (owner decision 9).</p>
 <p><strong>Many factories and rolling forward</strong> (1.1.0, <code>MULTI-FACTORY.md</code>): one member in three factories with two hosts moves its balance from an ending factory into a live one over Lightning, by a standing rule and without anyone acting, and the app settles to chain by its own deadline when no lobby is available.</p></div></details>
+<details id="c10-a-stuck-funding-owner-2026-11-26"><summary>A stuck funding (owner, 2026-11-26)</summary><div class="body"><p>The funding's txid is fixed before anything is signed, because the whole tree is signed against it. A replacement by fee therefore kills the factory (H16), so a funding that waits can only be helped by a child transaction (CPFP). The funding stays version 2.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Piece</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Coin selection</td>
+<td>Prefers a plan that leaves a change output, adding a small coin if needed</td>
+</tr>
+<tr>
+<td>Speed-up output</td>
+<td>When no change is possible, the funding preview says so plainly and offers a <strong>host-keyed speed-up anchor</strong>: a small P2TR output to a host key, which only the host can spend, so that nobody can pin it. It is not a keyless P2A: A keyless P2A on a version-2 funding would let anyone pin it with a large, low-fee child, griefing the host's bump and its deadline spend-back (review B of #108, M-1). A TRUC (version 3) funding with a P2A is the alternative, to consider before mainnet. <strong>A host setting only</strong>, "Speed-up output on fundings": <strong>Auto</strong> (the default: on when the chosen rate is near the relay floor, 0.1 to 1 sat/vB, off otherwise), <strong>Always</strong> or <strong>Never</strong>. It is not in the lobby terms and is not sent to members, and members cannot object to it: how the host funds is the host's business. <strong>Never</strong> is fully allowed: a funding with no change and no anchor is a valid choice</td>
+</tr>
+<tr>
+<td>Warning (host)</td>
+<td>When the funding has no speed-up handle (no change, no anchor) and its rate is within a margin (for example 2×) of the higher of the static relay floor and the current mempool minimum fee (the higher of the two chain servers' answers), the preview says: "This funding can't be sped up if it gets stuck. If it doesn't confirm within M blocks, the lobby ends and the members are released. The coins stay yours." It never blocks; the host can go ahead</td>
+</tr>
+<tr>
+<td>Chain port</td>
+<td>A "current minimum fee" read, from Esplora's fee estimates and mempool information on each server, taking the higher answer. Part of this feature</td>
+</tr>
+<tr>
+<td>"Speed up" (host)</td>
+<td>On a funding that is waiting, a button with a preview of the child: what it spends (the change or the speed-up output), its fee and the package rate. It never replaces the funding</td>
+</tr>
+<tr>
+<td>Status (host and members)</td>
+<td>"Funding not confirmed: waited N blocks; the lobby ends in M blocks if it doesn't confirm", where M counts to the funding deadline (the tip at the acknowledgement plus 36). Amber once the wait is longer than normal; red when M is small (for example 6 or fewer)</td>
+</tr>
+<tr>
+<td>Status (members)</td>
+<td>"The host's funding is waiting; you are released automatically in M blocks." No button. For later: members could bump through a keyless anchor</td>
+</tr>
+<tr>
+<td>Version 3</td>
+<td>Reconsidered before mainnet. A TRUC funding with a P2A is the alternative to the host-keyed anchor; otherwise it would only add zero-fee fundings, which are not needed</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Members' safety is unaffected by the funding's shape.</strong> Their checks read only the funding output the tree spends, plus the inputs they watch (<code>spec/safety-rule.md</code> C1). An extra change or anchor output never changes their verdict. The countdown is shown to them because it is about their seat.</p>
+<p><strong>Host-side code to change before this is built.</strong> Today two host-side checks would refuse a funding with a speed-up anchor, or one with no change:
+- the funding engine's plan check, which requires exactly two outputs, the factory's and a P2TR change at output 1 (<code>core/funding/funding.c</code>, <code>plan_ok</code>);
+- the signer's adopt check, which requires every other output to be change (<code>docs/notes/signer.md</code>, <code>gz_sg_fund_adopt</code> step 3).</p>
+<p>The wallet's funding builder can already require change (<code>require_change</code>). It has no speed-up output yet.</p>
+<p>Tested in the Slice 1.5 plan's S7 (PR #99), on regtest at 0.1 and 1 sat/vB floors.</p></div></details>
+<details id="c10-chain-sources-owner-2026-11-26"><summary>Chain sources (owner, 2026-11-26)</summary><div class="body"><p>The owner: "we need all the options covered". Today's comparison of two Esplora operators stays. These are added in this order:</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Source</th>
+<th>When</th>
+<th>Trust</th>
+<th>Privacy</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>—</td>
+<td><strong>Two Esplora operators, compared</strong> (today)</td>
+<td>Slice 1</td>
+<td>Either server can hide or delay something. Headers are checked, and only what both operators agree on counts (<code>THREAT-MODEL.md</code> 2.4)</td>
+<td>Each operator sees every script and txid asked about, and the address the query came from unless it goes over Tor</td>
+</tr>
+<tr>
+<td>1</td>
+<td><strong>Electrum-protocol servers</strong> (Fulcrum, ElectrumX, electrs)</td>
+<td>M5</td>
+<td>The same as Esplora: a server can hide or withhold, and headers can be checked. Two operators are compared, or the person runs their own server on their own node</td>
+<td>A public server sees every script hash subscribed and the address the query came from. A server of one's own on one's own node shows nothing to anyone</td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>The person's own Bitcoin node over RPC</strong>, pruned nodes included</td>
+<td>M5</td>
+<td>The node validates everything itself, so there is nothing to trust beyond it</td>
+<td>Nothing about the wallet leaves the machine; broadcasts go out through the node's peers. <strong>Pruned:</strong> blocks below the prune height are gone, so a restore that must find history older than that needs another source (the node can still list current coins, but not their history)</td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>Compact block filters</strong> (BIP 157/158) as the <strong>default private light mode</strong></td>
+<td>Before mainnet</td>
+<td>The wallet fetches filters from several peers and compares their filter headers, so a peer that lies is caught when the others disagree. Blocks are checked against their headers and proof of work</td>
+<td>Peers learn which blocks the wallet downloads, not which scripts it watches, and no server sees its addresses. Cost: the filters since the wallet's birthday, plus every block that matches. There is no mempool view, so the two-Esplora comparison stays for unconfirmed spends and package broadcast</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>The single-server scan gap.</strong> The host wallet's scan asks one server, and believes it when that server answers "never used" and also hides the coins (<code>THREAT-MODEL.md</code> 2.4, the "Reuse" row, added on <code>integration-slice1</code> by #97). Each source above closes it differently:
+- Electrum-protocol servers close it when the scan goes through the comparing backend over two operators, which is the same fix the Esplora path needs before mainnet.
+- One's own node closes it completely.
+- Compact filters close it because the wallet matches every block's filter itself.</p>
+<p>This decision moves compact block filters from "later" (owner decision 16g) to "before mainnet".</p></div></details>
 <details id="c10-where-slices-run"><summary>Where slices run</summary><div class="body"><p>On the project's build server at first, with the screen viewed through a secure tunnel. Running natively on Windows is tracked separately and follows slice 1.</p></div></details>
 <details id="c10-what-slices-do-not-replace"><summary>What slices do not replace</summary><div class="body"><p>The simulator remains the main safety net. A slice on signet shows the path works once, slowly, with honest parties. Dropped messages, crashes at every save point and cheating are tested in the simulator, and the controlled-chain scenarios wait for a node of our own.</p></div></details>
 </section>
@@ -6508,6 +6656,20 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <td><code>spec/local-api.md</code> 14.3 (<code>PUT /api/v1/signing</code>) and 24.2 item 46; PR #55 <code>core/node/api.c</code> (<code>cmd_signing</code>); PR #52 <code>core/node/lobbyslot.c</code> (<code>GZ_CMD_SIGNING_SET</code>)</td>
 <td>How a member's choice of signing mode reaches the core, and when</td>
 <td>Keep #52's immediate switch as the public command (and make it versioned), or keep both with one documented as the API's</td>
+</tr>
+<tr>
+<td>K35</td>
+<td><strong><code>lobby_left_out</code> is an attention item, tier <code>important</code>.</strong> A person whose seat was left out at a start (its keys could not be given) should see it, but it is not urgent</td>
+<td><code>spec/local-api.md</code> 11.4</td>
+<td>The attention list of a wallet restarted locked or without its signer</td>
+<td>It would be <code>heads_up</code> (told once), or not shown</td>
+</tr>
+<tr>
+<td>K36</td>
+<td><strong>How decisions 17a and 17b were placed</strong> (2026-11-26). (a) "The next slice" after Slice 1 is read as Slice 1.5 if PR #99's plan is adopted, Slice 2 otherwise. (b) The idle lock's default N, whether "never" is offered, what counts as use, and what happens when the time runs out during a signing round are left to the specification pass. None is chosen here. (c) Compact block filters are placed in the 1.0.0 release row (1.0.0 is the first release meant for mainnet), and Electrum-protocol servers and the person's own node in M5.</td>
+<td><code>PLAN.md</code> (Decisions in force, Milestones, Releases, Work list); <code>SLICES.md</code></td>
+<td>Which slice carries the idle lock; which release carries compact filters</td>
+<td>Say which slice, or which release, instead</td>
 </tr>
 </tbody>
 </table></div></div></details>
@@ -9051,7 +9213,7 @@ docs/      plan, assessment, user guides
 {
  "about": "Not displayed. Sources and conventions for readers working from this file alone. The full text of every document is in the page itself, inside the collapsed sections.",
  "repository": "https://github.com/gazpacho-wallet/gazpacho",
- "built": "2026-11-25",
+ "built": "2026-11-26",
  "wording": "Say host (the papers say LSP) and member (client). Never say staking; say hosting, providing liquidity, fees.",
  "authoritative": "The Markdown files in the repository. This page is generated from them by tools/build-handbook.py.",
  "chapters": [

@@ -41,6 +41,8 @@ typedef struct gzp_api {
     gzp_chain_t *chain;
     gzp_unlock_t unlock;
     gzp_view_t view;
+    gzp_attention_t attention;        /* GET /status's attention list, rebuilt from the view at each call */
+    char attention_dropped_said[512]; /* the dropped items last logged: said again only when they change */
     int node_running;                 /* the node has finished its start (the view is rebuilt) */
     int lock_pending;                 /* locked: the loop stops the node, then waits for an unlock */
     uint64_t views_received[8];       /* view NOTIFYs by kind (kinds 0-6, 7 = any other), said at close in the test build */

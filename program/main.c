@@ -225,6 +225,11 @@ static int keys_open(const secp256k1_context *secp, gzw_network wnet, gzw_bip86_
  * used on the wire (every CONNECT brings its own contribution key), except
  * in a test build with test engines, whose CONNECTs and test pings name one
  * key under any index: the lobby key at (0, 1). */
+/* A member's transport key, kept for the unlock: random per process (keys.md 4), never from the
+ * seed, so not derivable again after a lock; a test build's test-engine member's is the lobby key
+ * at (0, 1), kept the same way. Wiped at exit. */
+static uint8_t member_tk[32];
+
 static int transport_key(const secp256k1_context *secp, const gzp_options_t *o, uint8_t priv[32])
 {
     gzp_keys_err_t e;
@@ -770,6 +775,7 @@ int main(int argc, char **argv)
      * scoped table; a host derives its own pairs for every round it proposes (integration F4). */
     gzp_keys_set_role(&keys, opt.role == GZP_ROLE_HOST, opt.member_signing == 0);
     if ((rc = transport_key(secp, &opt, priv)) != 0) goto out;
+    if (opt.role != GZP_ROLE_HOST) memcpy(member_tk, priv, sizeof member_tk);
     gzp_log("wallet network=%s first-address=%s", opt.network, first.address);
 
 #ifdef GZP_TEST_BUILD
@@ -964,7 +970,12 @@ int main(int argc, char **argv)
                 break;
             }
             /* Derived again from the unlocked seed; the same wallet's, or no start. */
-            if (gzp_wallet_transport_key(wallet, key_ok, secp, priv) != 0 || gzp_net_rekey(&net, priv) != 0) {
+            /* The host's from the unlocked seed by the key port (#53's rule: the host key), a
+             * member's as it was; the same identity, or no start. */
+            int tk = 0;
+            if (opt.role == GZP_ROLE_HOST) tk = transport_key(secp, &opt, priv);
+            else memcpy(priv, member_tk, sizeof member_tk);
+            if (tk != 0 || gzp_net_rekey(&net, priv) != 0) {
                 OPENSSL_cleanse(priv, sizeof priv);
                 fprintf(stderr, "gazpacho: the unlocked wallet does not give this transport's key\n");
                 rc = GZP_EXIT_DATA;
@@ -1017,6 +1028,7 @@ int main(int argc, char **argv)
     }
 
 out:
+    OPENSSL_cleanse(member_tk, sizeof member_tk);
     /* The shutdown order (contract-v2.md section 4): the node is stopped (its
      * runner and every held action are gone with the incarnation); the API
      * server and the chain worker come here with P5 to P7; then every

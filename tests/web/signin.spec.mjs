@@ -22,19 +22,19 @@ async function passphraseNowhere(page) {
   for (const [where, text] of Object.entries(held)) expect(text, 'the passphrase in ' + where).not.toContain(PASS);
 }
 
-test('a wrong passphrase, then the delay, then the right one', async ({ page }, info) => {
+test('a wrong password, then the delay, then the right one', async ({ page }, info) => {
   await start(info);
   await page.goto(fake.url);
   await expect(page.getByRole('heading', { name: 'Unlock Gazpacho' })).toBeVisible();
   await expect(page.locator('#locked-headline')).toContainText('Locked.');
-  const field = page.getByLabel('Wallet passphrase');
+  const field = page.getByLabel('Password', { exact: true });
   await expect(field).toHaveAttribute('type', 'password');
   await expect(field).toHaveAttribute('autocomplete', 'current-password');
   const go = page.getByRole('button', { name: 'Unlock' });
 
   await field.fill('this is not the passphrase');
   await go.click();
-  await expect(page.locator('[data-code="wrong_passphrase"]')).toHaveText('That passphrase is not right. Nothing was done.');
+  await expect(page.locator('[data-code="wrong_passphrase"]')).toHaveText('That password is not right. Nothing was done.');
   await expect(field).toHaveValue(''); // emptied as soon as it was sent
   // Six wrong in a row: from the fifth on the delay doubles (4.3), so the next
   // try, made at once, is certainly inside it, however slow this machine is.
@@ -70,7 +70,7 @@ test('sign out: the wallet stays unlocked; lock: it does not', async ({ page }, 
   await expect(page.locator('#locked-headline')).toHaveText('The wallet is still unlocked and keeps working. This browser is signed out.');
   expect(await page.evaluate(() => sessionStorage.getItem('gz-session'))).toBeNull();
   await page.waitForTimeout(1100);
-  await page.getByLabel('Wallet passphrase').fill(PASS);
+  await page.getByLabel('Password', { exact: true }).fill(PASS);
   await page.getByRole('button', { name: 'Sign in' }).click();
   await expect(page.locator('body')).toHaveAttribute('data-chrome', 'app');
 
@@ -92,7 +92,7 @@ test('lock during a call: the page ends on the unlock screen, not on a broken on
   await fake.cmd('hold on'); // the join's save is not confirmed: the call stays open
   await page.waitForTimeout(1100); // one passphrase attempt a second (4.3)
   await page.locator('#join').click();
-  await page.locator('dialog').getByLabel('Wallet passphrase').fill(PASS);
+  await page.locator('dialog').getByLabel('Password', { exact: true }).fill(PASS);
   await page.locator('dialog').getByRole('button', { name: 'Join', exact: true }).click();
   await expect(page.locator('#join')).toBeDisabled();
   // meanwhile the wallet is locked from another session
@@ -106,9 +106,9 @@ test('lock during a call: the page ends on the unlock screen, not on a broken on
   await expect(page.getByRole('heading', { name: 'Unlock Gazpacho' })).toBeVisible();
   await fake.cmd('hold off');
   await expect(page.locator('dialog')).toHaveCount(0); // the join's passphrase dialog went with the session
-  await expect(page.getByLabel('Wallet passphrase')).toBeVisible();
+  await expect(page.getByLabel('Password', { exact: true })).toBeVisible();
   await page.waitForTimeout(1100);
-  await page.getByLabel('Wallet passphrase').fill(PASS);
+  await page.getByLabel('Password', { exact: true }).fill(PASS);
   await page.getByRole('button', { name: 'Unlock' }).click();
   await expect(page.locator('body')).toHaveAttribute('data-chrome', 'app');
 });
@@ -134,12 +134,12 @@ test('a fresh sign-in is asked for when the program wants one, and the action th
   await page.waitForTimeout(1200);
   await page.locator('#pause').click(); // resume needs the person, freshly (4.8)
   const dlg = page.locator('dialog');
-  await expect(dlg).toContainText('Type your passphrase again');
-  await dlg.getByLabel('Wallet passphrase').fill('wrong wrong wrong wrong');
+  await expect(dlg).toContainText('Type your password again');
+  await dlg.getByLabel('Password', { exact: true }).fill('wrong wrong wrong wrong');
   await dlg.getByRole('button', { name: 'Continue' }).click();
   await expect(dlg.locator('[data-code="wrong_passphrase"]')).toBeVisible();
   await page.waitForTimeout(1100);
-  await dlg.getByLabel('Wallet passphrase').fill(PASS);
+  await dlg.getByLabel('Password', { exact: true }).fill(PASS);
   await dlg.getByRole('button', { name: 'Continue' }).click();
   await expect(dlg).toHaveCount(0);
   await expect(page.locator('#pause')).toHaveText('Pause');
@@ -147,11 +147,11 @@ test('a fresh sign-in is asked for when the program wants one, and the action th
   await passphraseNowhere(page);
 });
 
-test('files older than the wallet: stay locked, or start them as a restore with the passphrase', async ({ page }, info) => {
+test('files older than the wallet: stay locked, or start them as a restore with the password', async ({ page }, info) => {
   await start(info);
   await fake.cmd('files-behind'); // the next unlock finds the files behind (4.7)
   await page.goto(fake.url);
-  await page.getByLabel('Wallet passphrase').fill(PASS);
+  await page.getByLabel('Password', { exact: true }).fill(PASS);
   await page.getByRole('button', { name: 'Unlock' }).click();
   await expect(page.getByRole('heading', { name: 'These files are older than this wallet' })).toBeVisible();
   await expect(page.locator('main')).toContainText('Gazpacho has not started the wallet.');
@@ -161,14 +161,14 @@ test('files older than the wallet: stay locked, or start them as a restore with 
   await expect(page.getByRole('heading', { name: 'Unlock Gazpacho' })).toBeVisible();
   await expect(page.locator('#locked-headline')).toContainText("These files are older than this wallet's last saved state.");
   await page.waitForTimeout(1100);
-  await page.getByLabel('Wallet passphrase').fill(PASS);
+  await page.getByLabel('Password', { exact: true }).fill(PASS);
   await page.getByRole('button', { name: 'Unlock' }).click();
   // start as a restore: the passphrase in the request, after a warning that it cannot be undone
   await page.getByRole('button', { name: 'Start these files as a restore' }).click();
   const dlg = page.locator('dialog');
   await expect(dlg).toContainText('This cannot be undone.');
   await page.waitForTimeout(1100);
-  await dlg.getByLabel('Wallet passphrase').fill(PASS);
+  await dlg.getByLabel('Password', { exact: true }).fill(PASS);
   await dlg.getByRole('button', { name: 'Start as a restore' }).click();
   await expect(page.locator('#restoring')).toContainText('Your balance is not confirmed yet.');
   await expect(page.locator('#doing')).toContainText('Restoring.');
@@ -185,4 +185,57 @@ test('a second tab takes the session from the first; signing out in one signs ou
   await second.locator('#sign-out').click();
   await expect(second.getByRole('heading', { name: 'Sign in' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
+});
+
+// Owner, 2026-11-25: the secret is a password, as in Sparrow, Electrum, Ledger
+// Live and Trezor Suite. "Passphrase" means the BIP39 seed extension in
+// Bitcoin, and the sign-in screen must not read as asking for the seed.
+test('the sign-in screen is minimal: one field named Password, no seed wording, the empty-field error', async ({ page }, info) => {
+  await start(info);
+  await page.goto(fake.url);
+  await expect(page.getByRole('heading', { name: 'Unlock Gazpacho' })).toBeVisible();
+  await expect(page.locator('#locked-headline')).toContainText('Locked.');
+  const text = await page.locator('body').innerText();
+  expect(text).not.toMatch(/passphrase/i);
+  expect(text).not.toMatch(/seed/i);
+  expect(text).not.toMatch(/24 words/i);
+  const inputs = page.locator('input');
+  await expect(inputs).toHaveCount(1);
+  await expect(inputs).toHaveAttribute('type', 'password');
+  await expect(inputs).toHaveAccessibleName('Password');
+  await expect(page.getByRole('link', { name: 'Forgot your password?' })).toBeVisible();
+  await page.getByRole('button', { name: 'Unlock' }).click();
+  await expect(page.getByText('Enter your password.', { exact: true })).toBeVisible();
+  expect(await page.locator('body').innerText()).not.toMatch(/passphrase|seed|24 words/i);
+});
+
+test('"Forgot your password?" leads to restoring from the 24 words, and the restore it names is there at first run', async ({ page }, info) => {
+  await start(info);
+  await page.goto(fake.url);
+  await page.getByLabel('Password', { exact: true }).fill('typed, then left');
+  await page.getByRole('link', { name: 'Forgot your password?' }).click();
+  await expect(page.getByRole('heading', { name: 'Forgot your password?' })).toBeVisible();
+  const forgot = page.locator('#forgot-page');
+  await expect(forgot).toContainText('Your 24 words restore the wallet on this computer, with a new password.');
+  await expect(forgot).toContainText('choose Restore from 24 words');
+  await expect(forgot).toContainText('not your place in a factory');
+  await expect(page.locator('input')).toHaveCount(0); // no field for the words, or anything else, here (5.7)
+  expect(await page.evaluate(() => document.documentElement.outerHTML)).not.toContain('typed, then left');
+  await page.getByRole('button', { name: 'Back' }).click();
+  await expect(page.getByRole('heading', { name: 'Unlock Gazpacho' })).toBeVisible();
+  await expect(page.getByLabel('Password', { exact: true })).toHaveValue('');
+
+  // the way it names: a data folder with no wallet opens on first run, with "Restore from 24 words"
+  const fresh = await startFake();
+  allow(info, fresh);
+  try {
+    await page.goto('file://' + fresh.redirectFile);
+    await expect(page.getByRole('heading', { name: 'Welcome to Gazpacho' })).toBeVisible();
+    await page.getByRole('button', { name: 'Restore from 24 words' }).click();
+    await expect(page.locator('input[data-word]')).toHaveCount(24);
+    await expect(page.getByText(/Gazpacho asks for your 24 words only when you restore a wallet/)).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Next: choose a password' })).toBeVisible();
+  } finally {
+    fresh.stop();
+  }
 });

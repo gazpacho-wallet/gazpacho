@@ -105,6 +105,9 @@ if(CURL_FOUND)
   add_test(NAME chain_tool_refuses_mainnet_broadcast
     COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/expect-exit.sh 2 "refusing to broadcast on mainnet"
             $<TARGET_FILE:gz-chain> --network mainnet broadcast 00)
+  add_test(NAME chain_tool_refuses_mainnet_package
+    COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/expect-exit.sh 2 "refusing to broadcast on mainnet"
+            $<TARGET_FILE:gz-chain> --network mainnet package 00 00)
   add_test(NAME chain_tool_usage COMMAND gz-chain --help)
   set_tests_properties(chain_tool_usage PROPERTIES PASS_REGULAR_EXPRESSION "usage: gz-chain")
 

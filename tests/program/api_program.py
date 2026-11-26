@@ -208,6 +208,19 @@ class Prog:
             j = None
         return r.status, j
 
+    def call_paced(self, method, path, body=None):
+        """A call that carries the password, made as a client makes it: #54's limit of one password
+        check a second answers 429 rate_limited with retry_after_s, which is checked and waited out
+        once (integration B24)."""
+        st, j = self.call(method, path, body)
+        if st == 429 and j and j.get("code") == "rate_limited":
+            ra = (j.get("params") or {}).get("retry_after_s")
+            check(isinstance(ra, int) and 1 <= ra <= 5,
+                  "a password call within a second of the last: 429 rate_limited, retry_after_s given", j)
+            time.sleep(min(ra if isinstance(ra, int) else 1, 5) + 0.2)
+            st, j = self.call(method, path, body)
+        return st, j
+
     def stop(self):
         if self.p.poll() is None:
             self.p.send_signal(signal.SIGTERM)
@@ -253,7 +266,7 @@ def gate_after_seat_ends(exe):
         addr = "%s@127.0.0.1:%d" % (k.group(1) if k else NOBODY_KEY, h.listen)
         draft = {"name": "g", "target": 4, "minimum": 3, "listed": True, "deadline_at": dl}
         st, pv = h.call("POST", "/host/preview", draft)
-        st, op = h.call("POST", "/host/lobbies", {"request_id": "GateSeatEndsOpen001", "draft": draft,
+        st, op = h.call_paced("POST", "/host/lobbies", {"request_id": "GateSeatEndsOpen001", "draft": draft,
                                                  "draft_digest": (pv or {}).get("draft_digest"),
                                                  "confirm_funding_sat": (pv or {}).get("funding_at_target_sat"), "passphrase": PASS})
         check(200 <= st < 300, "gate: the host opens a lobby", (st, op))
@@ -273,7 +286,7 @@ def gate_after_seat_ends(exe):
             lids.append(lid)
             st, lo = m.call("GET", "/lobbies/" + lid)
             digest = ((lo or {}).get("terms") or {}).get("current", {}).get("digest")
-            st, j = m.call("POST", "/lobbies/%s/join" % lid, {"request_id": "GateSeatEndsJoin%03d" % n, "seen_current_digest": digest,
+            st, j = m.call_paced("POST", "/lobbies/%s/join" % lid, {"request_id": "GateSeatEndsJoin%03d" % n, "seen_current_digest": digest,
                                                                "ready": True, "passphrase": PASS})
             you = {}
             for _ in range(40):
@@ -305,6 +318,18 @@ def gate_after_seat_ends(exe):
                                                   "preset": (c or {}).get("preset"), "confirm_loosens": []})
         ok, you = closed_soon(ms[1], lids[1])
         check(st == 200 and ok, "gate: after a refusal, you.gate is closed (14.3 rule 1)", (st, r, you))
+        # the host's status names the refusal (local-api.md 11.4): member_refused for its lobby,
+        # hosted, one seat, from the core's attention item
+        att = []
+        for _ in range(20):
+            st, hs = h.call("GET", "/status")
+            att = [x for x in ((hs or {}).get("attention") or []) if x.get("code") == "member_refused"]
+            if att:
+                break
+            time.sleep(0.25)
+        check(len(att) == 1 and att[0].get("lobby_id") == (op or {}).get("id") and att[0].get("lobby_role") == "hosted" and
+              att[0].get("tier") == "important" and (att[0].get("params") or {}).get("count") == 1,
+              "gate: the host's status has member_refused for its lobby, hosted, one seat (11.4)", att)
     finally:
         for m in ms:
             m.stop()
@@ -438,7 +463,17 @@ def main():
         # opening it answers the hosted lobby as the view holds it (15.2), though the core
         # gives its result before the view object: the answer waits for that object
         draft = {"name": "x", "target": 3, "minimum": 3, "deadline_at": DL}
+        # the limit of one password check a second (#54) is met here, after the refused open just
+        # before: it answers 429 rate_limited, and the open is made again after retry_after_s
         st, op = p.call("POST", "/host/lobbies", {"request_id": "OpenFromProgramApi01", "draft": draft,
+                                                 "draft_digest": (pv or {}).get("draft_digest"),
+                                                 "confirm_funding_sat": (pv or {}).get("funding_at_target_sat"),
+                                                 "passphrase": PASS})
+        if st == 429:
+            check(op and op.get("code") == "rate_limited" and (op.get("params") or {}).get("retry_after_s", 0) >= 1,
+                  "the password limit: 429 rate_limited with retry_after_s", (st, op))
+            time.sleep(min((op.get("params") or {}).get("retry_after_s", 1), 5) + 0.2)
+        st, op = p.call_paced("POST", "/host/lobbies", {"request_id": "OpenFromProgramApi01", "draft": draft,
                                                  "draft_digest": (pv or {}).get("draft_digest"),
                                                  "confirm_funding_sat": (pv or {}).get("funding_at_target_sat"),
                                                  "passphrase": PASS})
@@ -484,6 +519,7 @@ def main():
             body = {"request_id": "OpenViewNeverComes01", "draft": {"name": "x", "target": 3, "minimum": 3, "deadline_at": DL},
                     "draft_digest": (pv3 or {}).get("draft_digest"),
                     "confirm_funding_sat": (pv3 or {}).get("funding_at_target_sat"), "passphrase": PASS}
+            time.sleep(1.2)   # set-up's password check a second ago: #54's limit (B24)
             t0 = time.time()
             # a retry while the first call waits for its view (review B of #55, L-1): told to
             # try again at once, never given the first's answer nor held for good
@@ -493,7 +529,7 @@ def main():
                 got["a"] = v.call("POST", "/host/lobbies", body)
             th = threading.Thread(target=first)
             th.start()
-            time.sleep(0.6)
+            time.sleep(1.05)   # past the first call's password check (#54: one a second), still well inside its 1.5 s wait (B24)
             st2, e2 = v.call("POST", "/host/lobbies", body)
             check(st2 == 409 and e2 and e2.get("code") == "request_in_progress" and
                   (e2.get("params") or {}).get("request_id") == "OpenViewNeverComes01" and time.time() - t0 < 1.5,

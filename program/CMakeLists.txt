@@ -101,6 +101,7 @@ if(GZ_MEMCHECK)
     target_link_libraries(ct_keys PRIVATE gazpacho_superscalar secp256k1 OpenSSL::Crypto)
   endif()
 endif()
+gz_add_test(program_view ${CMAKE_SOURCE_DIR}/tests/program/test_view.c gazpacho_program_test)
 # Kind 0xffff (the signing engine's SEND bridge until P4.3) never reaches a
 # program, and the lobby's bridge, deleted in P4.2, stays deleted
 # (composite-node.md, tasks T-P42-1, T-P43-1).
