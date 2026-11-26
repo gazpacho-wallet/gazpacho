@@ -202,3 +202,16 @@ Order and shape:
 4. Watch data never contains anything revocable or superseded.
 5. The watcher's status fields can hold more than one watcher.
 6. P2A anchors go on everything a tower might publish, even at 0.1 sat/vB.
+
+## 2026-11-26
+
+### 17. Owner decisions of 26 November (owner, 2026-11-26)
+
+**a. Idle auto-lock, right after Slice 1.** "Right after, get it on the roadmap for the next slice." The wallet locks itself after N minutes without use. N is a setting, and the lock wipes keys as the manual lock does (#54). After it: keys unlocked for one lobby only, before Slice 2, and a separate signer process, before 1.0.0. Recorded in `PLAN.md` ("Idle lock") and `SLICES.md` ("Right after Slice 1", "Key exposure").
+
+**b. Chain servers: every option covered.** "We need all the options covered." These are added, in this order:
+1. Electrum-protocol servers (Fulcrum, ElectrumX, electrs).
+2. The person's own Bitcoin node over RPC, pruned nodes included.
+3. Compact block filters (BIP 157/158), as the default private light mode before mainnet.
+
+Today's comparison of two Esplora operators stays. This moves compact block filters from "later" (16g) to "before mainnet". Trust and privacy for each, and how each closes the host wallet's single-server scan gap, are in `SLICES.md` ("Chain sources").
