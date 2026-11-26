@@ -31,11 +31,13 @@ opts="-DCMAKE_BUILD_TYPE=Release -DGZW_BREAK_CHECKS=OFF -DGZ_CHAIN_TESTS=OFF -DG
 # Makefiles, so that a fault rebuilds only the wallet's directory (wallet/,
 # which also builds the wallet tools) and what it depends on.
 cmake -G "Unix Makefiles" -S "$src" -B "$build" $opts >"$scratch/configure.out" 2>&1 || { echo "configure failed"; exit 2; }
-cmake --build "$build" -j4 >"$scratch/build0.out" 2>&1 || { echo "clean build failed"; exit 2; }
+cmake --build "$build" -j4 >"$scratch/build0.out" 2>&1 || { echo "clean build failed"; tail -n 40 "$scratch/build0.out"; exit 2; }
 # Only the wallet's tests, here and for every fault: nothing else in the tree
 # links the wallet, so no other test can notice a wallet fault.
 wallet_tests='^wallet_'
-(cd "$build" && ctest -j4 -R "$wallet_tests" >"$scratch/ctest0.out" 2>&1) || { echo "tests fail before any fault"; exit 2; }
+(cd "$build" && ctest -j4 -R "$wallet_tests" --output-on-failure >"$scratch/ctest0.out" 2>&1) || {
+  # which test, and why: the scratch folder is gone with the job (CI of PR 101)
+  echo "tests fail before any fault"; tail -n 80 "$scratch/ctest0.out"; exit 2; }
 echo "baseline: $(grep 'tests passed' "$scratch/ctest0.out")"
 
 survived=0; n=0
