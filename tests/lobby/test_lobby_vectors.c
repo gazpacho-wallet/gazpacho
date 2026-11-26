@@ -257,6 +257,36 @@ static void test_m1(lt_signer_t *member)
     CHECK(lt_verify(NULL, member->key[2].pub, h, m.sig));
 }
 
+/* M4 (messages.md 11): the host's cancel of T1's lobby with reason 5, the host could not fund it
+ * by the deadline (review B of #106, L-1). Built here byte for byte, decoded with its reason, and
+ * its signature checked against the host's key. */
+static void test_m4(lt_signer_t *host)
+{
+    gz_lobby_crypto_t cr = lt_crypto(host);
+    gz_lobby_enc_t e;
+    gz_lobby_msg_t mv, mt;
+    uint8_t buf[200], h[32];
+    size_t n, vn = 0;
+    static const char M4[] =
+        "ce37677a6601002275e970b6d95c7de97bf35f67033e2c9f55de1ea54beecb8431419659f0a424f2"
+        "02020005"
+        "f04082dd1591760bcd62361b9608ac5e7cd35901f41ba229b2efb4890409d1856c7bd2"
+        "1470570b9fcdd2aa050d1c79b1d253971d3d9371581f6009aa705d395aaf38";
+    gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_CANCEL, od);
+    gz_lobby_enc_u16(&e, 2, 5);
+    n = gz_lobby_enc_sign(&e, &cr, GZ_LOBBY_KEY_HOST);
+    const uint8_t *v = lobby_env(M4, &vn);
+    CHECK(v != NULL && n > 0 && vn == n && memcmp(v, buf, n) == 0);
+    CHECK(v && gz_lobby_decode_env(v, vn, &mv) == GZ_DEC_OK && mv.kind == GZ_KIND_CANCEL && memcmp(mv.scope, od, 32) == 0);
+    CHECK(v && gz_lobby_decode(GZ_KIND_CANCEL, v + 6, v + GZ_LOBBY_ENV_HDR, vn - GZ_LOBBY_ENV_HDR, &mt) == GZ_DEC_OK &&
+          mt.reason == 5);
+    if (v) {
+        gz_lobby_msg_hash(&mv, h);
+        CHECK(hexeq(h, 32, "e3b33a2a4d8309214228413c8639024f972669984f877500f67cf9bed5a0c6a7"));
+        CHECK(lt_verify(NULL, host->key[1].pub, h, mv.sig));
+    }
+}
+
 /* (test_m2, the `part` vector M2 and the reassembler, was here: splitting is
  * the transport's, tests/net.) */
 
@@ -539,6 +569,7 @@ int main(void)
     lt_key(&member.key[3], "member 1 factory");
     test_terms(&host);
     test_m1(&member);
+    test_m4(&host);
     test_envelope(&member);
     test_bigsize();
     test_kinds(&member);
