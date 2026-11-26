@@ -94,7 +94,7 @@ jobs:
           export GZ_BITCOIN_BIN_29_0="$RUNNER_TEMP/core/29.0/bitcoin-29.0/bin"
           export GZ_BITCOIN_BIN_29_1="$RUNNER_TEMP/core/29.1/bitcoin-29.1/bin"
           export GZ_REQUIRE_CORE="29.0 29.1"
-          ctest --test-dir build -R '^program_regtest_helpers$' --output-on-failure --no-tests=error
+          ctest --test-dir build -R '^program_regtest_helpers$' --verbose --no-tests=error
       - name: The program tests on the look-alike (Core 29.1)
         run: |
           set -eu
