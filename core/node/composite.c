@@ -245,7 +245,6 @@ static gz_status_t resume_step(gz_node_t *c, gz_action_list_t *out, int *finishe
             c->stale_marked = 1;
             for (int i = 0; i < GZ_NODE_MAX_SLOTS; i++)
                 if (gz_ls_stale(c, i)) {
-                    if (c->sign_on && c->sign) gz_sign_drop_scope(c->sign, c->slots[i].scope);
                     if ((st = gz_ls_stale_out(c, i, out)) != GZ_OK) return st;
                 }
         }
