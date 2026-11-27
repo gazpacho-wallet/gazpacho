@@ -150,9 +150,13 @@ def restore_mid_round(exe, work):
         # slot, a new key pair) and then leaves it. Were the old round's exposure still unresolved, the leave
         # would be refused while its partials are "out" (409 too_late); it is Abandoned at the restart, so the
         # leave is answered 200 and the new slot closes.
+        mk_j = m1.mark()
         w.join(m1, t)
-        check(m1.wait_for(r"slot-opened scope=%s .*role=member" % t.tag, timeout=10, start=mk_r) is not None,
-              "%s: the person joins the lobby again: a new slot" % name)
+        rj = m1.wait_for(r"command-result id=\S+ status=(\d+)", timeout=10, start=mk_j)
+        check(rj is not None and rj.group(1) == "200" and
+              m1.wait_for(r"slot-opened scope=%s .*role=member" % t.tag, timeout=10, start=mk_r) is not None,
+              "%s: the person joins the lobby again: a new slot (join answered %s)" % (name, rj.group(1) if rj else None))
+        time.sleep(1)
         mk_l = m1.mark()
         m1.send(cmd(LEAVE, (12, t.scope)))
         rl = m1.wait_for(r"command-result id=\S+ status=(\d+)", timeout=10, start=mk_l)
