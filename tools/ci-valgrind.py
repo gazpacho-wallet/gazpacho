@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """CI's valgrind run: tools/valgrind-tests.py with the arguments CI gives it.
 
-    python3 -I tools/ci-valgrind.py BUILD_DIR [--shard I/N] [--include REGEX] [--exclude REGEX]
+    python3 -I tools/ci-valgrind.py BUILD_DIR [--shard I/N] [--include REGEX] [--exclude REGEX] [--known-only]
 
 The one list of the shorter cases that every test runs with under memcheck,
 used by ci.yml's valgrind shards and by agent-run.yml, so an agent's run is
@@ -13,14 +13,23 @@ seeds) and the engine fuzzer a short run: the full sets take hours here.
 
 Without --include or --exclude every --args below is passed, and
 valgrind-tests.py fails if one of them names no test, as in CI. With them
-(agent runs), only the --args of tests they select are passed. Standard
-library only.
+(agent runs), only the --args of tests they select are passed. With
+--known-only (agent-run.yml's fallback, for a branch that has no copy of this
+file and so may lack tests that main has added since), only the --args of
+tests that BUILD_DIR registers are passed; every registered test still runs
+under memcheck, and CI never passes it. Standard library only.
 """
 import argparse
 import os
 import re
 import subprocess
 import sys
+
+
+def registered(build):
+    """The test names BUILD_DIR's ctest lists."""
+    out = subprocess.run(["ctest", "--test-dir", build, "-N"], stdout=subprocess.PIPE, check=True).stdout.decode()
+    return {m.group(1) for m in re.finditer(r"Test +#\d+: (\S+)", out)}
 
 ALWAYS_EXCLUDED = r"^storage_vector_e2r$"
 
@@ -52,7 +61,9 @@ def main():
     ap.add_argument("--shard", default=None)
     ap.add_argument("--include", default=None)
     ap.add_argument("--exclude", default=None)
+    ap.add_argument("--known-only", action="store_true")
     a = ap.parse_args()
+    known = registered(a.build) if a.known_only else None
     exclude = ALWAYS_EXCLUDED + ("|" + a.exclude if a.exclude else "")
     cmd = [sys.executable, "-I", os.path.join(os.path.dirname(os.path.abspath(__file__)), "valgrind-tests.py"),
            a.build, "--exclude", exclude]
@@ -65,6 +76,9 @@ def main():
         if a.include and not re.search(a.include, name):
             continue
         if a.exclude and re.search(a.exclude, name):
+            continue
+        if known is not None and name not in known:
+            print("ci-valgrind: --known-only: %s is not registered in this build, its --args left out" % name)
             continue
         cmd += ["--args", spec]
     return subprocess.run(cmd).returncode

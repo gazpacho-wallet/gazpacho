@@ -260,6 +260,8 @@ jobs:
             valgrind)
               vg=tools/ci-valgrind.py; [ -f "$vg" ] || vg=.agent-run/tools/ci-valgrind.py
               a=(build --shard "$SHARD")
+              # main's copy may name tests a branch without its own copy does not have yet
+              [ "$vg" = tools/ci-valgrind.py ] || a+=(--known-only)
               [ -n "$REGEX" ] && a+=(--include "$REGEX")
               [ -n "$EXCLUDE" ] && a+=(--exclude "$EXCLUDE")
               st=0
