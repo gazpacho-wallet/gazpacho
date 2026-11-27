@@ -426,3 +426,8 @@ set-aside-zero-taken	core/node/lobbyslot.c	    if (gz_fund_set_aside_sat(&s->lob
 join-key-early	core/node/lobbyslot.c	        if (memcmp(m->frozen ? m->frozen_digest : m->current_digest, s->gate_digest, 32) == 0 &&\n            c->cfg.keys.secret	        if (1 &&\n            c->cfg.keys.secret
 keys-old-epoch	core/node/signslot.c	    if (!host && epoch != (c->np.have_epoch ? c->np.epoch : 0)) return 0;	    if (0) return 0;
 stale-marked-late	core/node/composite.c	        if (!c->stale_marked) {	        if (0) {
+drop-scope-empty	core/signing/signing.c	        wipe_secrets(r);                                                   /* RULE:STALE_SCOPE_DROPPED */\n        memset(r, 0, sizeof *r);	
+drop-exposure-kept	core/signing/signing.c	                e->exposed[k].state = GZ_SIGN_ROUND_ABANDONED;                   /* RULE:STALE_EXPOSURE_ABANDONED */	                (void)0;
+drop-scope-not-called	core/node/composite.c	                    if (c->sign_on && c->sign) gz_sign_drop_scope(c->sign, c->slots[i].scope);	
+# untested keys-before-restore: no node unit test loads a real-engine round from a restored journal; program_partials_hold case 2 (a member restored from its words mid-round) kills it
+keys-before-restore	core/node/signslot.c	    if (!host && c->restored && !c->resume_restore_done) return 0;	    if (0) return 0;

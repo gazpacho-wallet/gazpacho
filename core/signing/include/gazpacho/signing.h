@@ -622,7 +622,8 @@ gz_status_t gz_sign_member_left(gz_sign_t *e, const uint8_t scope[32], const uin
 void gz_sign_forget_scope(gz_sign_t *e, const uint8_t scope[32]);
 /* Member, at a start before gz_sign_resume: every round of `scope` is dropped from memory, its secrets
  * wiped, with nothing sent or saved: the scope's seat is of an older epoch (BD2, messages.md 6.4), so
- * nothing may be derived, made or sent for it again. The exposure records stay. */
+ * nothing may be derived, made or sent for it again. Their exposure records stay, Abandoned (with those of
+ * the scope's rounds that had already left memory unresolved), so that nothing waits on them. */
 void gz_sign_drop_scope(gz_sign_t *e, const uint8_t scope[32]);
 /* At a start, after gz_sign_resume: forget the kept host rounds of every scope `keep` says is gone
  * (review A of PR 52, L3: a scope whose Closing ended before the restart is otherwise kept again, and

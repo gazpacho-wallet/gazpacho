@@ -17,6 +17,8 @@ engine, PR 55.) Every process is checked for no node-error, repair or fatal
 line.
 """
 import os
+import re
+import shutil
 import sys
 import time
 
@@ -82,10 +84,95 @@ def leave_held(exe, work):
         kill_all(w.procs)
 
 
+def journal_file(w, who):
+    """The member's journal file (the stand-in's GZJSTAND file)."""
+    for root, _, files in os.walk(os.path.join(w.work, who)):
+        for f in files:
+            path = os.path.join(root, f)
+            with open(path, "rb") as fh:
+                if fh.read(8) == b"GZJSTAND":
+                    return path
+    return None
+
+
+def restore_mid_round(exe, work):
+    """Case 2, K1 (BD2; review A of #98, M1): m1 restored from its words while its round is in flight (its
+    partial signatures out, the host's round_complete dropped). The restored node has a new epoch: the
+    old seat's round is dropped before the signing engine resumes. No secret of the old epoch is derived,
+    no nonce made, nothing sent for the lobby (no resend of the round's saved messages either), and the
+    person is told the seat was lost."""
+    name = "2 restore mid-round"
+    w = World(exe, work, "case2")
+    tick = ("--test-sign-tick-ms", "100")
+    try:
+        h = w.host("--tip", str(TIP), *tick)
+        if not check(started(h) and w.hkey is not None, "%s: the host starts" % name):
+            return
+        t = signing.Terms(w.hkey, 900, target=3)
+        w.open(h, t)
+        check(h.wait_for(r"slot-opened scope=%s .*role=host" % t.tag, timeout=10) is not None, "%s: the lobby opens" % name)
+        ms = {"m1": w.member("m1", "--member-signing", "auto", "--tip", str(TIP), "--test-log-sends", "1",
+                             "--test-drop-kind", str(ROUND_COMPLETE_KIND), *tick)}
+        for n in ("m2", "m3"):
+            ms[n] = w.member(n, "--member-signing", "auto", "--tip", str(TIP), *tick)
+        check(all(started(m) for m in ms.values()), "%s: three members start" % name)
+        for n in ("m1", "m2", "m3"):
+            w.join(ms[n], t)
+        m1 = ms["m1"]
+        check(m1.wait_for(r"test-drop kind=%d" % ROUND_COMPLETE_KIND, timeout=120) is not None,
+              "%s: m1's round is in flight (partials out, the host's round_complete dropped)" % name)
+        e = m1.wait_for(r"key-epoch seq=\d+ epoch=([0-9a-f]{8})", timeout=5)
+        e0 = e.group(1) if e else None
+        check(e0 is not None, "%s: m1's epoch before the restore is known" % name)
+        check(m1.count(r"key-secret epoch=%s" % e0) >= 1, "%s: m1 derived its keys for the round (the control)" % name)
+        m1.stop()
+        src = journal_file(w, "m1")
+        check(src is not None, "%s: m1's journal is found" % name)
+        if not src or not e0:
+            return
+        words = os.path.join(w.work, "m1-words.jrn")
+        shutil.copyfile(src, words)                       # the backup: the journal as it stands (the device keeps its guard file)
+        m1 = w.member("m1", "--member-signing", "auto", "--tip", str(TIP), "--test-log-sends", "1",
+                      "--test-restore-from", words, *tick)
+        check(started(m1), "%s: m1 starts again, restored from its words" % name)
+        mk_r = m1.mark()
+        r = m1.wait_for(r"restore-batch seq=\d+ epoch=([0-9a-f]{8})", timeout=10)
+        check(r is not None and r.group(1) != e0, "%s: the restore draws a new epoch" % name)
+        check(m1.wait_for(r"lobby-left-out scope=%s\S* .*why=stale_epoch" % t.tag, timeout=20) is not None,
+              "%s: the old seat is left out, the person told (why=stale_epoch)" % name)
+        time.sleep(5)                                     # several signing ticks (100 ms) and lobby timers
+        check(m1.count(r"key-secret epoch=%s" % e0) == 0, "%s: no secret derived under the old epoch" % name)
+        check(m1.count(r"test-send kind=\d+ scope=%s" % t.tag) == 0,
+              "%s: nothing sent for the lobby: no nonce, no partial, no ack, no resend" % name)
+        check(m1.count(r"start-resend") == 0, "%s: nothing resent at the start" % name)
+        check(m1.count(r"sign-(begin|outcome|refused) scope=%s" % t.tag) == 0, "%s: the round is not resumed" % name)
+        # The round's exposure is not left waiting (review B of #98): the person joins the lobby again (a new
+        # slot, a new key pair) and then leaves it. Were the old round's exposure still unresolved, the leave
+        # would be refused while its partials are "out" (409 too_late); it is Abandoned at the restart, so the
+        # leave is answered 200 and the new slot closes.
+        mk_j = m1.mark()
+        w.join(m1, t)
+        rj = m1.wait_for(r"command-result id=\S+ status=(\d+)", timeout=10, start=mk_j)
+        check(rj is not None and rj.group(1) == "200" and
+              m1.wait_for(r"slot-opened scope=%s .*role=member" % t.tag, timeout=10, start=mk_r) is not None,
+              "%s: the person joins the lobby again: a new slot (join answered %s)" % (name, rj.group(1) if rj else None))
+        time.sleep(1)
+        mk_l = m1.mark()
+        m1.send(cmd(LEAVE, (12, t.scope)))
+        rl = m1.wait_for(r"command-result id=\S+ status=(\d+)", timeout=10, start=mk_l)
+        check(rl is not None and rl.group(1) == "200", "%s: its leave is answered 200, not too_late (got %s)"
+              % (name, rl.group(1) if rl else None))
+        check(m1.count(r"too_late", start=mk_l) == 0, "%s: no too_late: the old round's exposure is Abandoned" % name)
+        w.clean(name)
+    finally:
+        kill_all(w.procs)
+
+
 def main():
     exe, work = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
     os.makedirs(work, exist_ok=True)
     leave_held(exe, work)
+    restore_mid_round(exe, work)
     return check.result("partials_hold", work)
 
 

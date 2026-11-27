@@ -2893,9 +2893,22 @@ void gz_sign_drop_scope(gz_sign_t *e, const uint8_t scope[32])
     for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++) {
         gz_sign_round_t *r = &e->rounds[i];
         if (r->state == GZ_SIGN_ROUND_FREE || !same(r->def.outer_digest, scope, 32)) continue;
+        /* Its exposure record leaves with it as Abandoned (review B of #98): the partials-out check, the
+         * unresolved-funding list and the funding deadline see a round that will never end otherwise. */
+        for (size_t k = 0; k < e->n_exposures; k++)
+            if (same(e->exposed[k].round_id, r->id, 32)) {
+                e->exposed[k].state = GZ_SIGN_ROUND_ABANDONED;                   /* RULE:STALE_EXPOSURE_ABANDONED */
+                e->exposed[k].ticks = 0;
+            }
         wipe_secrets(r);                                                   /* RULE:STALE_SCOPE_DROPPED */
         memset(r, 0, sizeof *r);
     }
+    /* An exposure of this scope whose round had already left memory unresolved: Abandoned too. */
+    for (size_t k = 0; k < e->n_exposures; k++)
+        if (e->exposed[k].has_scope && same(e->exposed[k].scope, scope, 32) &&
+            (e->exposed[k].state == GZ_SIGN_ROUND_UNFINISHED || e->exposed[k].state == GZ_SIGN_ROUND_ACTIVE ||
+             e->exposed[k].state == GZ_SIGN_ROUND_COMPLETE))
+            e->exposed[k].state = GZ_SIGN_ROUND_ABANDONED;
     gz_sign_forget_scope(e, scope);
 }
 

@@ -4957,6 +4957,53 @@ static void test_k1_stale_keys(void)
     w_free(1);
 }
 
+/* Review B of #98, Low (BD2): dropping a stale seat's rounds (gz_sign_drop_scope, before the signing resume)
+ * leaves their exposure records Abandoned, with any of the scope's that had left memory unresolved, so the
+ * partials-out check, the unresolved-funding list and the funding deadline do not wait on them. The rounds
+ * are freed and their secrets wiped; another scope's round is untouched. */
+static void test_k1_drop_scope(void)
+{
+    terms_t t;
+    uint8_t other[32];
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node_engine(1, 1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    for (int n = 0; n <= 1; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 4, 3, 3170);
+    CHECK(host_open(&t, 0) == 200 && member_join(1, &t) == 200);
+    w_run(3000, 100);
+    gz_node_t *c = N[1].n;
+    CHECK(c->sign_on && c->sign && slot(1, &t));
+    if (!c->sign) { w_free(1); return; }
+    memset(other, 0x6c, 32);
+    gz_sign_round_t *r = &c->sign->rounds[GZ_SIGN_MAX_ROUNDS - 1], *o = &c->sign->rounds[GZ_SIGN_MAX_ROUNDS - 2];
+    size_t n0 = c->sign->n_exposures;
+    CHECK(r->state == GZ_SIGN_ROUND_FREE && o->state == GZ_SIGN_ROUND_FREE && n0 + 2 < GZ_SIGN_MAX_EXPOSURES);
+    if (n0 + 2 >= GZ_SIGN_MAX_EXPOSURES) { w_free(1); return; }
+    memset(r, 0, sizeof *r);
+    r->state = GZ_SIGN_ROUND_ACTIVE; r->ever_partial = 1; r->id[0] = 0xd1;
+    memcpy(r->def.outer_digest, t.scope, 32);
+    memset(o, 0, sizeof *o);
+    o->state = GZ_SIGN_ROUND_ACTIVE; o->ever_partial = 1; o->id[0] = 0xd3;
+    memcpy(o->def.outer_digest, other, 32);
+    gz_sign_exposed_t *x = &c->sign->exposed[n0], *y = &c->sign->exposed[n0 + 1];
+    memset(&c->sign->exposures[n0], 0, 2 * sizeof c->sign->exposures[n0]);
+    memset(x, 0, 2 * sizeof *x);
+    x->round_id[0] = 0xd1; x->state = GZ_SIGN_ROUND_FREE; x->has_scope = 1; memcpy(x->scope, t.scope, 32);   /* held */
+    y->round_id[0] = 0xd2; y->state = GZ_SIGN_ROUND_UNFINISHED; y->has_scope = 1; memcpy(y->scope, t.scope, 32);
+    c->sign->n_exposures = n0 + 2;
+    CHECK(gz_ls_partials_out(c, t.scope) != GZ_SIGN_OUT_NONE);
+    gz_sign_drop_scope(c->sign, t.scope);
+    CHECK(r->state == GZ_SIGN_ROUND_FREE && o->state == GZ_SIGN_ROUND_ACTIVE);      /* the other scope's stays */
+    CHECK(x->state == GZ_SIGN_ROUND_ABANDONED && y->state == GZ_SIGN_ROUND_ABANDONED);
+    CHECK(gz_ls_partials_out(c, t.scope) == GZ_SIGN_OUT_NONE && !gz_sign_holds_scope(c->sign, t.scope));
+    memset(o, 0, sizeof *o);
+    memset(x, 0, 2 * sizeof *x);
+    c->sign->n_exposures = n0;
+    no_errors(1);
+    w_free(1);
+}
+
 int main(int argc, char **argv)
 {
     unsigned long events = argc > 1 ? strtoul(argv[1], NULL, 10) : 20000;
@@ -5030,5 +5077,6 @@ int main(int argc, char **argv)
     test_k1_host_factory_index();
     test_k1_bd5_unready();
     test_k1_stale_keys();
+    test_k1_drop_scope();
     return check_done();
 }
