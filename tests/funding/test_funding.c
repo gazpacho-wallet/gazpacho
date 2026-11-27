@@ -149,6 +149,8 @@ static void test_auto_live(void)
     CHECK(ft_saved_state(t) == GZ_FUND_ST_LIVE);
     CHECK(t->h.n == 1 && t->h.r[0].kind == GZ_FUND_R_LIVE && t->h.r[0].host == 1);
     CHECK(memcmp(t->h.r[0].funding.txid, p.funding.txid, 32) == 0);
+    CHECK(t->w.forgot == 1);   /* the wallet frees its hold: the factory is live (M-1, review B of PR 101) */
+    CHECK(t->w.forgot_n > 0 && t->w.forgot_spent == t->w.forgot_n);   /* every input spent (F-1) */
     CHECK(t->h.unwatched == 2 && t->f.n_watches == 0);
     CHECK(gz_fund_scope_state(&t->f, SCOPE_A, NULL) == GZ_FUND_SCOPE_LIVE);
     CHECK(gz_fund_scope_state(&t->f, SCOPE_B, NULL) == GZ_FUND_SCOPE_NONE);
@@ -453,6 +455,8 @@ static void test_abandon_replace(void)
     CHECK(ft_ev(t, &e) == GZ_OK);
     CHECK(ft_saved_state(t) == GZ_FUND_ST_DEAD && t->h.n == 1 && t->f.n_watches == 0);
     CHECK(gz_fund_scope_state(&t->f, SCOPE_A, NULL) == GZ_FUND_SCOPE_DEAD);
+    /* dead: only the input spent elsewhere (the spend-back's) is told spent (F-1) */
+    CHECK(t->w.forgot == 1 && t->w.forgot_n >= 1 && t->w.forgot_spent == 1 && t->w.forgot_spent0 == 1);
     free(t);
 }
 
@@ -1233,6 +1237,9 @@ static void test_restart_broadcast(void)
     p = host_fund(t, SCOPE_A, 0);
     u = ft_restart(t);
     CHECK(u->w.held == 1 && u->h.broadcasts == 1);   /* held again, and sent again */
+    /* with the outputs its inputs spend, so the wallet can sign it again (P97-3) */
+    CHECK(u->w.adopted_prev == 1 && t->f.fac[0].n_in > 0 && u->w.last_n_prev == t->f.fac[0].n_in);
+    CHECK(u->w.adopt_feerate == t->f.fac[0].feerate && u->w.adopt_feerate > 0);   /* its fee rate too */
     CHECK(u->f.fac[0].used && u->f.fac[0].state == GZ_FUND_ST_BROADCAST && u->f.fac[0].signed_len == t->f.fac[0].signed_len);
     CHECK(u->f.n_watches == 2);
     /* A plan whose round crashed: held again, not broadcast. */

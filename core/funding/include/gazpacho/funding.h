@@ -182,6 +182,21 @@ typedef struct {
      * the wallet made and the engine will send again, a spend-back, without
      * witnesses. The wallet notes the change it pays (its change mark). */
     void (*note_tx)(void *ctx, const uint8_t *tx, size_t tx_len);
+    /* Optional (may be NULL: adopt is used then), at a resume: adopt, with the
+     * outputs the plan's inputs spend as the journal keeps them, so the
+     * wallet can hold the plan again and sign it or spend back from it
+     * after a restart (P97-3, review B of PR 97), and the plan's fee rate
+     * (sat/kvb, as given to plan: the same fee ceiling holds). The same
+     * answer as adopt. */
+    int (*adopt_plan)(void *ctx, const uint8_t *tx, size_t tx_len, const gz_fund_prevout_t *prev, size_t n_prev,
+                      const uint8_t script[34], uint64_t amount, uint64_t feerate);
+    /* Optional (may be NULL): the factory of this plan has ended (live,
+     * dead or failed); the wallet frees what it holds for it (M-1, review B
+     * of PR 101). spent[i] is 1 for each of the plan's n_in inputs now spent
+     * on chain (all of a live funding's; a dead one's spent elsewhere), whose
+     * coin leaves the wallet's list (F-1, review B of PR 101, round 2); 0 for
+     * an input still the wallet's. A plan it does not hold is ignored. */
+    void (*forget)(void *ctx, const uint8_t *tx, size_t tx_len, const uint8_t *spent, size_t n_in);
     void *ctx;
 } gz_wallet_port_t;
 

@@ -87,6 +87,12 @@ typedef struct {
     uint64_t can_amount, can_feerate;   /* what it was asked */
     int p2wpkh_prev, p2wsh_change;      /* L-1: a plan the engine must refuse */
     int noted;                 /* note_tx calls, and the tag of the last one's output 0 */
+    int adopted_prev;          /* adopt_plan calls, and the last one's number of spent outputs */
+    int forgot;                /* forget calls; the last one's inputs, how many told spent, and input 0's */
+    size_t forgot_n, forgot_spent;
+    uint8_t forgot_spent0;
+    size_t last_n_prev;
+    uint64_t adopt_feerate;    /* the last adopt_plan's fee rate */
     uint8_t noted_tag;
     unsigned next_plan;
     ft_plan_t plans[FT_PLANS];   /* memory only: a restart forgets them */
@@ -235,6 +241,33 @@ static inline void ftw_note(void *ctx, const uint8_t *tx, size_t len)
         w->noted_tag = scr[2];
 }
 
+static inline int ftw_adopt(void *ctx, const uint8_t *tx, size_t len, const uint8_t script[34], uint64_t amount);
+
+/* adopt with the plan's spent outputs (P97-3, review B of PR 97). */
+static inline int ftw_adopt_plan(void *ctx, const uint8_t *tx, size_t len, const gz_fund_prevout_t *prev, size_t n_prev,
+                                 const uint8_t script[34], uint64_t amount, uint64_t feerate)
+{
+    ft_wallet_t *w = (ft_wallet_t *)ctx;
+    (void)prev;
+    w->adopt_feerate = feerate;
+    w->adopted_prev++;
+    w->last_n_prev = n_prev;
+    return ftw_adopt(ctx, tx, len, script, amount);
+}
+
+/* The factory of a plan has ended (M-1, review B of PR 101). */
+static inline void ftw_forget(void *ctx, const uint8_t *tx, size_t len, const uint8_t *spent, size_t n_in)
+{
+    ft_wallet_t *w = (ft_wallet_t *)ctx;
+    (void)tx;
+    (void)len;
+    w->forgot++;
+    w->forgot_n = n_in;
+    w->forgot_spent = 0;
+    for (size_t i = 0; i < n_in; i++) w->forgot_spent += spent[i] ? 1 : 0;
+    w->forgot_spent0 = n_in ? spent[0] : 0;
+}
+
 /* Holds a plan again after a restart, if its outputs are the factory's and
  * this wallet's change (script 0xcc) only. */
 static inline int ftw_adopt(void *ctx, const uint8_t *tx, size_t len, const uint8_t script[34], uint64_t amount)
@@ -358,6 +391,8 @@ static inline void ft_cfg(ft_t *t, int host, gz_host_funding_t mode)
         t->cfg.wallet.spend_back = ftw_sb;
         t->cfg.wallet.can_plan = ftw_can_plan;
         t->cfg.wallet.note_tx = ftw_note;
+        t->cfg.wallet.adopt_plan = ftw_adopt_plan;
+        t->cfg.wallet.forget = ftw_forget;
     }
 }
 

@@ -37,6 +37,7 @@ sym gzt_sign_keypath
 sym gzt_funding_build
 sym gzt_funding_release
 sym gzt_funding_spend_back
+sym gzt_funding_adopt
 
 # The generic hooks and the secrets they hand out (signer.md 4.1)
 hook secret

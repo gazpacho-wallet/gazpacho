@@ -39,10 +39,12 @@
 #include "unlock.h"
 
 #define GZP_WPORT_COINS 256
-#define GZP_WPORT_PLANS 8
+#define GZP_WPORT_PLANS ((int)GZ_FUND_MAX_FACTORIES)   /* one per factory the engine keeps (M-1, review B of PR 101) */
 #define GZP_WPORT_TIP_RETRY_MS 15000   /* a tip that could not be read is asked again */
 #define GZP_WPORT_RETRY_CAP_MS 600000  /* a wide read not settled is asked again at most this far apart */
+#define GZP_WPORT_RETRY_CAP_PLAIN_MS 120000 /* a scan that published nothing, with no wide read pending */
 #define GZP_WPORT_UNSETTLED_MAX 10     /* and this many times, then not until the next start */
+#define GZP_WPORT_SLOW_RETRY_MS 3600000 /* (R2-3: then, for a cause that can clear, once an hour) */
 #define GZP_WPORT_GAP_MAX 256          /* the most addresses of one chain a scan reads */
 #define GZP_WPORT_CHANGE_WIDE 1000     /* a wide scan reads the change chain at least this far */
 #define GZP_WPORT_CHANGE_MAX 4096      /* the most change addresses a scan reads */
@@ -70,6 +72,7 @@ typedef struct {
     const char *error;        /* the chain port's answer for it (unreachable, malformed, ...), or NULL */
     unsigned attempts;        /* scans made so far */
     const char *change_mark;  /* kept, reading (a wide read pending) or not_opened; NULL: not shown */
+    const char *refused;      /* why the last plan or spend-back was refused by the change chain, or NULL */
 } gzp_wport_coins_t;
 
 typedef struct {
@@ -104,6 +107,8 @@ typedef struct {
     uint32_t mark;                /* the change mark as last loaded or saved */
     int wide;                     /* the next scan reads the change chain wide, then saves the mark */
     int wide_final;               /* the wide read cannot settle with this view: not asked again this run */
+    uint32_t wide_reach;          /* how far the last wide read read the change chain (0: no read yet) */
+    uint32_t slow_retry_ms;       /* after GZP_WPORT_UNSETTLED_MAX reads, a read that can clear is asked this far apart */
     int need_marks;               /* a host's port: no plan without a kept mark */
     uint8_t refusals[2][GZP_WPORT_CHANGE_MAX]; /* an address's refusals in a row, under the scan */
     uint8_t hist_refusals[GZP_WPORT_CHANGE_MAX]; /* the same for a change address's history */
@@ -144,6 +149,9 @@ int gzp_wport_scan_until(gzp_wport_t *w, const gz_chain *view, uint32_t wait_ms)
 /* How long after the n-th wide read in a row that did not settle (from 0)
  * the next is asked: `base` doubled n times, at most GZP_WPORT_RETRY_CAP_MS. */
 uint32_t gzp_wport_retry_ms(uint32_t base, unsigned n);
+/* After the n-th scan in a row that published nothing: the same doubling,
+   capped lower when no wide read is pending (L-4, review B of PR 101). */
+uint32_t gzp_wport_failed_retry_ms(uint32_t base, unsigned n, int wide);
 /* The coin list's state, under the mutex. */
 void gzp_wport_coins(gzp_wport_t *w, gzp_wport_coins_t *out);
 /* It as the JSON of status.coins (local-api.md 11.2): the length written, or -1. */
@@ -159,6 +167,10 @@ int gzp_wport_log_attempt(unsigned n);
  * the scan reads the change chain to it plus `gap`); every change index
  * handed out afterwards saves the mark first. Before the scan starts. 0, or -1. */
 int gzp_wport_set_marks(gzp_wport_t *w, const gzp_wport_marks_t *m);
+/* adopt_plan takes the master key from the seed source for its check, as
+ * every signing does (master_now). A resume runs only while the wallet is
+ * unlocked; if the source refuses all the same, the plan is not held again
+ * this run (logged) and the next resume tries again (L2, review A of PR 101). */
 /* A host's port: plans and spend-backs are refused until marks are set. */
 void gzp_wport_require_marks(gzp_wport_t *w);
 /* Test build, no chain: one invented coin paying the first receive address. */

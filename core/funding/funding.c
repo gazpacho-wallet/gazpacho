@@ -216,6 +216,22 @@ static void drop_watches(gz_fund_t *f, gz_fund_factory_t *x)
 /* A factory ends: remembered for the slot end conditions, then freed. */
 static void finish(gz_fund_t *f, gz_fund_factory_t *x, int state)
 {
+    /* the factory has ended: the wallet frees its plan and coins (M-1, review
+     * B of PR 101); a plan it does not hold (released before) is ignored */
+    if (f->cfg.host && x->tx_len && f->cfg.wallet.forget) {
+        uint8_t spent[GZ_FUND_MAX_INPUTS];
+        size_t n = x->n_in < GZ_FUND_MAX_INPUTS ? x->n_in : GZ_FUND_MAX_INPUTS;
+        /* which of its inputs are spent on chain (F-1, review B of PR 101,
+         * round 2): a live funding's, all; a dead one's, those spent
+         * elsewhere (an input past the watched ones counts as spent: its coin
+         * is left out until the next start's scan, never offered spent);
+         * a failed plan's, none */
+        for (size_t k = 0; k < n; k++)
+            spent[k] = state == GZ_FUND_ST_LIVE || state == GZ_FUND_ST_LIVE_LATE ? 1
+                       : state == GZ_FUND_ST_DEAD ? (uint8_t)(k >= GZ_FUND_WATCH_INPUTS || x->spender_known[k])
+                                                  : 0;
+        f->cfg.wallet.forget(f->cfg.wallet.ctx, x->tx, x->tx_len, spent, n);
+    }
     drop_watches(f, x);
     remember_end(f, x->scope, state, f->tip);
     memset(x, 0, sizeof *x);
@@ -1140,7 +1156,12 @@ gz_status_t gz_fund_resume(void *e, gz_action_list_t *out, int *more)
         if (!x->used) continue;
         if (f->cfg.host) {
             /* The wallet's hold is in its memory only (A11). */
-            if (!f->cfg.wallet.adopt(f->cfg.wallet.ctx, x->tx, x->tx_len, x->script, x->amount) &&
+            /* with the outputs its inputs spend, when the wallet takes them, so it can
+             * hold the plan again and sign it or spend back from it (P97-3) */
+            if (!(f->cfg.wallet.adopt_plan ? f->cfg.wallet.adopt_plan(f->cfg.wallet.ctx, x->tx, x->tx_len, x->prev,
+                                                                     x->n_in, x->script, x->amount, x->feerate)
+                                           : f->cfg.wallet.adopt(f->cfg.wallet.ctx, x->tx, x->tx_len, x->script,
+                                                                 x->amount)) &&
                 (st = log_note(f, out, "funding-adopt-refused", x->scope)) != GZ_OK)
                 return st;
             if (x->state == GZ_FUND_ST_AWAITING && (st = attention(f, out, x->scope, 0)) != GZ_OK) return st;
